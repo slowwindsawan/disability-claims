@@ -1,0 +1,179 @@
+# Overview
+- These guidelines consolidate procedural, safety, quality, testing, approval and impairment‑rating rules across operational, manufacturing, procurement, change‑control and medical assessment domains.
+- They set mandatory documentation, approval and review timelines, define inspection/sampling/testing escalation rules, and require traceable recordkeeping and role accountability.
+- Clinical sections define diagnostic, testing and rating requirements for multiple medical specialties (transfusion, diabetes, pulmonary, cardiac, neurologic, ENT, ophthalmology, musculoskeletal, dermatology, etc.) and map objective findings to impairment/compensation decisions.
+- Emphasis is on written applications/requests, risk‑based controls, formal approvals, audit trails, and escalation routes for exceptions or unresolved issues.
+
+# Key Principles
+- Always use written, complete documentation before action (no verbal or incomplete submissions).
+- Approvals and deviations require explicit written authorization from the competent authority or designated approver.
+- Risk‑based testing and verification: critical items/functions require 100% inspection/verification; lower‑risk items may be sampled per approved plans.
+- Separate environments and staged validation for technical changes: test/staging before production, with rollback plans and audit evidence.
+- Preserve chain‑of‑custody, traceability and retention of records for all inspections, tests, approvals and corrective actions.
+- Non‑compliance or safety breaches trigger immediate stop, quarantine, investigation and remedial action.
+- Use objective evidence (measurements, calibrated instruments, pathology, imaging, lab tests) to support decisions, ratings and corrective actions.
+- Multidisciplinary review for complex, borderline or high‑risk cases; escalate when unresolved.
+
+# Roles & Responsibilities
+- Authority / Reviewing Body:
+  - Review and approve or reject written applications and plans in writing.
+  - Request clarifications, order inspections, enforce compliance and maintain decision records.
+- Applicant / Operator / Contractor:
+  - Submit complete written applications and safety/rescue plans; respond to authority requests within deadlines.
+  - Implement approved plans, maintain safety measures and stop work for unapproved deviations.
+- Site Manager / On‑site Supervisor:
+  - Ensure on‑site compliance with approved plans, maintain training/equipment records and cooperate with inspectors.
+- Approving Committee / Technical Committee:
+  - Approve sampling/inspection plans, mandate 100% inspections when required and review releases for deviations.
+- Manager / Named Approver (e.g., formal signatory):
+  - Sign off on certifications, releases and escalations per procedure.
+- Reviewers / Technical Experts / QA Teams:
+  - Evaluate technical and safety aspects, run/interpret tests, recommend approval/conditional approval/rejection.
+- Quality / Inspection Personnel / Laboratory Analysts:
+  - Execute sampling and inspection per approved plans, quarantine nonconforming lots, perform accredited testing and record results.
+- Procurement / Contracting Officer / Project Manager:
+  - Prepare justifications/specifications for procurements, submit for approvals and track thresholds.
+- Technical / Project Lead:
+  - Define acceptance criteria and test plans; demonstrate integration and interoperability; present test evidence.
+- Testing / Acceptance Team:
+  - Execute acceptance tests, record pass/fail results, and verify remediation.
+- Contractor / Software Supplier:
+  - Deliver software, documentation, and fixes; provide rollback plans and support acceptance retesting.
+- Change Owner / Requestor:
+  - Submit complete change requests with impact analysis, test/rollback plans and coordinate stakeholder communication.
+- Implementer / Operations / Admin:
+  - Deploy changes per approved plans, execute rollback if acceptance criteria fail and update version records.
+- Security / Compliance / Configuration Manager:
+  - Review changes for security impact, enforce access controls and maintain CMDB/version control.
+- Operator / Facility Staff (field operations, production):
+  - Implement containment/corrective measures for nonconformities, perform sampling with chain‑of‑custody and maintain records.
+- Inspector / Field Representative / Site Inspector:
+  - Conduct inspections/sampling, verify corrective measures and escalate critical issues.
+- Approving Authority / Supervisor / Committee for Corrective Actions:
+  - Review and approve corrective plans, set stop/resume thresholds, and escalate systemic problems.
+- Clinical Roles (grouped):
+  - Treating Physician / Clinician: document findings, order diagnostics, submit medical reports and justify interventions.
+  - Surgeon / Pathologist / Specialist: perform/interpret biopsies, surgeries and specialist tests; produce clear reports.
+  - Transfusion Service / Blood Bank: provide appropriately modified blood products, verify labeling and track post‑transfusion response.
+  - Hematology / Transfusion Specialist: advise on complex transfusion cases, refractory responses and matching.
+  - Evaluating Clinicians (pulmonology, cardiology, neurology, ENT, ophthalmology, orthopedics, dermatology, etc.): obtain objective tests, assign severity/classification, document rationale for impairment or treatment decisions.
+  - Review Committees / Adjudicators / Medical Boards: request supplemental evidence, adjudicate compensation/ratings and document reasons for decisions.
+- Administrative / Records / Claims Staff:
+  - Archive approvals, certificates, inspection/test reports, and ensure correct entry and retention of records.
+
+# Processes / Workflows
+- Operational Plan Submission & Approval:
+  - Step 1: Prepare and submit a complete written application including safety and rescue plans.
+  - Step 2: Authority reviews within applicable timeframe (use 9 or 15 working‑day window as applicable), requests clarifications if incomplete.
+  - Step 3: Schedule on‑site inspections if required; obtain written approval before commencing work.
+  - Step 4: Implement plan; stop work for any unapproved material changes and obtain written reapproval.
+
+- Inspection, Sampling & Lot Release:
+  - Step 1: Follow approved sampling plan for routine lots; document plan’s sampling percentages and acceptance criteria.
+  - Step 2: Perform 100% inspection when packaging/seal compromised, on committee mandate, or when samples show critical failures.
+  - Step 3: Quarantine suspect lots, stop release, investigate and document corrective actions.
+  - Step 4: Obtain committee/manager approval before releasing lots with known deviations or changed sampling plans.
+
+- Procurement, Acceptance Testing & Software Delivery:
+  - Step 1: Produce written justification and technical specifications; define acceptance criteria and test plan.
+  - Step 2: Contractor delivers artifacts and documentation; QA executes acceptance tests per plan.
+  - Step 3: Classify defects by severity; critical defects fixed immediately; re‑test and document results.
+  - Step 4: Formal acceptance, conditional acceptance, or rejection recorded; apply contractual remedies for delays/defects as required.
+
+- Change Management & Releases:
+  - Step 1: Submit formal change request including scope, impact analysis, test/rollback plans and schedule.
+  - Step 2: Reviewer assesses risk and testing level; approve, reject or request revisions in writing.
+  - Step 3: Test in representative non‑production environment; attach test evidence to request.
+  - Step 4: Implement during approved window; perform post‑implementation verification and retain audit evidence; roll back if criteria unmet.
+
+- Corrective Action & Nonconformance Handling:
+  - Step 1: On detection, implement immediate containment and document a corrective‑action plan (scope, responsibility, schedule).
+  - Step 2: Perform required sampling/testing in accredited labs with chain‑of‑custody; record results.
+  - Step 3: Approving authority reviews and signs off on corrective measures; allow conditional/resumed operations only with documented mitigations.
+  - Step 4: Retain records, escalate persistent/recurrent issues to higher committee.
+
+- Clinical Evaluation & Impairment Rating (medical claims):
+  - Step 1: Collect full medical dossier and objective evidence (imaging, lab, pathology, PFTs, ECG/ECHO, EMG/NCS, visual fields, audiometry as relevant).
+  - Step 2: Specialist evaluates, applies condition‑specific severity bands/percentage tables and documents tests and rationale.
+  - Step 3: Committee reviews; may request additional tests or expert opinion; finalize rating and record decision and appeals info.
+
+- Neurophysiology / EMG / EEG Workflow:
+  - Step 1: Confirm clinical indication and perform focused neurological exam.
+  - Step 2: Perform appropriate EEG/NCS/EMG using standard montages/protocols; time needle EMG to capture denervation (typically weeks after injury).
+  - Step 3: Interpret, correlate with exam and report findings, localization and recommendations.
+  - Step 4: Communicate urgent findings immediately to the referring team.
+
+# Mandatory Requirements (Must-Do)
+- Submit complete written applications/plans and safety/rescue documentation before any work or procurement commences.
+- Obtain explicit written approval from the competent authority before starting work, deploying changes to production, or accepting major procurements.
+- Maintain traceable records of approvals, inspections, tests, sampling plans, corrective actions and retention for audit.
+- Perform 100% inspection when packaging/seals are tampered, when committee mandates it, or if sampled units show critical/nonconforming results.
+- Quarantine suspect lots, stop release and investigate upon detection of failures.
+- Use accredited laboratories and chain‑of‑custody procedures for sampling and testing.
+- Provide rollback and verification plans with all production/deployment changes; rollback immediately if acceptance criteria fail.
+- For clinical decisions: document objective evidence (tests, imaging, pathology), obtain specialist reports when required, and retain full medical dossiers for adjudication.
+- Implement documented corrective‑action plans immediately upon nonconformity detection and obtain approver sign‑off for continuation/exception.
+- Use lowest effective dose and defined review/stop dates when prescribing antipsychotics for BPSD; obtain informed consent.
+
+# Prohibited Actions (Must-Not)
+- MUST NOT commence work, production changes, procurement acceptance, or software deployment on the basis of verbal or incomplete approvals.
+- MUST NOT proceed with material deviations from approved plans without written authorization from the competent authority.
+- MUST NOT release or certify lots suspected of contamination, tampering, or with failed critical tests.
+- MUST NOT transfuse platelets in TTP routinely (avoid unless life‑threatening hemorrhage and after hematology consultation).
+- MUST NOT implement production/production configuration changes in production without prior approval, except under defined emergency procedures with retroactive documentation.
+- MUST NOT use non‑GLP or unaccredited lab results as sole basis for clinical or acceptance decisions where GLP/accredited testing is required.
+- MUST NOT double‑count the same functional impairment when combining medical ratings; follow combination rules.
+
+# Exceptions / Edge Cases
+- Expedited or emergency interventions:
+  - MAY use expedited review or emergency change procedures, but written retroactive approval, documentation and higher‑level sign‑off are required as soon as practicable.
+- Minor modifications:
+  - MAY be allowed via prior written notification for predefined low‑risk changes; otherwise full reapproval required.
+- Non‑response by authority:
+  - If no response within the 9 or 15 working‑day windows, applicants SHOULD escalate rather than assume tacit approval.
+- Sampling adjustments:
+  - Changes to sampling percent, acceptance criteria or destructive testing scope MUST be approved by the designated committee/manager before implementation.
+- Temporary/conditional operations:
+  - MAY be permitted under strict controls, documented mitigations and with approver sign‑off; must include monitoring and fixed review date.
+- Medical/clinical exceptions:
+  - Urgent treatment (e.g., biopsy, pericardiocentesis, life‑saving surgery) MUST not be delayed for adjudication; document and submit records promptly.
+- Laboratory/testing timing:
+  - Early EMG may be nondiagnostic for axonal injury; repeat testing at appropriate interval (≈2–4 weeks) is recommended.
+- High impairment ratings or atypical percentages:
+  - Entries marked conditional or requiring committee/board review MUST be escalated with supporting objective evidence before final assignment.
+
+# Practical Checklist
+- Before starting work/procurement/change:
+  - Prepare complete written application/change request including safety/rescue plan, impact analysis, test plan and rollback plan.
+  - Confirm required approver(s) and expected review window (9 or 15 working days as applicable).
+  - Ensure required certifications, supplier documents and GLP/accredited lab arrangements are in place.
+
+- For inspections/sampling/testing:
+  - Use the approved sampling plan; document sample size, acceptance criteria and test methods.
+  - If packaging/seal compromised or critical defect found → perform 100% inspection, quarantine lot, notify committee/manager.
+  - Keep chain‑of‑custody records and archive test reports and certificates.
+
+- For change management and deployments:
+  - Test in representative environment; attach test evidence to change record.
+  - Obtain written approval; schedule deployment window; notify stakeholders.
+  - Have rollback plan ready; conduct post‑implementation verification and retain audit trail.
+
+- For software delivery/acceptance:
+  - Verify deliverables and documentation before acceptance testing.
+  - Execute acceptance tests per plan; classify defects and document remediation/resubmission timelines.
+  - Only sign acceptance after critical defects fixed and retested or after explicit conditional‑acceptance agreement.
+
+- For corrective action & nonconformance:
+  - Implement immediate containment; write corrective plan with responsible person and schedule.
+  - Arrange accredited testing, record objective evidence and submit for approver sign‑off.
+  - Escalate unresolved or repeated issues to higher committee and suspend operations if required.
+
+- For clinical/medical assessments:
+  - Collect full medical dossier and objective tests; ensure specialist input where required.
+  - Document rationale, test dates/values and map to condition‑specific rating tables.
+  - Record appeals paths and retention of medical evidence.
+
+- Ongoing governance:
+  - Retain all approvals, inspection/certification records and corrective‑action evidence for audit.
+  - Review and revalidate sampling, change and acceptance plans after supplier/process changes or recurrent failures.
+  - Conduct periodic audits of adherence to these rules and escalate non‑compliance.

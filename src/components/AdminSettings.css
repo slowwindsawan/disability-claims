@@ -1,0 +1,266 @@
+.admin-settings-page {
+  min-height: 100vh;
+  background: #f8f9fa;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+}
+
+.admin-set-main {
+  padding: 2rem;
+  overflow-y: auto;
+  position: relative;
+  background: #f3f4f6;
+}
+
+.admin-set-content {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.admin-set-profile-section {
+  background: white;
+  border-radius: 12px;
+  padding: 3rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  position: relative;
+}
+
+.admin-set-avatar {
+  position: absolute;
+  top: -60px;
+  left: 50px;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 5px solid white;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  background: white;
+}
+
+.admin-set-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.admin-set-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  margin-top: 4rem;
+}
+
+.admin-set-header h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #1f2937;
+  margin: 0;
+}
+
+.admin-set-actions {
+  display: flex;
+  gap: 1rem;
+}
+
+.admin-set-btn-cancel,
+.admin-set-btn-save {
+  padding: 0.625rem 1.5rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: none;
+}
+
+.admin-set-btn-cancel {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.admin-set-btn-cancel:hover {
+  background: #e5e7eb;
+}
+
+.admin-set-btn-save {
+  background: #84cc16;
+  color: white;
+}
+
+.admin-set-btn-save:hover {
+  background: #65a30d;
+}
+
+.admin-set-tabs {
+  display: flex;
+  gap: 2rem;
+  border-bottom: 2px solid #e5e7eb;
+  margin-bottom: 2rem;
+}
+
+.admin-set-tab {
+  padding: 0.75rem 0;
+  background: none;
+  border: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #9ca3af;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.2s;
+}
+
+.admin-set-tab:hover {
+  color: #6b7280;
+}
+
+.admin-set-tab.active {
+  color: #1f2937;
+}
+
+.admin-set-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #1f2937;
+}
+
+.admin-set-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.admin-set-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+.admin-set-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.admin-set-form-group label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #1f2937;
+}
+
+.admin-set-form-group input[type="text"],
+.admin-set-form-group input[type="email"] {
+  padding: 0.75rem 1rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  color: #1f2937;
+  background: #f9fafb;
+  transition: all 0.2s;
+}
+
+.styled-input {
+  padding: 0.75rem 1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(59,130,246,0.18);
+  background: linear-gradient(90deg, rgba(99,102,241,0.04), rgba(59,130,246,0.02));
+  box-shadow: 0 4px 12px rgba(59,130,246,0.06);
+  font-size: 0.95rem;
+  color: #0f172a;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+}
+
+.styled-input:focus {
+  outline: none;
+  transform: translateY(-1px);
+  border-color: rgba(59,130,246,0.9);
+  box-shadow: 0 6px 20px rgba(59,130,246,0.14);
+  background: white;
+}
+
+.admin-set-form-group input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  background: white;
+}
+
+.admin-set-input-with-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.admin-set-input-with-icon svg {
+  position: absolute;
+  left: 1rem;
+  color: #9ca3af;
+}
+
+.admin-set-input-with-icon input {
+  padding-left: 3rem;
+  width: 100%;
+}
+
+.admin-set-upload-area {
+  border: 2px dashed #d1d5db;
+  border-radius: 8px;
+  padding: 3rem 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: #f9fafb;
+}
+
+.admin-set-upload-area:hover {
+  border-color: #9ca3af;
+  background: white;
+}
+
+.admin-set-upload-area svg {
+  margin: 0 auto 1rem;
+  color: #6b7280;
+}
+
+.admin-set-upload-area p {
+  font-size: 0.875rem;
+  color: #1f2937;
+  margin: 0 0 0.25rem 0;
+  font-weight: 500;
+}
+
+.admin-set-upload-area span {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+@media (max-width: 768px) {
+  .admin-set-profile-section {
+    padding: 2rem 1.5rem;
+  }
+
+  .admin-set-avatar {
+    top: -50px;
+    left: 20px;
+    width: 100px;
+    height: 100px;
+  }
+
+  .admin-set-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .admin-set-form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-set-tabs {
+    gap: 1rem;
+  }
+}

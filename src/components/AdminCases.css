@@ -1,0 +1,332 @@
+.admin-cases-page {
+  display: flex;
+  min-height: 100vh;
+  background: #f9fafb;
+}
+
+.admin-cases-main {
+  flex: 1;
+  padding: 2rem 3rem;
+  overflow-y: auto;
+  max-width: 1600px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.admin-cases-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+
+.admin-cases-header h1 {
+  font-size: 2rem;
+  color: #111827;
+  margin: 0;
+}
+
+.logout-btn {
+  padding: 0.625rem 1.25rem;
+  background: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.logout-btn:hover {
+  background: #dc2626;
+}
+
+/* Filters Section */
+.admin-cases-filters {
+  background: white;
+  padding: 1.5rem;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  margin-bottom: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.filter-group {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.filter-search {
+  flex: 1;
+  min-width: 300px;
+  padding: 0.75rem 1rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 0.9375rem;
+  transition: border-color 0.2s;
+}
+
+.filter-search:focus {
+  outline: none;
+  border-color: #84cc16;
+  box-shadow: 0 0 0 3px rgba(132, 204, 22, 0.1);
+}
+
+.filter-select {
+  padding: 0.75rem 1rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 0.9375rem;
+  background: white;
+  cursor: pointer;
+  transition: border-color 0.2s;
+  min-width: 180px;
+}
+
+.filter-select:focus {
+  outline: none;
+  border-color: #84cc16;
+  box-shadow: 0 0 0 3px rgba(132, 204, 22, 0.1);
+}
+
+.filter-reset-btn {
+  padding: 0.75rem 1.5rem;
+  background: #f3f4f6;
+  color: #374151;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.filter-reset-btn:hover {
+  background: #e5e7eb;
+}
+
+/* Cases Content */
+.admin-cases-content {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.admin-cases-loading,
+.admin-cases-error,
+.admin-cases-empty {
+  padding: 3rem;
+  text-align: center;
+  color: #6b7280;
+  font-size: 1rem;
+}
+
+.admin-cases-error {
+  color: #dc2626;
+}
+
+/* Cases Table */
+.admin-cases-table {
+  width: 100%;
+}
+
+.admin-cases-table-header,
+.admin-cases-table-row {
+  display: grid;
+  grid-template-columns: 150px 1fr 220px 140px 120px 120px;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem 1.5rem;
+}
+
+.admin-cases-table-header {
+  background: #f9fafb;
+  border-bottom: 2px solid #e5e7eb;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.admin-cases-table-row {
+  border-bottom: 1px solid #f3f4f6;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.admin-cases-table-row:hover {
+  background: #f9fafb;
+}
+
+.admin-cases-table-row:last-child {
+  border-bottom: none;
+}
+
+.case-col-id {
+  font-family: 'Courier New', monospace;
+  font-size: 0.8125rem;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.case-col-title {
+  font-weight: 500;
+  color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.case-col-user {
+  display: flex;
+  flex-direction: column;
+}
+
+.case-user-link {
+  cursor: pointer;
+  transition: all 0.2s;
+  padding: 0.25rem 0;
+}
+
+.case-user-link:hover {
+  opacity: 0.7;
+}
+
+.case-user-name {
+  font-weight: 500;
+  color: #2563eb;
+  font-size: 0.9375rem;
+}
+
+.case-user-email {
+  font-size: 0.8125rem;
+  color: #6b7280;
+  margin-top: 0.125rem;
+}
+
+.case-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.375rem 0.875rem;
+  border-radius: 20px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.case-status-badge.under-review {
+  background: #fef3c7;
+  color: #d97706;
+}
+
+.case-status-badge.approved {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.case-status-badge.rejected {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.case-status-badge.closed {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.case-col-eligibility {
+  font-size: 0.875rem;
+  color: #374151;
+}
+
+.case-col-date {
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+/* Pagination */
+.admin-cases-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 1.5rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+.pagination-btn {
+  padding: 0.625rem 1.25rem;
+  background: #84cc16;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  background: #65a30d;
+}
+
+.pagination-btn:disabled {
+  background: #e5e7eb;
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  font-size: 0.9375rem;
+  color: #374151;
+  font-weight: 500;
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+  .admin-cases-main {
+    padding: 1.5rem;
+  }
+
+  .admin-cases-table-header,
+  .admin-cases-table-row {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+    padding: 1rem;
+  }
+
+  .case-col-id,
+  .case-col-title,
+  .case-col-user,
+  .case-col-status,
+  .case-col-eligibility,
+  .case-col-date {
+    padding: 0.25rem 0;
+  }
+
+  .admin-cases-table-header {
+    display: none;
+  }
+
+  .admin-cases-table-row {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+  }
+
+  .filter-group {
+    flex-direction: column;
+  }
+
+  .filter-search,
+  .filter-select {
+    width: 100%;
+    min-width: 0;
+  }
+}

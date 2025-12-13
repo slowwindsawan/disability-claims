@@ -1,0 +1,71 @@
+.global-sidenav {
+  width: 240px;
+  height: 100vh;
+  padding: 1rem 0.75rem;
+  position: fixed;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  backdrop-filter: blur(6px);
+}
+.sidenav-brand {
+  font-weight: 800;
+  margin: 0 0 0.75rem 1rem;
+  font-size: 1.05rem;
+  color: #0f172a;
+}
+.sidenav-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+}
+.sidenav-link {
+  color: #0f172a;
+  text-decoration: none;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.625rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  transition: transform 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+  font-size: 0.95rem;
+}
+.sidenav-link:hover { background: #f8fafc }
+
+/* active nav look: subtle raised 3D + ring */
+.sidenav-link.active,
+.sidenav-link.active-nav {
+  background: linear-gradient(90deg, rgba(255,255,255,0.9), rgba(248,250,252,0.95));
+  box-shadow: 0 10px 18px rgba(15,23,42,0.08);
+  transform: translateX(4px);
+  border-radius: 0.75rem;
+  position: relative;
+}
+
+.sidenav-switch {
+  appearance: none;
+  border: none;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  background: transparent;
+  color: #0f172a;
+  cursor: pointer;
+  border-radius: 0.625rem;
+  transition: background 120ms ease;
+}
+.sidenav-switch:hover { background: #f8fafc }
+
+.sidenav-divider { height: 1px; background: rgba(226,232,240,0.9); margin: 0.75rem 0 }
+.sidenav-footer { margin-top: auto; padding: 0.75rem; }
+.sidenav-logout { background: #fff; border: 1px solid #ef4444; color: #ef4444; padding: 0.45rem 0.8rem; border-radius: 0.5rem; cursor: pointer }
+
+/* fallback when Tailwind classes are available developers may add more utilities */
+.sidenav-link svg { color: inherit }
+
+/* push main content to the right */
+.app-main { margin-left: 260px; padding: 1rem; }

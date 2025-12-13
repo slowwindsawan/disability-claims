@@ -1,0 +1,279 @@
+.admin-user-mgmt {
+  min-height: 100vh;
+  background: #f8f9fa;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+}
+
+.admin-um-main {
+  padding: 2rem;
+  overflow-y: auto;
+  position: relative;
+}
+
+.admin-um-header {
+  margin-bottom: 2rem;
+  margin-top: 1rem;
+}
+
+.admin-um-header h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #1f2937;
+  margin: 0;
+}
+
+.admin-um-users-section {
+  background: white;
+  padding: 2rem;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.admin-um-users-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+
+.admin-um-users-header h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0;
+}
+
+.admin-um-dropdown-btn {
+  background: none;
+  border: none;
+  font-size: 0.875rem;
+  color: #6b7280;
+  cursor: pointer;
+}
+
+.admin-um-users-table {
+  width: 100%;
+}
+
+/* Details panel styles inspired by UserDetail.css */
+.admin-um-detail-panel-wrapper {
+  position: relative;
+  margin-top: 1rem;
+}
+
+.admin-um-detail-panel {
+  position: fixed;
+  right: 2rem;
+  top: 6rem;
+  width: 360px;
+  max-height: calc(100vh - 8rem);
+  overflow: auto;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(15,23,42,0.12);
+  padding: 1rem 1rem 2rem 1rem;
+  z-index: 60;
+}
+
+.admin-um-detail-empty {
+  position: fixed;
+  right: 2rem;
+  top: 6rem;
+  width: 360px;
+  max-height: calc(100vh - 8rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+}
+
+.admin-um-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.admin-um-detail-profile {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.admin-um-detail-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.admin-um-detail-name { font-size: 1rem; font-weight: 700; color: #1f2937; margin: 0 }
+.admin-um-detail-meta { font-size: 0.85rem; color: #6b7280 }
+.admin-um-detail-close { background:none; border:none; cursor:pointer; font-size:1rem }
+
+.admin-um-detail-tabs { display:flex; gap:0.5rem; margin-top:0.75rem }
+.admin-um-detail-tab { padding:0.5rem 0.75rem; border-radius:8px; background:#f3f4f6; border:none; cursor:pointer; font-size:0.9rem }
+.admin-um-detail-tab.active { background:#84cc16; color:white }
+
+.admin-um-detail-content { margin-top:1rem }
+.admin-um-detail-section { margin-bottom:1rem }
+.admin-um-detail-field { font-size:0.9rem; color:#374151; margin-bottom:0.5rem }
+
+.admin-um-case-item { background:#f9fafb; border-radius:8px; padding:0.75rem; margin-bottom:0.75rem }
+.admin-um-case-header { display:flex; justify-content:space-between; gap:0.5rem; align-items:center }
+.admin-um-case-id { font-size:0.75rem; color:#6b7280 }
+.admin-um-case-title { font-weight:600; color:#1f2937 }
+.admin-um-case-controls { display:flex; gap:0.5rem; align-items:center }
+.admin-um-case-status { padding:0.25rem 0.5rem; background:#f3f4f6; border-radius:999px; font-size:0.8rem }
+.admin-um-case-desc { font-size:0.85rem; color:#374151; margin-top:0.5rem }
+.admin-um-case-meta { font-size:0.75rem; color:#6b7280; margin-top:0.5rem }
+
+@media (max-width: 1024px) {
+  .admin-um-detail-panel { position: static; width: 100%; box-shadow: none; max-height: none }
+  .admin-um-detail-empty { display:none }
+}
+
+.admin-um-table-header,
+.admin-um-table-row {
+  display: grid;
+  grid-template-columns: 1.5fr 2fr 1.5fr 1.2fr 1.2fr 1fr;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem 0;
+}
+
+.admin-um-table-header {
+  border-bottom: 2px solid #e5e7eb;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.admin-um-table-row {
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 0.875rem;
+  color: #1f2937;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.admin-um-table-row:hover {
+  background: #f9fafb;
+}
+
+.admin-um-table-row:last-child {
+  border-bottom: none;
+}
+
+.admin-um-col-name {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.admin-um-user-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #6b7280;
+  flex-shrink: 0;
+}
+
+.admin-um-sort-btn {
+  background: none;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  font-size: 0.75rem;
+  margin-left: 0.25rem;
+}
+
+.admin-um-status-badge,
+.admin-um-stage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 1rem;
+  border-radius: 20px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.admin-um-status-badge.eligible {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.admin-um-status-badge.not-eligible {
+  background: #fef3c7;
+  color: #d97706;
+}
+
+.admin-um-stage-badge.submitted {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.admin-um-stage-badge.under-review {
+  background: #fef3c7;
+  color: #d97706;
+}
+
+.admin-um-col-scholarship {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.admin-um-col-scholarship input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  accent-color: #16a34a;
+}
+
+.admin-um-menu-dots {
+  background: none;
+  border: none;
+  font-size: 1.25rem;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+@media (max-width: 1280px) {
+  .admin-um-table-header,
+  .admin-um-table-row {
+    grid-template-columns: 1.2fr 1.8fr 1.3fr 1fr 1fr 0.8fr;
+    gap: 0.75rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .admin-um-table-header,
+  .admin-um-table-row {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+
+  .admin-um-col-name,
+  .admin-um-col-email,
+  .admin-um-col-phone,
+  .admin-um-col-status,
+  .admin-um-col-stage,
+  .admin-um-col-scholarship {
+    padding: 0.25rem 0;
+  }
+}

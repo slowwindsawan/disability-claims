@@ -1,0 +1,230 @@
+.user-case-detail-page {
+  min-height: 100vh;
+  background: #f8f9fa;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  display: flex;
+}
+
+.user-case-detail-main {
+  flex: 1;
+  padding: 2rem;
+  overflow-y: auto;
+  background: #f3f4f6;
+}
+
+.user-case-detail-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  font-size: 0.875rem;
+}
+
+.user-case-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  background: white;
+  padding: 1.5rem;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.user-case-detail-profile {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.user-case-detail-avatar {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.user-case-detail-header h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #1f2937;
+  margin: 0;
+}
+
+.user-case-detail-tabs {
+  display: flex;
+  gap: 0;
+  background: white;
+  border-radius: 12px 12px 0 0;
+  padding: 0 1.5rem;
+  margin-bottom: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.user-case-detail-tab {
+  padding: 1rem 1.5rem;
+  background: none;
+  border: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #9ca3af;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.2s;
+  border-bottom: 3px solid transparent;
+}
+
+.user-case-detail-tab:hover {
+  color: #6b7280;
+}
+
+.user-case-detail-tab.active {
+  color: #1f2937;
+  border-bottom-color: #84cc16;
+}
+
+.user-case-detail-content {
+  background: white;
+  padding: 2rem;
+  border-radius: 0 0 12px 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.user-case-detail-section {
+  margin-bottom: 2rem;
+}
+
+.user-case-detail-section h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0 0 1.5rem 0;
+}
+
+.user-case-detail-field {
+  font-size: 0.9rem;
+  color: #374151;
+  margin-bottom: 0.75rem;
+  line-height: 1.6;
+}
+
+.user-case-detail-loading,
+.user-case-detail-error,
+.user-case-detail-empty {
+  padding: 2rem;
+  text-align: center;
+  color: #6b7280;
+}
+
+.user-case-detail-error {
+  color: #dc2626;
+}
+
+.user-case-detail-case-layout {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 2rem;
+}
+
+.user-case-detail-case-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.user-case-detail-case-status-card,
+.user-case-detail-metadata-card {
+  background: #f9fafb;
+  padding: 1.5rem;
+  border-radius: 12px;
+}
+
+.user-case-detail-case-status-header {
+  margin-bottom: 1.5rem;
+}
+
+.user-case-detail-case-status-header h3 {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: #1f2937;
+  margin: 0 0 0.5rem 0;
+}
+
+.user-case-detail-case-id {
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.user-case-detail-case-status-body {
+  display: flex;
+  gap: 2rem;
+  align-items: flex-start;
+}
+
+.user-case-detail-case-status-text {
+  flex: 1;
+}
+
+.user-case-detail-case-status-text h4 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0 0 1rem 0;
+}
+
+.user-case-detail-case-status-text p {
+  font-size: 0.875rem;
+  color: #6b7280;
+  line-height: 1.6;
+  margin: 0.5rem 0;
+}
+
+.user-case-detail-metadata-card h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0 0 1rem 0;
+}
+
+.user-case-detail-case-right {
+  background: #f9fafb;
+  padding: 1.5rem;
+  border-radius: 12px;
+  height: fit-content;
+  position: sticky;
+  top: 2rem;
+}
+
+.user-case-detail-metadata-raw h4 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0 0 1rem 0;
+}
+
+.user-case-detail-metadata-raw pre {
+  font-size: 0.75rem;
+  color: #374151;
+  background: white;
+  padding: 1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+@media (max-width: 1024px) {
+  .user-case-detail-case-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .user-case-detail-case-right {
+    position: static;
+  }
+}

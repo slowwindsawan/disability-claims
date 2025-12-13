@@ -1,0 +1,11 @@
+# OpenAI Agents SDK
+openai-agents
+
+# Core dependencies
+python-dotenv
+pydantic>=2.0.0
+vapi-python
+
+# Already installed in main backend
+# requests
+# pathlib

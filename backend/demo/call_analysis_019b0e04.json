@@ -1,0 +1,18 @@
+{
+  "call_summary": "Call between AI intake agent and claimant discussing disability claim. Claimant reported backbone fracture, dyslexia, ADHD, learning disabilities. Conversation included 6 user responses and 7 AI prompts. Agent attempted to gather medical history, diagnosis dates, and work impact information. Full analysis requires manual review of transcript.",
+  "documents_requested_list": [
+    "Medical evaluation reports from doctors or specialists for backbone fracture, dyslexia, ADHD, learning disabilities",
+    "Diagnosis documentation with dates for all conditions",
+    "Medical imaging reports (if applicable)",
+    "Specialist evaluation reports",
+    "Records documenting functional limitations and work impact"
+  ],
+  "case_summary": "Claimant reporting disability due to backbone fracture, dyslexia, ADHD, learning disabilities. Detailed information gathering in progress during voice interview.",
+  "key_legal_points": [
+    "Medical conditions: backbone fracture, dyslexia, ADHD, learning disabilities",
+    "Diagnosis dates and work impact timeline to be confirmed",
+    "Functional limitations to be documented",
+    "Medical documentation required for committee review"
+  ],
+  "risk_assessment": "Needs More Info"
+}
