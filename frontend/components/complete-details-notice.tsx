@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react'
 import Link from 'next/link'
-import * as legacyApi from '../../src/lib/api'
+import * as legacyApi from '@/lib/api'
 import { Alert, AlertTitle, AlertDescription } from './ui/alert'
 
 export default function CompleteDetailsNotice() {

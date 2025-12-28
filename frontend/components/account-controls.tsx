@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react"
 import { useRouter, usePathname } from "next/navigation"
-import * as legacyApi from "../../src/lib/api"
+import * as legacyApi from "@/lib/api"
 import { Button } from "./ui/button"
 
 export default function AccountControls() {

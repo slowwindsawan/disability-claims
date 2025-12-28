@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react"
 import { useLanguage } from "@/lib/language-context"
-import * as legacyApi from "../../../src/lib/api"
+import * as legacyApi from "@/lib/api"
 import { toast } from '@/hooks/use-toast'
 import { motion } from "framer-motion"
 import { Button } from "@/components/ui/button"

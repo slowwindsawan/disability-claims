@@ -24,7 +24,7 @@ import LegalTechFooter from "@/components/legaltech-footer"
 import { useLanguage } from "@/lib/language-context"
 import { useUserContext } from "@/lib/user-context"
 import Link from "next/link"
-import * as legacyApi from "../../src/lib/api"
+import * as legacyApi from "@/lib/api"
 import { EligibilityQuestionnaire } from "@/components/eligibility-questionnaire"
 import { AILawyerWrapper } from "@/components/ai-lawyer-wrapper"
 
