@@ -46,6 +46,8 @@ export default function VapiVoiceAgentScreen() {
   const [showRetakePrompt, setShowRetakePrompt] = useState(false);
   const [estimatedClaimValue, setEstimatedClaimValue] = useState<string | null>(null);
   const [isFetchingStatus, setIsFetchingStatus] = useState(false);
+  const [isReanalyzing, setIsReanalyzing] = useState(false);
+  const [currentCaseId, setCurrentCaseId] = useState<string | null>(null);
   const vapiRef = useRef<Vapi | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
@@ -70,6 +72,10 @@ export default function VapiVoiceAgentScreen() {
             setInterviewCompleted(true);
             setPreviousTranscript(result.transcript);
             setShowRetakePrompt(true);
+            // Store case_id for re-analysis
+            if (result.case_id) {
+              setCurrentCaseId(result.case_id);
+            }
             // Set estimated claim value if available
             try {
               const analysis = result.call_details?.analysis;
@@ -583,6 +589,47 @@ Your interview must satisfy these three legal priorities in order:
     }
     // Navigate to e-signature step after voice interview
     goToStep("esignature");
+  };
+
+  const handleReanalyze = async () => {
+    if (!currentCaseId) {
+      alert("Case ID not found. Please refresh the page and try again.");
+      return;
+    }
+
+    setIsReanalyzing(true);
+    try {
+      const token = localStorage.getItem("access_token");
+      const response = await fetch(
+        getApiUrl(`/vapi/re-analyze-call/${currentCaseId}`),
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Failed to re-analyze call");
+      }
+
+      const result = await response.json();
+      
+      // Update estimated claim amount with new analysis
+      if (result.analysis?.estimated_claim_amount) {
+        setEstimatedClaimValue(result.analysis.estimated_claim_amount);
+      }
+      
+      alert("✅ Call re-analyzed successfully! The analysis has been updated.");
+    } catch (error: any) {
+      console.error("Failed to re-analyze call:", error);
+      alert(`❌ Failed to re-analyze call: ${error.message}`);
+    } finally {
+      setIsReanalyzing(false);
+    }
   };
 
   return (

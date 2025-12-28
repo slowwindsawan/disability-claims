@@ -215,7 +215,7 @@ function AdminCases({ onLogout, onSwitchToUser }: AdminCasesProps) {
             <>
               <div className="admin-cases-table">
                 <div className="admin-cases-table-header">
-                  <div className="case-col-id">Case ID</div>
+                  <div className="case-col-id">Case Number</div>
                   <div className="case-col-title">Title</div>
                   <div className="case-col-user">User</div>
                   <div className="case-col-status">Status</div>

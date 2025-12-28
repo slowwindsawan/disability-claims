@@ -58,23 +58,12 @@ export default function CaseDocumentUploadScreen() {
       setUploadedDocs(data.uploaded_documents || []);
       setAllDocsUploaded(data.all_documents_uploaded || false);
 
-      // Initialize requested documents with upload status from backend
-      const docs: RequestedDocument[] = (data.requested_documents || []).map((doc: any) => {
-        // Handle both old format (string) and new format (object with status)
-        if (typeof doc === 'string') {
-          return {
-            name: doc,
-            file: null,
-            uploaded: false,
-          };
-        } else {
-          return {
-            name: doc.name,
-            file: null,
-            uploaded: doc.uploaded || false,
-          };
-        }
-      });
+      // Initialize requested documents with upload status
+      const docs: RequestedDocument[] = (data.requested_documents || []).map((docName: string) => ({
+        name: docName,
+        file: null,
+        uploaded: false,
+      }));
 
       setRequestedDocs(docs);
       
@@ -94,11 +83,6 @@ export default function CaseDocumentUploadScreen() {
   const handleFileSelect = (index: number, file: File | null) => {
     const updated = [...requestedDocs];
     updated[index].file = file;
-    // If selecting a new file for an already uploaded document, mark as not uploaded
-    // so user can upload the replacement
-    if (file && updated[index].uploaded) {
-      updated[index].uploaded = false;
-    }
     setRequestedDocs(updated);
   };
 
@@ -189,18 +173,15 @@ export default function CaseDocumentUploadScreen() {
 
   const uploadAllDocuments = async () => {
     for (let i = 0; i < requestedDocs.length; i++) {
-      // Upload if has file and either not uploaded yet or needs replacement
       if (requestedDocs[i].file && !requestedDocs[i].uploaded) {
         await uploadDocument(i);
       }
     }
   };
 
-  // A document needs upload if it has a file selected but hasn't been uploaded yet
   const canUpload = requestedDocs.some(doc => doc.file && !doc.uploaded);
   const allFilesSelected = requestedDocs.every(doc => doc.file !== null);
   const hasAnyUploaded = requestedDocs.some(doc => doc.uploaded);
-  // All selected files are uploaded if every document either has no file or is uploaded
   const allSelectedUploaded = requestedDocs.every(doc => !doc.file || doc.uploaded);
   const canContinue = !hasAnyUploaded || allSelectedUploaded;
 

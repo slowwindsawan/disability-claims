@@ -5,7 +5,7 @@ load_dotenv()
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response, Request, Depends, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from .schemas import EligibilityRequest, EligibilityResult
+from .schemas import EligibilityRequest, EligibilityResult, CaseFilterRequest
 from .ocr import extract_text_from_document
 from .legal import load_legal_document_chunks
 from .gemini_client import call_gemini, analyze_document_questions
@@ -17,7 +17,7 @@ import traceback
 from fastapi import Body
 from datetime import datetime, timedelta
 import secrets
-
+import requests
 # Disable verbose logging from PDF/image libraries
 logging.getLogger('pdfminer').setLevel(logging.ERROR)
 logging.getLogger('pdfplumber').setLevel(logging.ERROR)
@@ -54,9 +54,13 @@ from .supabase_client import (
     list_notifications,
     mark_notification_read,
 )
-from .supabase_client import _has_supabase_py, _supabase_admin
+from .supabase_client import _has_supabase_py, _supabase_admin, SUPABASE_URL
 from .email_utils import send_otp_email
 from .boldsign import create_embedded_sign_link, get_document_status
+from .constants import CaseStatusConstants
+from .case_status_manager import CaseStatusManager
+from .document_analyzer_agent import analyze_case_documents_with_agent
+from .openai_form7801_agent import analyze_documents_with_openai_agent
 
 app = FastAPI(title="Eligibility Orchestrator")
 # Default to WARNING to reduce noisy logs; allow override with LOG_LEVEL env var
@@ -73,6 +77,26 @@ for _name in ('supabase_client', 'supabase_auth', 'httpx', 'httpcore', 'urllib3'
     except Exception:
         pass
 logger = logging.getLogger('eligibility_orchestrator')
+
+
+def update_case_status(case_id: str, case_data: dict) -> str:
+    """
+    Determine and update case status based on case data.
+    Returns the new status.
+    """
+    try:
+        new_status = CaseStatusManager.get_status_for_case(case_data)
+        current_status = case_data.get('status')
+        
+        # Only update if status has changed
+        if current_status != new_status:
+            logger.info(f"Updating case {case_id} status from '{current_status}' to '{new_status}'")
+            update_case(case_id, {'status': new_status})
+        
+        return new_status
+    except Exception as e:
+        logger.warning(f"Failed to update case status for {case_id}: {e}")
+        return case_data.get('status')
 
 
 async def get_current_user(authorization: Optional[str] = Header(None)):
@@ -114,6 +138,23 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
     return merged
 
 
+async def require_admin(current_user=Depends(get_current_user)):
+    """Dependency: ensure user has admin or subadmin role."""
+    if not current_user:
+        raise HTTPException(status_code=401, detail='user_not_authenticated')
+    
+    role = current_user.get('role')
+    profile = current_user.get('profile') or {}
+    
+    # Check role field first
+    if role and role in ['admin', 'subadmin']:
+        return current_user
+    
+    # Fallback: check profile flags
+    if profile.get('is_admin') or profile.get('is_subadmin'):
+        return current_user
+    
+    raise HTTPException(status_code=403, detail='insufficient_permissions')
 
 
 @app.get('/me')
@@ -122,19 +163,6 @@ async def me(user = Depends(get_current_user)):
         return JSONResponse({'status': 'ok', 'anonymous': True})
     return JSONResponse({'status': 'ok', 'user': {'id': user.get('id'), 'email': user.get('email'), 'role': user.get('role'), 'profile': user.get('profile')}})
 
-
-def require_admin(user = Depends(get_current_user)):
-    if not user:
-        raise HTTPException(status_code=401, detail='unauthorized')
-    role = user.get('role')
-    # Accept boolean-ish admin flag in profile too
-    if role in ('admin', 'superadmin'):
-        return user
-    # fallback: profile may include is_admin boolean
-    prof = user.get('profile') or {}
-    if prof.get('is_admin') or prof.get('is_superadmin'):
-        return user
-    raise HTTPException(status_code=403, detail='forbidden')
 
 
 def require_auth(user = Depends(get_current_user)):
@@ -246,6 +274,83 @@ async def list_subadmins(user = Depends(require_admin)):
         return JSONResponse({'status': 'ok', 'subadmins': []})
 
 
+@app.get('/admin/subadmins')
+async def list_subadmins_new(user = Depends(require_admin)):
+    """Admin: list subadmins (new endpoint)."""
+    try:
+        from .supabase_client import admin_list_subadmins
+        subs = admin_list_subadmins(limit=200) or []
+        return JSONResponse({'status': 'ok', 'subadmins': subs})
+    except Exception:
+        logger.exception('list_subadmins failed')
+        return JSONResponse({'status': 'ok', 'subadmins': []})
+
+
+@app.post('/admin/subadmins')
+async def create_subadmin_with_permissions(payload: Dict[str, Any] = Body(...), user = Depends(require_admin)):
+    """Admin: create a subadmin account with permissions. 
+    Expects {email, name, phone, password?, admin_permissions?}.
+    admin_permissions is a dict with boolean permission flags:
+    {
+        "view_cases": true,
+        "edit_cases": false,
+        "delete_cases": false,
+        "view_documents": true,
+        ...
+    }
+    """
+    email = payload.get('email')
+    if not email:
+        raise HTTPException(status_code=400, detail='missing_email')
+    
+    # Validate email format
+    if '@' not in email or '.' not in email.split('@')[-1]:
+        raise HTTPException(status_code=400, detail='invalid_email_format')
+    
+    name = payload.get('name')
+    phone = payload.get('phone', '').strip() if payload.get('phone') else None
+    password = payload.get('password')
+    permissions = payload.get('admin_permissions', {})
+    
+    # Validate password if provided
+    if password and len(password) < 6:
+        raise HTTPException(status_code=400, detail='password_too_short_min_6_chars')
+    
+    try:
+        from .supabase_client import admin_create_subadmin
+        res = admin_create_subadmin(email=email, name=name, phone=phone, password=password, permissions=permissions)
+        return JSONResponse({'status': 'ok', 'subadmin': res})
+    except ValueError as e:
+        # Handle validation errors from backend (email exists, etc)
+        error_msg = str(e)
+        logger.warning(f'Validation error creating subadmin: {error_msg}')
+        
+        # Return user-friendly error message
+        if 'email_exists' in error_msg:
+            raise HTTPException(status_code=400, detail='email_already_exists')
+        elif 'already registered' in error_msg.lower():
+            raise HTTPException(status_code=400, detail='email_already_registered')
+        else:
+            raise HTTPException(status_code=400, detail=error_msg)
+    except requests.exceptions.HTTPError as e:
+        logger.exception(f'Supabase auth error: {e.response.status_code}')
+        error_msg = f'Failed to create user: {e.response.status_code}'
+        try:
+            error_detail = e.response.json()
+            if 'message' in error_detail:
+                error_msg = error_detail['message']
+            elif 'msg' in error_detail:
+                error_msg = error_detail['msg']
+        except:
+            pass
+        raise HTTPException(status_code=400, detail=error_msg)
+    except Exception as e:
+        logger.exception('create_subadmin_with_permissions failed')
+        error_detail = str(e).split('\n')[0][:100]  # Get first line of error, max 100 chars
+        raise HTTPException(status_code=500, detail=f'create_subadmin_failed: {error_detail}')
+
+
+
 @app.post('/admin/manage-subadmins')
 async def create_subadmin(payload: Dict[str, Any] = Body(...), user = Depends(require_admin)):
     """Admin: create a subadmin account. Expects {email, name, phone, password?}."""
@@ -288,6 +393,266 @@ async def delete_subadmin(user_id: str, user = Depends(require_admin)):
         raise HTTPException(status_code=500, detail='delete_subadmin_failed')
 
 
+@app.get('/admin/subadmins/{user_id}/permissions')
+async def get_subadmin_permissions_endpoint(user_id: str, user = Depends(require_admin)):
+    """Admin: get permissions for a subadmin."""
+    try:
+        from .supabase_client import _postgrest_headers
+        url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?user_id=eq.{user_id}&select=admin_permissions"
+        resp = requests.get(url, headers=_postgrest_headers(), timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        permissions = data[0].get('admin_permissions', {}) if data else {}
+        return JSONResponse({'status': 'ok', 'permissions': permissions})
+    except Exception:
+        logger.exception('get_subadmin_permissions failed')
+        raise HTTPException(status_code=500, detail='get_permissions_failed')
+
+
+@app.patch('/admin/subadmins/{user_id}/permissions')
+async def update_subadmin_permissions_endpoint(user_id: str, payload: Dict[str, Any] = Body(...), user = Depends(require_admin)):
+    """Admin: update permissions for a subadmin. Expects {admin_permissions: {...}}."""
+    permissions = payload.get('admin_permissions', {})
+    try:
+        from .supabase_client import update_subadmin_permissions
+        res = update_subadmin_permissions(user_id, permissions)
+        return JSONResponse({'status': 'ok', 'result': res})
+    except Exception:
+        logger.exception('update_subadmin_permissions failed')
+        raise HTTPException(status_code=500, detail='update_permissions_failed')
+
+
+@app.delete('/admin/subadmins/{id}')
+async def delete_subadmin_endpoint(id: str, user = Depends(require_admin)):
+    """Admin: delete a subadmin (both auth user and profile)."""
+    try:
+        from .supabase_client import admin_delete_auth_user, delete_user_profile
+        # Delete the profile first
+        try:
+            delete_user_profile(id)
+            logger.info(f'Deleted profile for user {id}')
+        except Exception as e:
+            logger.error(f'Error deleting profile: {e}')
+        
+        # Then delete the auth user - this is critical
+        result = admin_delete_auth_user(id)
+        logger.info(f'Deleted auth user {id}: {result}')
+        
+        return JSONResponse({'status': 'ok', 'detail': 'subadmin_deleted'})
+    except Exception as e:
+        logger.exception(f'delete_subadmin_endpoint failed: {e}')
+        raise HTTPException(status_code=500, detail=f'delete_subadmin_failed: {str(e)}')
+
+
+@app.get('/admin/users/list')
+async def admin_list_users(
+    limit: int = 200,
+    offset: int = 0,
+    user = Depends(require_admin)
+):
+    """Admin: list all non-admin/non-subadmin users (no cases, just users)."""
+    try:
+        import requests
+        from .supabase_client import _postgrest_headers
+        
+        # Fetch ALL non-admin/non-subadmin users from user_profile
+        url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile"
+        params = {
+            'select': 'user_id,email,full_name,phone,identity_code,contact_details,payments',
+            'limit': str(limit),
+            'offset': str(offset),
+            'order': 'created_at.desc'
+        }
+        
+        # Filter out admins and sub-admins
+        params['or'] = '(and(role.is.null), and(is_subadmin.is.false)))'
+        
+        resp = requests.get(url, headers=_postgrest_headers(), params=params, timeout=10)
+        resp.raise_for_status()
+        
+        users = resp.json()
+        
+        return JSONResponse({
+            'status': 'ok',
+            'users': users
+        })
+    except Exception:
+        logger.exception('admin_list_users failed')
+        raise HTTPException(status_code=500, detail='admin_list_users_failed')
+
+
+@app.get('/admin/users/cases')
+async def admin_list_all_users_cases(
+    limit: int = 200,
+    offset: int = 0,
+    user = Depends(require_admin)
+):
+    """
+    Admin: list all non-admin/non-subadmin users with their first case and enriched data.
+    Fetches all user profiles (excluding admins and sub-admins) and their cases, then enriches with:
+    - ai_score from user_profile.eligibility_raw.eligibility_score
+    - estimated_claim_amount from cases.call_summary.estimated_claim_amount
+    - products from cases.call_summary.products
+    - recent_activity = "not available"
+    """
+    try:
+        import requests
+        from .supabase_client import _postgrest_headers
+        
+        logger.info(f'admin_list_all_users_cases called by user: {user.get("id")}')
+        
+        # Fetch ALL non-admin/non-subadmin users from user_profile
+        url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile"
+        params = {
+            'limit': str(limit),
+            'offset': str(offset),
+            'order': 'created_at.desc'
+        }
+        
+        # Filter out admins and sub-admins
+        # Include only users where: (role is NULL OR role NOT IN admin/subadmin) AND (is_admin != true) AND (is_subadmin != true)
+        params['or'] = '(and(role.is.null), and(is_subadmin.is.false)))'
+        
+        headers = _postgrest_headers()
+        headers['Prefer'] = 'count=exact'
+        
+        logger.info(f'Fetching users from user_profile with limit={limit}, offset={offset}')
+        
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        
+        # Get total count from Content-Range header
+        total = 0
+        content_range = resp.headers.get('Content-Range')
+        if content_range:
+            parts = content_range.split('/')
+            if len(parts) > 1:
+                try:
+                    total = int(parts[1])
+                except (ValueError, IndexError):
+                    pass
+        
+        users = resp.json()
+        logger.info(f'Fetched {len(users)} users from user_profile (total: {total})')
+        
+        # For each user, fetch their associated cases
+        cases = []
+        for profile in users:
+            user_id = profile.get('user_id')
+            if not user_id:
+                logger.warning(f'User profile {profile.get("id")} has no user_id, skipping')
+                continue
+            
+            try:
+                # Fetch FIRST case for this user only
+                cases_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/cases"
+                cases_params = {
+                    'user_id': f'eq.{user_id}',
+                    'order': 'created_at.desc',
+                    'limit': '1'  # Only fetch the first case
+                }
+                
+                cases_resp = requests.get(cases_url, headers=_postgrest_headers(), params=cases_params, timeout=10)
+                cases_resp.raise_for_status()
+                user_cases = cases_resp.json()
+                
+                logger.debug(f'User {user_id} has {len(user_cases)} case(s)')
+                
+                # Skip users with no cases
+                if not user_cases or len(user_cases) == 0:
+                    logger.debug(f'User {user_id} has no cases, skipping')
+                    continue
+                
+                # Process only the first case
+                case = user_cases[0]
+                
+                # Skip if case is None
+                if not case:
+                    logger.warning(f'Case data is None for user_id={user_id}, skipping')
+                    continue
+                
+                logger.debug(f'Case data for user {user_id}: status={case.get("status")}, id={case.get("id")}')
+                
+                # Enrich case with user and eligibility data
+                try:
+                    case['user_name'] = profile.get('full_name') if profile else None
+                    case['user_email'] = profile.get('email') if profile else None
+                    case['user_phone'] = profile.get('phone') if profile else None
+                    case['user_photo_url'] = profile.get('photo_url') if profile else None
+                    case['user_id'] = user_id
+                    
+                    # Fetch FIRST eligibility record for this user from user_eligibility table
+                    eligibility_raw = {}
+                    try:
+                        eligibility_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_eligibility"
+                        eligibility_params = {
+                            'user_id': f'eq.{user_id}',
+                            'order': 'processed_at.desc',
+                            'limit': '1'  # Only fetch the first (most recent) eligibility record
+                        }
+                        
+                        eligibility_resp = requests.get(eligibility_url, headers=_postgrest_headers(), params=eligibility_params, timeout=10)
+                        eligibility_resp.raise_for_status()
+                        eligibility_records = eligibility_resp.json()
+                        
+                        if eligibility_records and len(eligibility_records) > 0:
+                            eligibility_record = eligibility_records[0]
+                            eligibility_raw = eligibility_record.get('eligibility_raw', {})
+                            
+                            # Parse eligibility_raw if it's a string
+                            if isinstance(eligibility_raw, str):
+                                try:
+                                    import json
+                                    eligibility_raw = json.loads(eligibility_raw)
+                                except:
+                                    eligibility_raw = {}
+                        
+                        logger.debug(f'Fetched eligibility for user {user_id}: score={eligibility_raw.get("eligibility_score", 0)}')
+                    except Exception as e:
+                        logger.warning(f'Failed to fetch eligibility for user_id={user_id}: {e}')
+                        eligibility_raw = {}
+                    
+                    case['ai_score'] = eligibility_raw.get('eligibility_score', 0) if eligibility_raw else 0
+                    case['eligibility_status'] = eligibility_raw.get('eligibility_status', 'not_rated') if eligibility_raw else 'not_rated'
+                    
+                    # Extract estimated_claim_amount and products from call_summary
+                    call_summary = {}
+                    if case:
+                        call_summary = case.get('call_summary', {})
+                        if isinstance(call_summary, str):
+                            try:
+                                import json
+                                call_summary = json.loads(call_summary)
+                            except:
+                                call_summary = {}
+                    
+                    case['estimated_claim_amount'] = call_summary.get('estimated_claim_amount', 0) if call_summary else 0
+                    case['products'] = call_summary.get('products', []) if call_summary else []
+                    
+                    # Add recent activity
+                    case['recent_activity'] = 'not available'
+                    
+                    cases.append(case)
+                except Exception as e:
+                    logger.warning(f'Failed to enrich case for user_id={user_id}: {e}')
+                    
+            except Exception as e:
+                logger.warning(f'Failed to fetch cases for user_id={user_id}: {e}')
+        
+        logger.info(f'Total cases fetched for all users: {len(cases)}')
+        
+        return JSONResponse({
+            'status': 'ok', 
+            'cases': cases, 
+            'total': len(cases)
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'admin_list_all_users_cases failed: {e}')
+        return JSONResponse({'status': 'error', 'message': str(e), 'cases': [], 'total': 0}, status_code=500)
+
+
 @app.get('/admin/users/{user_id}')
 async def admin_get_user(user_id: str, user = Depends(require_admin)):
     """Admin: get user profile details."""
@@ -311,6 +676,9 @@ async def admin_get_user(user_id: str, user = Depends(require_admin)):
                 'email': profile.get('email'),
                 'full_name': profile.get('full_name'),
                 'phone': profile.get('phone'),
+                'identity_code': profile.get('identity_code'),
+                'contact_details': profile.get('contact_details'),
+                'payments': profile.get('payments'),
                 'role': profile.get('role') or profile.get('roles'),
                 'verified': profile.get('verified'),
                 'onboarding_state': onboarding_state,
@@ -323,10 +691,7 @@ async def admin_get_user(user_id: str, user = Depends(require_admin)):
         raise
     except Exception:
         logger.exception('admin_get_user failed')
-        raise HTTPException(status_code=500, detail='admin_get_user_failed')
-
-
-@app.patch('/admin/users/{user_id}')
+        raise HTTPException(status_code=500, detail='admin_get_user_failed')@app.patch('/admin/users/{user_id}')
 async def patch_admin_user(user_id: str, payload: Dict[str, Any] = Body(...), user = Depends(require_admin)):
     """Admin: patch a user's profile fields (role, email, full_name, etc)."""
     try:
@@ -350,66 +715,580 @@ async def delete_admin_user(user_id: str, user = Depends(require_superadmin)):
         raise HTTPException(status_code=500, detail='delete_admin_user_failed')
 
 
-@app.get('/admin/users/{user_id}/cases')
-async def admin_list_user_cases(user_id: str, user = Depends(require_admin)):
-    """Admin: list all cases for a given user_id."""
-    try:
-        # Use helper to list cases for user
-        from .supabase_client import list_cases_for_user
-        rows = list_cases_for_user(user_id)
-        # Normalize shape
-        cases = rows or []
-        return JSONResponse({'status': 'ok', 'cases': cases})
-    except Exception:
-        logger.exception('admin_list_user_cases failed')
-        return JSONResponse({'status': 'ok', 'cases': []})
-
-
 @app.get('/admin/cases')
 async def admin_list_all_cases(
-    limit: int = 10,
+    limit: int = 200,
     offset: int = 0,
     status: Optional[str] = None,
     eligibility: Optional[str] = None,
     search: Optional[str] = None,
-    user = Depends(require_admin)
+    user = Depends(get_current_user)
 ):
-    """Admin: list all cases with pagination and filters."""
+    """Admin: list all users (except admins/sub-admins) with their cases and eligibility data."""
     try:
-        from .supabase_client import list_all_cases_paginated, get_profile_by_user_id
+        from .supabase_client import _postgrest_headers, _supabase_admin
+        import requests
         
-        # Build filters
-        filters = {}
-        if status:
-            filters['status'] = status
-        if eligibility:
-            if eligibility == 'eligible':
-                filters['eligibility_rating'] = 'gte.1'
-            elif eligibility == 'not_eligible':
-                filters['eligibility_rating'] = 'lt.1'
+        # Fetch ALL users from user_profile (excluding admin/subadmin)
+        url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile"
+        params = {
+            'limit': str(limit),
+            'offset': str(offset),
+            'order': 'created_at.desc'
+        }
         
-        # Fetch cases with pagination
-        result = list_all_cases_paginated(limit=limit, offset=offset, filters=filters, search=search)
-        cases = result.get('cases', [])
-        total = result.get('total', 0)
+        # Filter out admins and sub-admins
+        # Include only users where role is NULL or role is NOT 'admin' or 'subadmin'
+        # Using 'or' to handle both null and non-admin/non-subadmin cases
+        params['or'] = '(role.is.null,and(role.neq.admin,role.neq.subadmin))'
         
-        # Enrich cases with user info
-        for case in cases:
-            user_id = case.get('user_id')
-            if user_id:
+        headers = _postgrest_headers()
+        headers['Prefer'] = 'count=exact'
+        
+        logger.info(f'Fetching users from user_profile with limit={limit}, offset={offset}')
+        
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        
+        # Get total count from Content-Range header
+        total = 0
+        content_range = resp.headers.get('Content-Range')
+        if content_range:
+            parts = content_range.split('/')
+            if len(parts) > 1:
                 try:
-                    profiles = get_profile_by_user_id(user_id)
-                    if profiles:
-                        profile = profiles[0]
-                        case['user_name'] = profile.get('full_name')
-                        case['user_email'] = profile.get('email')
-                except Exception:
-                    logger.exception(f'Failed to fetch user profile for {user_id}')
+                    total = int(parts[1])
+                except (ValueError, IndexError):
+                    pass
         
-        return JSONResponse({'status': 'ok', 'cases': cases, 'total': total})
-    except Exception:
-        logger.exception('admin_list_all_cases failed')
+        users = resp.json()
+        logger.info(f'Fetched {len(users)} users from user_profile (total: {total})')
+        
+        # For each user, fetch their associated cases
+        cases = []
+        for profile in users:
+            user_id = profile.get('user_id')
+            if not user_id:
+                logger.warning(f'User profile {profile.get("id")} has no user_id, skipping')
+                continue
+            
+            try:
+                # Fetch cases for this user
+                cases_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/cases"
+                cases_params = {
+                    'user_id': f'eq.{user_id}',
+                    'order': 'created_at.desc',
+                    'limit': '1000'
+                }
+                
+                cases_resp = requests.get(cases_url, headers=_postgrest_headers(), params=cases_params, timeout=10)
+                cases_resp.raise_for_status()
+                user_cases = cases_resp.json()
+                
+                logger.debug(f'User {user_id} has {len(user_cases)} case(s)')
+                
+                # Enrich each case with user and eligibility data
+                for case in user_cases:
+                    case['user_name'] = profile.get('full_name')
+                    case['user_email'] = profile.get('email')
+                    case['user_phone'] = profile.get('phone')
+                    case['user_photo_url'] = profile.get('photo_url')
+                    case['user_id'] = user_id
+                    
+                    # Get eligibility score from user_profile.eligibility_raw
+                    eligibility_raw = profile.get('eligibility_raw', {})
+                    if isinstance(eligibility_raw, str):
+                        try:
+                            import json
+                            eligibility_raw = json.loads(eligibility_raw)
+                        except:
+                            eligibility_raw = {}
+                    
+                    case['ai_score'] = eligibility_raw.get('eligibility_score', 0)
+                    case['eligibility_status'] = eligibility_raw.get('eligibility_status', 'not_rated')
+                    
+                    # Extract estimated_claim_amount from call_summary
+                    call_summary = case.get('call_summary', {})
+                    if isinstance(call_summary, str):
+                        try:
+                            import json
+                            call_summary = json.loads(call_summary)
+                        except:
+                            call_summary = {}
+                    case['estimated_claim_amount'] = call_summary.get('estimated_claim_amount', 0)
+                    
+                    # Add recent activity
+                    case['recent_activity'] = 'not available'
+                    
+                    cases.append(case)
+                    
+            except Exception as e:
+                logger.warning(f'Failed to fetch cases for user_id={user_id}: {e}')
+        
+        logger.info(f'Total cases fetched for all users: {len(cases)}')
+        
+        return JSONResponse({
+            'status': 'ok', 
+            'cases': cases, 
+            'total': len(cases)
+        })
+    except Exception as e:
+        logger.exception(f'admin_list_all_cases failed: {e}')
         return JSONResponse({'status': 'ok', 'cases': [], 'total': 0})
+
+
+@app.get('/admin/claims-table')
+async def admin_claims_table(
+    limit: int = 200,
+    offset: int = 0,
+    user = Depends(get_current_user)
+):
+    """
+    Admin panel endpoint: Fetch all claims/cases data for the table view.
+    Returns data with:
+    - לקוח (Client): from user_profile (full_name, email, phone)
+    - מוצרים בתיק (Products): from cases.call_summary.products
+    - סטטוס (Status): from cases.status
+    - AI Score (ציון AI): from user_profile.eligibility_raw.eligibility_score
+    - Estimated claim amount (סכום עתודה משוער): from cases.call_summary.estimated_claim_amount
+    - Recent activity (פעילות אחרונה): hardcoded as "not available"
+    
+    Filters: Only non-admin and non-sub-admin users
+    """
+    try:
+        import requests
+        from .supabase_client import _postgrest_headers
+        
+        # Fetch ALL non-admin/non-subadmin users from user_profile
+        url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile"
+        params = {
+            'limit': str(limit),
+            'offset': str(offset),
+            'order': 'created_at.desc'
+        }
+        
+        # Filter: exclude admins and sub-admins
+        params['or'] = '(and(role.is.null,is_admin.is.false,is_subadmin.is.false),and(role.not.in.(admin,subadmin),is_admin.is.false,is_subadmin.is.false))'
+        
+        headers = _postgrest_headers()
+        headers['Prefer'] = 'count=exact'
+        
+        logger.info(f'Admin claims table: Fetching users with limit={limit}, offset={offset}')
+        
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        
+        total = 0
+        content_range = resp.headers.get('Content-Range')
+        if content_range:
+            parts = content_range.split('/')
+            if len(parts) > 1:
+                try:
+                    total = int(parts[1])
+                except (ValueError, IndexError):
+                    pass
+        
+        users = resp.json()
+        logger.info(f'Fetched {len(users)} users (total: {total})')
+        
+        # Build claims table data
+        claims_data = []
+        
+        for profile in users:
+            user_id = profile.get('user_id')
+            if not user_id:
+                continue
+            
+            try:
+                # Fetch cases for this user
+                cases_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/cases"
+                cases_params = {
+                    'user_id': f'eq.{user_id}',
+                    'order': 'created_at.desc',
+                    'limit': '1000'
+                }
+                
+                cases_resp = requests.get(cases_url, headers=_postgrest_headers(), params=cases_params, timeout=10)
+                cases_resp.raise_for_status()
+                user_cases = cases_resp.json()
+                
+                # For each case, build the claims table row
+                for case in user_cases:
+                    # Parse call_summary if it's a string
+                    call_summary = case.get('call_summary', {})
+                    if isinstance(call_summary, str):
+                        try:
+                            import json
+                            call_summary = json.loads(call_summary)
+                        except:
+                            call_summary = {}
+                    
+                    # Parse eligibility_raw if it's a string
+                    eligibility_raw = profile.get('eligibility_raw', {})
+                    if isinstance(eligibility_raw, str):
+                        try:
+                            import json
+                            eligibility_raw = json.loads(eligibility_raw)
+                        except:
+                            eligibility_raw = {}
+                    
+                    # Build row for claims table
+                    row = {
+                        'id': case.get('id'),
+                        'case_id': case.get('id'),
+                        'user_id': user_id,
+                        # לקוח (Client) - from user_profile
+                        'client_name': profile.get('full_name'),
+                        'client_email': profile.get('email'),
+                        'client_phone': profile.get('phone'),
+                        'client_photo': profile.get('photo_url'),
+                        # מוצרים בתיק (Products) - from call_summary.products
+                        'products': call_summary.get('products', []),
+                        # סטטוס (Status) - from cases.status
+                        'status': case.get('status'),
+                        # ציון AI (AI Score) - from eligibility_raw.eligibility_score
+                        'ai_score': eligibility_raw.get('eligibility_score', 0),
+                        'eligibility_status': eligibility_raw.get('eligibility_status', 'not_rated'),
+                        # סכום עתודה משוער (Estimated claim amount) - from call_summary.estimated_claim_amount
+                        'estimated_claim_amount': call_summary.get('estimated_claim_amount', 0),
+                        # פעילות אחרונה (Recent activity) - hardcoded
+                        'recent_activity': 'not available',
+                        # Additional metadata
+                        'created_at': case.get('created_at'),
+                        'updated_at': case.get('updated_at'),
+                    }
+                    
+                    claims_data.append(row)
+                    
+            except Exception as e:
+                logger.warning(f'Failed to fetch cases for user_id={user_id}: {e}')
+        
+        logger.info(f'Built claims table with {len(claims_data)} rows')
+        
+        return JSONResponse({
+            'status': 'ok',
+            'data': claims_data,
+            'total': len(claims_data)
+        })
+        
+    except Exception as e:
+        logger.exception(f'admin_claims_table failed: {e}')
+        return JSONResponse({'status': 'ok', 'data': [], 'total': 0})
+
+
+@app.post('/admin/cases/filter')
+async def filter_cases_advanced(
+    filter_params: CaseFilterRequest,
+    user = Depends(get_current_user)
+):
+    """
+    Advanced filtering endpoint for admin cases.
+    Filters by:
+    - Status (list)
+    - Minimum/Maximum AI score
+    - Minimum/Maximum income potential (estimated_claim_amount)
+    - Start date (created_at)
+    - End date (updated_at)
+    - Search query (client name, email, case ID)
+    """
+    try:
+        import requests
+        from .supabase_client import _postgrest_headers
+        
+        # Build filter params for PostgREST query
+        filters = []
+        params = {}
+        
+        # Status filter
+        if filter_params.status and len(filter_params.status) > 0:
+            status_list = ','.join([f'"{s}"' for s in filter_params.status])
+            filters.append(f'status.in.({status_list})')
+        
+        # Date filters
+        if filter_params.start_date:
+            filters.append(f"created_at.gte.{filter_params.start_date.isoformat()}")
+        if filter_params.end_date:
+            filters.append(f"updated_at.lte.{filter_params.end_date.isoformat()}")
+        
+        # Build the initial cases query
+        url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/cases"
+        query_params = {
+            'limit': str(filter_params.limit),
+            'offset': str(filter_params.offset),
+            'order': 'created_at.desc'
+        }
+        
+        # Add filters
+        for f in filters:
+            query_params['or'] = query_params.get('or', '') + (',' if query_params.get('or') else '') + f
+        
+        headers = _postgrest_headers()
+        headers['Prefer'] = 'count=exact'
+        
+        resp = requests.get(url, headers=headers, params=query_params, timeout=15)
+        resp.raise_for_status()
+        
+        cases = resp.json()
+        
+        # Now process cases and apply additional filters
+        filtered_data = []
+        
+        for case in cases:
+            # Skip if case is None or not a dict
+            if not case or not isinstance(case, dict):
+                logger.warning(f'Skipping invalid case object: {case}')
+                continue
+            
+            user_id = case.get('user_id')
+            if not user_id:
+                continue
+            
+            try:
+                # Fetch user profile for eligibility score
+                profile_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?user_id=eq.{user_id}"
+                logger.info(f'Fetching profile for case {case.get("id")}, user_id: {user_id}')
+                profile_resp = requests.get(profile_url, headers=_postgrest_headers(), timeout=10)
+                profile_resp.raise_for_status()
+                
+                profiles = profile_resp.json()
+                if not profiles:
+                    logger.warning(f'No profiles found for user_id: {user_id}, case: {case.get("id")}')
+                    continue
+                
+                profile = profiles[0]
+                if not profile:
+                    logger.warning(f'Profile is None for user_id: {user_id}, case: {case.get("id")}')
+                    continue
+                
+                logger.debug(f'Profile loaded: {profile.get("user_id")} for case {case.get("id")}')
+                
+                # Parse eligibility_raw
+                eligibility_raw = profile.get('eligibility_raw', {})
+                logger.debug(f'eligibility_raw type: {type(eligibility_raw)}, value: {eligibility_raw}')
+                if isinstance(eligibility_raw, str):
+                    try:
+                        eligibility_raw = json.loads(eligibility_raw)
+                    except Exception as parse_err:
+                        logger.warning(f'Failed to parse eligibility_raw for case {case.get("id")}: {parse_err}')
+                        eligibility_raw = {}
+                
+                ai_score = eligibility_raw.get('eligibility_score', 0) if eligibility_raw else 0
+                logger.debug(f'AI score for case {case.get("id")}: {ai_score}')
+                
+                # Apply AI score filters
+                if filter_params.min_ai_score is not None and ai_score < filter_params.min_ai_score:
+                    logger.debug(f'Case {case.get("id")} filtered out: AI score {ai_score} < {filter_params.min_ai_score}')
+                    continue
+                if filter_params.max_ai_score is not None and ai_score > filter_params.max_ai_score:
+                    logger.debug(f'Case {case.get("id")} filtered out: AI score {ai_score} > {filter_params.max_ai_score}')
+                    continue
+                
+                # Parse call_summary
+                call_summary = case.get('call_summary', {})
+                logger.debug(f'call_summary type: {type(call_summary)}, value: {call_summary}')
+                if isinstance(call_summary, str):
+                    try:
+                        call_summary = json.loads(call_summary)
+                    except Exception as parse_err:
+                        logger.warning(f'Failed to parse call_summary for case {case.get("id")}: {parse_err}')
+                        call_summary = {}
+                
+                estimated_claim = call_summary.get('estimated_claim_amount', 0) if call_summary else 0
+                logger.debug(f'Estimated claim for case {case.get("id")}: {estimated_claim}')
+                
+                # Apply income potential filters
+                if filter_params.min_income_potential is not None and estimated_claim < filter_params.min_income_potential:
+                    logger.debug(f'Case {case.get("id")} filtered out: claim {estimated_claim} < {filter_params.min_income_potential}')
+                    continue
+                if filter_params.max_income_potential is not None and estimated_claim > filter_params.max_income_potential:
+                    logger.debug(f'Case {case.get("id")} filtered out: claim {estimated_claim} > {filter_params.max_income_potential}')
+                    continue
+                
+                # Apply search query filter
+                if filter_params.search_query:
+                    query_lower = filter_params.search_query.lower()
+                    client_name = profile.get('full_name') or ''
+                    client_email = profile.get('email') or ''
+                    case_id = case.get('id', '')
+                    logger.debug(f'Searching in: name={client_name}, email={client_email}, case_id={case_id}')
+                    match = (
+                        query_lower in client_name.lower() or
+                        query_lower in client_email.lower() or
+                        query_lower in case_id.lower()
+                    )
+                    if not match:
+                        logger.debug(f'Case {case.get("id")} filtered out: search query "{filter_params.search_query}" not found')
+                        continue
+                
+                # Build response row
+                row = {
+                    'case_id': case.get('id'),
+                    'user_id': user_id,
+                    'client_name': profile.get('full_name'),
+                    'client_email': profile.get('email'),
+                    'client_phone': profile.get('phone'),
+                    'status': case.get('status'),
+                    'ai_score': ai_score,
+                    'eligibility_status': eligibility_raw.get('eligibility_status', 'not_rated') if eligibility_raw else 'not_rated',
+                    'estimated_claim_amount': estimated_claim,
+                    'created_at': case.get('created_at'),
+                    'updated_at': case.get('updated_at'),
+                    'products': call_summary.get('products', []) if call_summary else [],
+                    'risk_assessment': call_summary.get('risk_assessment') if call_summary else None,
+                }
+                logger.info(f'Case {case.get("id")} passed all filters and added to results')
+                
+                filtered_data.append(row)
+                
+            except Exception as e:
+                case_id = case.get("id") if isinstance(case, dict) else "unknown"
+                import traceback
+                error_traceback = traceback.format_exc()
+                logger.error(f'Failed to process case {case_id}: {type(e).__name__}: {e}')
+                logger.error(f'Traceback: {error_traceback}')
+                continue
+        
+        return JSONResponse({
+            'status': 'ok',
+            'data': filtered_data,
+            'total': len(filtered_data),
+            'limit': filter_params.limit,
+            'offset': filter_params.offset
+        })
+        
+    except Exception as e:
+        logger.exception(f'filter_cases_advanced failed: {e}')
+        return JSONResponse({'status': 'error', 'message': str(e), 'data': [], 'total': 0})
+
+
+@app.post('/admin/filters')
+async def save_admin_filter(
+    filter_name: str = Form(...),
+    filter_data: str = Form(...),
+    user = Depends(get_current_user)
+):
+    """Save a filter in user_profile.admin_filters JSONB column."""
+    try:
+        if user.get('role') != 'admin':
+            raise HTTPException(status_code=403, detail='admin_required')
+        
+        from .supabase_client import _postgrest_headers
+        
+        # Get current filters
+        profile_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?id=eq.{user['id']}"
+        profile_resp = requests.get(profile_url, headers=_postgrest_headers(), timeout=10)
+        profile_resp.raise_for_status()
+        
+        profiles = profile_resp.json()
+        if not profiles:
+            raise HTTPException(status_code=404, detail='profile_not_found')
+        
+        profile = profiles[0]
+        admin_filters = profile.get('admin_filters', {})
+        if isinstance(admin_filters, str):
+            try:
+                admin_filters = json.loads(admin_filters)
+            except:
+                admin_filters = {}
+        
+        # Add/update filter
+        filter_json = json.loads(filter_data)
+        admin_filters[filter_name] = {
+            'criteria': filter_json,
+            'created_at': datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat()
+        }
+        
+        # Update profile
+        url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?id=eq.{user['id']}"
+        headers = _postgrest_headers().copy()
+        headers['Prefer'] = 'return=representation'
+        
+        resp = requests.patch(url, headers=headers, json={'admin_filters': admin_filters}, timeout=15)
+        resp.raise_for_status()
+        
+        return JSONResponse({'status': 'ok', 'filter_name': filter_name})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'save_admin_filter failed: {e}')
+        raise HTTPException(status_code=500, detail='save_filter_failed')
+
+
+@app.get('/admin/filters')
+async def get_admin_filters(user = Depends(get_current_user)):
+    """Get all saved filters from user_profile.admin_filters."""
+    try:
+        if user.get('role') != 'admin':
+            raise HTTPException(status_code=403, detail='admin_required')
+        
+        from .supabase_client import _postgrest_headers
+        
+        profile_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?id=eq.{user['id']}"
+        profile_resp = requests.get(profile_url, headers=_postgrest_headers(), timeout=10)
+        profile_resp.raise_for_status()
+        
+        profiles = profile_resp.json()
+        if not profiles:
+            return JSONResponse({'status': 'ok', 'data': {}})
+        
+        admin_filters = profiles[0].get('admin_filters', {})
+        if isinstance(admin_filters, str):
+            try:
+                admin_filters = json.loads(admin_filters)
+            except:
+                admin_filters = {}
+        
+        return JSONResponse({'status': 'ok', 'data': admin_filters})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'get_admin_filters failed: {e}')
+        raise HTTPException(status_code=500, detail='get_filters_failed')
+
+
+@app.delete('/admin/filters/{filter_name}')
+async def delete_admin_filter(filter_name: str, user = Depends(get_current_user)):
+    """Delete a filter from user_profile.admin_filters."""
+    try:
+        if user.get('role') != 'admin':
+            raise HTTPException(status_code=403, detail='admin_required')
+        
+        from .supabase_client import _postgrest_headers
+        
+        profile_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?id=eq.{user['id']}"
+        profile_resp = requests.get(profile_url, headers=_postgrest_headers(), timeout=10)
+        profile_resp.raise_for_status()
+        
+        profiles = profile_resp.json()
+        if not profiles:
+            raise HTTPException(status_code=404, detail='profile_not_found')
+        
+        admin_filters = profiles[0].get('admin_filters', {})
+        if isinstance(admin_filters, str):
+            try:
+                admin_filters = json.loads(admin_filters)
+            except:
+                admin_filters = {}
+        
+        if filter_name not in admin_filters:
+            raise HTTPException(status_code=404, detail='filter_not_found')
+        
+        del admin_filters[filter_name]
+        
+        url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?id=eq.{user['id']}"
+        headers = _postgrest_headers().copy()
+        headers['Prefer'] = 'return=representation'
+        
+        resp = requests.patch(url, headers=headers, json={'admin_filters': admin_filters}, timeout=15)
+        resp.raise_for_status()
+        
+        return JSONResponse({'status': 'ok', 'deleted': True})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'delete_admin_filter failed: {e}')
+        raise HTTPException(status_code=500, detail='delete_filter_failed')
 
 
 @app.get('/cases/{case_id}/documents')
@@ -438,17 +1317,101 @@ async def get_case_documents(case_id: str, user = Depends(require_auth)):
         raise HTTPException(status_code=500, detail='get_case_documents_failed')
 
 
+@app.get('/cases/{case_id}/documents/{document_id}/summary')
+async def get_document_summary(
+    case_id: str,
+    document_id: str,
+    user = Depends(require_auth)
+):
+    """Get detailed summary and metadata for a specific document."""
+    try:
+        from .supabase_client import get_case
+        import uuid
+        
+        # Verify user has access to this case
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        
+        case = case_list[0]
+        # Check if user is admin or has access to this case
+        role = user.get('role')
+        profile = user.get('profile') or {}
+        is_admin = (role and role in ['admin', 'subadmin']) or profile.get('is_admin') or profile.get('is_subadmin')
+        
+        # Admin users can access any case, non-admins can only access their own cases
+        if not is_admin:
+            if case.get('user_id') != user['id']:
+                raise HTTPException(status_code=403, detail='access_denied')
+        
+        # Fetch document from case_documents table
+        from .supabase_client import _supabase_admin
+        
+        response = _supabase_admin.table('case_documents').select(
+            'id, file_name, file_type, created_at, metadata'
+        ).eq('id', document_id).eq('case_id', case_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=404, detail='document_not_found')
+        
+        doc = response.data[0]
+        metadata = doc.get('metadata', {})
+        
+        # Extract summary information
+        return JSONResponse({
+            'status': 'ok',
+            'document': {
+                'id': doc.get('id'),
+                'file_name': doc.get('file_name'),
+                'file_type': doc.get('file_type'),
+                'created_at': doc.get('created_at'),
+                'metadata': {
+                    'document_summary': metadata.get('document_summary', ''),
+                    'key_points': metadata.get('key_points', []),
+                    'is_relevant': metadata.get('is_relevant', False),
+                    'upload_source': metadata.get('upload_source', ''),
+                    'relevance_score': metadata.get('relevance_score'),
+                    'document_type': metadata.get('document_type'),
+                    'relevance_reason': metadata.get('relevance_reason', ''),
+                    'structured_data': metadata.get('structured_data', {})
+                }
+            }
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'get_document_summary failed for document_id={document_id}')
+        raise HTTPException(status_code=500, detail='get_document_summary_failed')
+
+
 @app.post('/cases/{case_id}/documents')
 async def upload_case_document(
     case_id: str,
     file: UploadFile = File(...),
     document_type: str = Form('general'),
+    document_id: str = Form(None),
+    document_name: str = Form(None),
     user = Depends(require_auth)
 ):
-    """Upload an additional document to a case."""
+    """Upload an additional document to a case. Supports PDF and image files with OCR and summarization.
+    
+    Args:
+        document_id: Backend ID if available (from case_documents table)
+        document_name: Name of the document from documents_requested_list (REQUIRED for matching)
+    
+    The document_name is used to match and update the correct document in call_summary.documents_requested_list.
+    The local uploaded filename is irrelevant for matching - it's just stored as the file.
+    """
     try:
         from datetime import datetime
-        from .supabase_client import get_case, storage_upload_file, insert_case_document
+        from .supabase_client import (
+            get_case, 
+            storage_upload_file, 
+            insert_case_document,
+            get_profile_by_user_id,
+            update_case
+        )
+        from pathlib import Path
         
         # Verify user has access to this case
         case_list = get_case(case_id)
@@ -459,16 +1422,49 @@ async def upload_case_document(
         if user['role'] != 'admin' and case.get('user_id') != user['id']:
             raise HTTPException(status_code=403, detail='access_denied')
         
+        # Verify user_profile exists (required for FK constraint)
+        profile = get_profile_by_user_id(user['id'])
+        if not profile:
+            raise HTTPException(status_code=400, detail='user_profile_not_found')
+        
         # Read file content
         content = await file.read()
         filesize = len(content)
         file_ext = Path(file.filename).suffix or ''
         
+        # Validate file type - only PDF and image files allowed
+        from .ocr import is_pdf, is_image
+        if not (is_pdf(content, file.filename) or is_image(file.filename)):
+            raise HTTPException(status_code=400, detail='invalid_file_type_only_pdf_and_images_allowed')
+        
+        # Extract text and analyze document for summary
+        document_summary = None
+        document_key_points = []
+        is_relevant = True
+        
+        try:
+            logger.info(f"Analyzing document: {file.filename}")
+            text, extraction_success = extract_text_from_document(content, file.filename)
+            
+            if extraction_success and text:
+                from .dashboard_document_summarizer import summarize_dashboard_document
+                summary_result = summarize_dashboard_document(text, document_name=file.filename, document_type=document_type)
+                
+                document_summary = summary_result.get('document_summary', '')
+                document_key_points = summary_result.get('key_points', [])
+                is_relevant = summary_result.get('is_relevant', True)
+                
+                logger.info(f"Document analysis complete: relevant={is_relevant}, summary_length={len(document_summary) if document_summary else 0}, key_points={len(document_key_points)}")
+            else:
+                logger.warning(f"Failed to extract text from {file.filename}")
+        except Exception as e:
+            logger.warning(f"Failed to analyze document: {e}")
+        
         # Upload to Supabase Storage
         from .utils import sanitize_filename
         import uuid
         timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-        unique_id = str(uuid.uuid4())[:8]  # Short unique identifier
+        unique_id = str(uuid.uuid4())[:8]
         safe_filename = sanitize_filename(Path(file.filename).name)
         
         # If sanitization removed everything, use extension and unique ID
@@ -494,45 +1490,140 @@ async def upload_case_document(
         storage_url = upload_result.get('public_url')
         logger.info(f"Uploaded document to: {storage_url}")
         
-        # Check if document with same type already exists and update it
-        from .supabase_client import get_case_documents, update_case_document
-        existing_docs = get_case_documents(case_id)
-        existing_doc = next((d for d in existing_docs if d.get('document_type') == document_type), None)
+        # Insert document record with analysis metadata
+        doc_record = insert_case_document(
+            case_id=case_id,
+            file_path=storage_path,
+            file_name=file.filename,
+            file_type=file.content_type,
+            file_size=filesize,
+            document_type=document_type,
+            uploaded_by=user['profile']['id'],
+            metadata={
+                'upload_source': 'manual_upload',
+                'document_summary': document_summary,
+                'key_points': document_key_points,
+                'is_relevant': is_relevant
+            }
+        )
         
-        if existing_doc:
-            # Update existing document
-            doc_record = update_case_document(
-                document_id=existing_doc['id'],
-                file_path=storage_url,  # Store full URL
-                file_name=file.filename,
-                file_type=file.content_type,
-                file_size=filesize,
-                metadata={'upload_source': 'manual_upload', 'replaced_at': datetime.utcnow().isoformat()}
-            )
-            logger.info(f"Updated existing document {existing_doc['id']} for type: {document_type}")
-        else:
-            # Insert new document record
-            doc_record = insert_case_document(
-                case_id=case_id,
-                file_path=storage_url,  # Store full URL instead of storage path
-                file_name=file.filename,
-                file_type=file.content_type,
-                file_size=filesize,
-                document_type=document_type,
-                uploaded_by=user['id'],
-                metadata={'upload_source': 'manual_upload'}
-            )
+        # Update call_summary.documents_requested_list with uploaded document info
+        try:
+            call_summary = case.get('call_summary', {})
+            
+            # Parse call_summary if it's a string (JSON)
+            if isinstance(call_summary, str):
+                try:
+                    call_summary = json.loads(call_summary)
+                except json.JSONDecodeError:
+                    call_summary = {}
+            
+            # Ensure call_summary is a dict
+            if not isinstance(call_summary, dict):
+                call_summary = {}
+            
+            # Ensure documents_requested_list exists
+            if 'documents_requested_list' not in call_summary:
+                call_summary['documents_requested_list'] = []
+            
+            # Update document status - try to match by document_id or name
+            documents_list = call_summary.get('documents_requested_list', [])
+            
+            # Ensure documents_list contains dicts, not strings
+            normalized_documents_list = []
+            for item in documents_list:
+                if isinstance(item, str):
+                    try:
+                        item = json.loads(item)
+                    except (json.JSONDecodeError, ValueError):
+                        logger.warning(f"Could not parse document item as JSON: {item}")
+                        continue
+                if isinstance(item, dict):
+                    normalized_documents_list.append(item)
+            documents_list = normalized_documents_list
+            
+            # Get the document ID from the inserted record (from case_documents table)
+            doc_id = doc_record.get('id') if isinstance(doc_record, dict) else None
+            
+            logger.info(f"DEBUG upload_case_document:")
+            logger.info(f"  document_id from frontend: {document_id}")
+            logger.info(f"  document_name from frontend: {document_name}")
+            logger.info(f"  file.filename (local file, IGNORED for matching): {file.filename}")
+            logger.info(f"  doc_id from case_documents: {doc_id}")
+            logger.info(f"  documents_list count: {len(documents_list)}")
+            for idx, doc in enumerate(documents_list):
+                logger.info(f"    doc[{idx}]: id={doc.get('id')}, name={doc.get('name')}")
+            
+            # Match document by ID first, then by exact name from documents_requested_list
+            document_matched = False
+            
+            # Strategy 1: If document_id was provided, try to match by ID first
+            if document_id:
+                for idx, doc in enumerate(documents_list):
+                    if doc.get('id') == document_id:
+                        doc['uploaded'] = True
+                        doc['document_id'] = doc_id
+                        doc['file_url'] = storage_url
+                        document_matched = True
+                        logger.info(f"✓ MATCHED by ID at index {idx}: {doc.get('name')}")
+                        break
+            
+            # Strategy 2: If document_name provided from frontend, match by exact name
+            if not document_matched and document_name:
+                logger.info(f"[Strategy 2] Matching by document_name: {document_name}")
+                for idx, doc in enumerate(documents_list):
+                    if doc.get('name') == document_name:
+                        doc['uploaded'] = True
+                        doc['document_id'] = doc_id
+                        doc['file_url'] = storage_url
+                        document_matched = True
+                        logger.info(f"✓ MATCHED by name at index {idx}: {doc.get('name')}")
+                        break
+            
+            if not document_matched:
+                logger.warning(f"✗ NO MATCH FOUND")
+                if not document_name and not document_id:
+                    logger.warning(f"  ERROR: Frontend must provide document_name or document_id from documents_requested_list")
+                elif document_name:
+                    logger.warning(f"  ERROR: Could not find document with name='{document_name}'")
+                    logger.warning(f"  Available documents: {[d.get('name') for d in documents_list]}")
+            
+            call_summary['documents_requested_list'] = documents_list
+            
+            # Update case with modified call_summary - pass dict directly, Supabase client handles JSON
+            logger.info(f"DEBUG: Updating case {case_id} with {len(documents_list)} documents")
+            if document_matched:
+                logger.info(f"  ✓ Document was matched and updated")
+            logger.info(f"  call_summary dict: {call_summary}")
+            result = update_case(case_id, {'call_summary': call_summary})
+            logger.info(f"  update_case returned: {result}")
+            logger.info(f"✓ Updated call_summary for case {case_id}")
+        except Exception as e:
+            logger.exception(f"CRITICAL: Failed to update call_summary with document info: {e}")
+            raise HTTPException(status_code=500, detail=f'Failed to persist document update to database: {str(e)}')
+        
+        # Update case status based on documents uploaded
+        try:
+            updated_case = get_case(case_id)
+            if updated_case:
+                new_status = update_case_status(case_id, updated_case[0])
+                logger.info(f"Updated case status after document upload: {new_status}")
+        except Exception as e:
+            logger.warning(f"Failed to update case status after document upload: {e}")
         
         return JSONResponse({
             'status': 'ok',
             'document': doc_record,
-            'storage_url': storage_url
+            'storage_url': storage_url,
+            'summary': document_summary,
+            'key_points': document_key_points
         })
     except HTTPException:
         raise
     except Exception:
         logger.exception(f'upload_case_document failed for case_id={case_id}')
         raise HTTPException(status_code=500, detail='upload_case_document_failed')
+
 
 
 @app.get('/cases/{case_id}/recommended-documents')
@@ -649,11 +1740,21 @@ async def upload_medical_document(
     file: UploadFile = File(...),
     document_type: str = Form(...),
     case_id: str = Form(...),
+    document_id: str = Form(None),
+    document_name: str = Form(None),
     user = Depends(require_auth)
 ):
-    """Upload a medical document recommended by the AI."""
+    """Upload a medical document recommended by the AI.
+    
+    Args:
+        document_id: Backend ID if available (from case_documents table)
+        document_name: Name of the document from documents_requested_list (REQUIRED for matching)
+    
+    The document_name is used to match and update the correct document in call_summary.documents_requested_list.
+    The local uploaded filename is irrelevant for matching - it's just stored as the file.
+    """
     try:
-        from .supabase_client import get_case, storage_upload_file, insert_case_document
+        from .supabase_client import get_case, storage_upload_file, insert_case_document, update_case
         
         # Verify user has access to this case
         case_list = get_case(case_id)
@@ -677,14 +1778,14 @@ async def upload_medical_document(
             text, extraction_success = extract_text_from_document(file_content, file.filename)
             
             if extraction_success and text:
-                from .eligibility_processor import check_document_relevance
-                relevance_result = check_document_relevance(text, provider='gpt')
+                from .dashboard_document_summarizer import summarize_dashboard_document
+                summary_result = summarize_dashboard_document(text, document_name=file.filename, document_type=document_type)
                 
-                document_summary = relevance_result.get('document_summary', '')
-                document_key_points = relevance_result.get('key_points', [])
-                is_relevant = relevance_result.get('is_relevant', True)
+                document_summary = summary_result.get('document_summary', '')
+                document_key_points = summary_result.get('key_points', [])
+                is_relevant = summary_result.get('is_relevant', True)
                 
-                logger.info(f"Document analysis complete: relevant={is_relevant}, summary_length={len(document_summary) if document_summary else 0}")
+                logger.info(f"Document analysis complete: relevant={is_relevant}, summary_length={len(document_summary) if document_summary else 0}, key_points={len(document_key_points)}")
             else:
                 logger.warning(f"Failed to extract text from {file.filename}")
         except Exception as e:
@@ -692,6 +1793,7 @@ async def upload_medical_document(
         
         # Upload to Supabase Storage
         from .utils import sanitize_filename
+        from pathlib import Path
         import uuid
         bucket_name = 'case-documents'
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -721,49 +1823,113 @@ async def upload_medical_document(
         storage_url = upload_result.get('public_url')
         logger.info(f"Uploaded medical document to: {storage_url}")
         
-        # Check if document with same type already exists and update it
-        from .supabase_client import get_case_documents, update_case_document
-        existing_docs = get_case_documents(case_id)
-        existing_doc = next((d for d in existing_docs if d.get('document_type') == document_type), None)
+        # Insert document record with analysis metadata
+        doc_record = insert_case_document(
+            case_id=case_id,
+            document_type=document_type,
+            file_name=file.filename,
+            file_path=file_path,
+            file_size=len(file_content),
+            file_type=file.content_type,
+            storage_url=storage_url,
+            uploaded_by=user['profile']['id'],
+            metadata={
+                'upload_source': 'medical_documents_flow',
+                'document_category': 'medical',
+                'ai_recommended': True,
+                'document_summary': document_summary,
+                'key_points': document_key_points,
+                'is_relevant': is_relevant
+            }
+        )
         
-        if existing_doc:
-            # Update existing document
-            doc_record = update_case_document(
-                document_id=existing_doc['id'],
-                file_path=storage_url,  # Store full URL
-                file_name=file.filename,
-                file_type=file.content_type,
-                file_size=len(file_content),
-                metadata={
-                    'upload_source': 'medical_documents_flow',
-                    'document_category': 'medical',
-                    'ai_recommended': True,
-                    'document_summary': document_summary,
-                    'key_points': document_key_points,
-                    'is_relevant': is_relevant,
-                    'replaced_at': datetime.now().isoformat()
-                }
-            )
-            logger.info(f"Updated existing medical document {existing_doc['id']} for type: {document_type}")
-        else:
-            # Insert new document record with analysis metadata
-            doc_record = insert_case_document(
-                case_id=case_id,
-                document_type=document_type,
-                file_name=file.filename,
-                file_path=storage_url,  # Store full URL instead of storage path
-                file_size=len(file_content),
-                file_type=file.content_type,
-                uploaded_by=user['id'],
-                metadata={
-                    'upload_source': 'medical_documents_flow',
-                    'document_category': 'medical',
-                    'ai_recommended': True,
-                    'document_summary': document_summary,
-                    'key_points': document_key_points,
-                    'is_relevant': is_relevant
-                }
-            )
+        # Update call_summary.documents_requested_list with uploaded document info
+        try:
+            call_summary = case.get('call_summary', {})
+            
+            # Parse call_summary if it's a string (JSON)
+            if isinstance(call_summary, str):
+                try:
+                    call_summary = json.loads(call_summary)
+                except json.JSONDecodeError:
+                    call_summary = {}
+            
+            # Ensure call_summary is a dict
+            if not isinstance(call_summary, dict):
+                call_summary = {}
+            
+            # Ensure documents_requested_list exists
+            if 'documents_requested_list' not in call_summary:
+                call_summary['documents_requested_list'] = []
+            
+            # Update document status - try to match by document_id or name
+            documents_list = call_summary.get('documents_requested_list', [])
+            
+            # Get the document ID from the inserted record
+            doc_id = doc_record.get('id') if isinstance(doc_record, dict) else None
+            
+            # DEBUG logging
+            logger.info(f"DEBUG upload_medical_document:")
+            logger.info(f"  document_id from frontend: {document_id}")
+            logger.info(f"  document_name from frontend: {document_name}")
+            logger.info(f"  file.filename (local file, IGNORED for matching): {file.filename}")
+            logger.info(f"  doc_id from case_documents: {doc_id}")
+            logger.info(f"  documents_list count: {len(documents_list)}")
+            for idx, doc in enumerate(documents_list):
+                logger.info(f"    doc[{idx}]: id={doc.get('id')}, name={doc.get('name')}")
+            
+            # Match document by ID first, then by exact name from documents_requested_list
+            document_matched = False
+            matched_index = -1
+            
+            # Strategy 1: If document_id was provided from frontend, match by that
+            if document_id:
+                logger.info(f"[Strategy 1] Attempting to match by document_id: {document_id}")
+                for idx, doc in enumerate(documents_list):
+                    if doc.get('id') == document_id:
+                        doc['uploaded'] = True
+                        doc['document_id'] = doc_id
+                        doc['file_url'] = storage_url
+                        document_matched = True
+                        matched_index = idx
+                        logger.info(f"  ✓ MATCHED by ID at index {idx}: {doc.get('name')}")
+                        break
+            
+            # Strategy 2: If document_name provided from frontend, match by exact name
+            if not document_matched and document_name:
+                logger.info(f"[Strategy 2] Matching by document_name: {document_name}")
+                for idx, doc in enumerate(documents_list):
+                    if doc.get('name') == document_name:
+                        doc['uploaded'] = True
+                        doc['document_id'] = doc_id
+                        doc['file_url'] = storage_url
+                        document_matched = True
+                        matched_index = idx
+                        logger.info(f"  ✓ MATCHED by name at index {idx}: {doc.get('name')}")
+                        break
+            
+            # Log result
+            if document_matched:
+                logger.info(f"✓ Document matched and updated at index {matched_index}")
+            else:
+                logger.warning(f"✗ NO MATCH FOUND")
+                if not document_name and not document_id:
+                    logger.warning(f"  ERROR: Frontend must provide document_name or document_id from documents_requested_list")
+                elif document_name:
+                    logger.warning(f"  ERROR: Could not find document with name='{document_name}'")
+                    logger.warning(f"  Available documents: {[d.get('name') for d in documents_list]}")
+            
+            call_summary['documents_requested_list'] = documents_list
+            
+            # Update case with modified call_summary - pass dict directly, Supabase client handles JSON
+            logger.info(f"DEBUG: Updating case {case_id} with {len(documents_list)} documents")
+            logger.info(f"  call_summary dict: {call_summary}")
+            result = update_case(case_id, {'call_summary': call_summary})
+            logger.info(f"  update_case returned: {result}")
+            logger.info(f"✓ Updated call_summary for case {case_id} with document upload info")
+        except Exception as e:
+            logger.exception(f"CRITICAL: Failed to update call_summary with document info: {e}")
+            raise HTTPException(status_code=500, detail=f'Failed to persist document update to database: {str(e)}')
         
         return JSONResponse({
             'status': 'ok',
@@ -775,6 +1941,7 @@ async def upload_medical_document(
     except Exception:
         logger.exception(f'upload_medical_document failed')
         raise HTTPException(status_code=500, detail='upload_medical_document_failed')
+
 
 
 @app.delete('/cases/{case_id}/documents/{document_id}')
@@ -825,6 +1992,107 @@ async def delete_case_document_endpoint(
     except Exception:
         logger.exception(f'delete_case_document failed for document_id={document_id}')
         raise HTTPException(status_code=500, detail='delete_case_document_failed')
+
+
+@app.get('/admin/cases/work-disability')
+async def get_work_disability_cases(
+    page: int = 1,
+    limit: int = 20
+):
+    """
+    Get cases with 'Work Disability' product type for the admin dashboard.
+    Returns paginated list of work disability cases with relevant data.
+    """
+    try:
+        from .supabase_client import _postgrest_headers
+        
+        logger.info(f"Fetching work disability cases: page={page}, limit={limit}")
+        
+        # Get all cases
+        offset = (page - 1) * limit
+        cases_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/cases?order=created_at.desc&limit={limit}&offset={offset}"
+        
+        logger.info(f"Calling Supabase: {cases_url}")
+        cases_resp = requests.get(cases_url, headers=_postgrest_headers(), timeout=15)
+        logger.info(f"Supabase response status: {cases_resp.status_code}")
+        
+        if not cases_resp.ok:
+            logger.error(f"Supabase error: {cases_resp.text}")
+            cases_resp.raise_for_status()
+        
+        cases = cases_resp.json()
+        logger.info(f"Fetched {len(cases)} cases from Supabase")
+        
+        # Log sample case structure to debug field names
+        if cases:
+            logger.info(f"Sample case fields: {cases[0].keys()}")
+        
+        # Fetch all user profiles to get email data
+        profiles_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?limit=500"
+        profiles_resp = requests.get(profiles_url, headers=_postgrest_headers(), timeout=15)
+        profiles_resp.raise_for_status()
+        profiles = profiles_resp.json()
+        
+        # Create a map of user_id to profile for quick lookup
+        user_profiles = {profile.get('user_id'): profile for profile in profiles}
+        logger.info(f"Loaded {len(user_profiles)} user profiles")
+        
+        # Filter for Work Disability cases
+        work_disability_cases = []
+        for case in cases:
+            try:
+                call_summary = case.get('call_summary', {})
+                if isinstance(call_summary, str):
+                    call_summary = json.loads(call_summary)
+                
+                products = call_summary.get('products', [])
+                if isinstance(products, str):
+                    products = json.loads(products)
+                
+                # Check if Work Disability is in the products
+                if products and 'Work Disability' in products:
+                    # Extract eligibility data
+                    eligibility_raw = case.get('eligibility_raw', {})
+                    if isinstance(eligibility_raw, str):
+                        eligibility_raw = json.loads(eligibility_raw)
+                    
+                    # Get user profile to fetch email
+                    user_id = case.get('user_id')
+                    user_profile = user_profiles.get(user_id) if user_id else None
+                    client_email = user_profile.get('email') if user_profile else ''
+                    client_name = user_profile.get('full_name') or user_profile.get('name') if user_profile else case.get('client_name', 'Unknown')
+                    client_phone = user_profile.get('phone_number') if user_profile else case.get('client_phone', '')
+                    
+                    # Build case response object
+                    case_obj = {
+                        'id': case.get('id'),
+                        'client_name': client_name,
+                        'client_email': client_email,
+                        'client_phone': client_phone,
+                        'status': case.get('status', 'new'),
+                        'created_at': case.get('created_at'),
+                        'updated_at': case.get('updated_at'),
+                        'eligibility_score': eligibility_raw.get('eligibility_score', 0),
+                        'potential_fee': call_summary.get('estimated_claim_amount', 0),
+                    }
+                    work_disability_cases.append(case_obj)
+            except Exception as parse_err:
+                logger.warning(f'Failed to parse case {case.get("id")}: {parse_err}')
+                continue
+        
+        logger.info(f"Found {len(work_disability_cases)} work disability cases")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'cases': work_disability_cases,
+            'count': len(work_disability_cases),
+            'page': page,
+            'limit': limit
+        })
+        
+    except Exception as e:
+        logger.error(f'Failed to get work disability cases: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get('/admin/cases/{case_id}')
@@ -1046,7 +2314,7 @@ async def eligibility_check(answers: str = Form(...), file: UploadFile = File(..
         model_res = analyze_questionnaire_with_guidelines(
             answers=answers_obj,
             guidelines_text=guidelines_text,
-            provider='gemini',
+            provider='gpt',
             document_summary=document_context_for_analysis
         )
         logger.info(f"Questionnaire analysis: status={model_res.get('eligibility_status')}, score={model_res.get('eligibility_score')}")
@@ -1504,7 +2772,20 @@ async def get_vapi_call_details(call_id: str, current_user: dict = Depends(get_c
         
         if transcript:
             try:
-                analysis_result = await analyze_call_conversation_openai(transcript, messages)
+                # Fetch user_eligibility data to include in analysis
+                from .supabase_client import get_user_eligibility
+                user_id = current_user.get('id')
+                
+                # Try to get eligibility data for this user
+                eligibility_records = []
+                try:
+                    eligibility_records = get_user_eligibility(user_id=user_id)
+                    logger.info(f"[VAPI] Found {len(eligibility_records) if eligibility_records else 0} eligibility records for user")
+                except Exception as e:
+                    logger.warning(f"[VAPI] Could not fetch eligibility records: {e}")
+                
+                # Pass transcript, messages, AND eligibility data to analyzer
+                analysis_result = await analyze_call_conversation_openai(transcript, messages, eligibility_records)
                 logger.info(f"[VAPI] Successfully analyzed conversation. Summary length: {len(analysis_result.get('call_summary', ''))} chars")
             except Exception as e:
                 logger.exception(f"[VAPI] Failed to analyze conversation: {e}")
@@ -1543,12 +2824,14 @@ async def get_vapi_call_details(call_id: str, current_user: dict = Depends(get_c
                 # Build the update payload (store full analysis as JSON in call_summary)
                 update_payload = {
                     'call_details': call_dict,
-                    'call_summary': json.dumps(analysis_result, ensure_ascii=False)
+                    'call_summary': json.dumps(analysis_result, ensure_ascii=False),
+                    'status': CaseStatusConstants.INITIAL_QUESTIONNAIRE  # Set status to "Initial questionnaire"
                 }
                 
                 # Update case with call details and our OpenAI analysis
                 update_case(case_id, update_payload)
                 logger.info(f"[VAPI] Saved call details and analysis to case {case_id}")
+                logger.info(f"[VAPI] Updated case status to: {CaseStatusConstants.INITIAL_QUESTIONNAIRE}")
                 
                 # Also add the analysis to the response for immediate use
                 call_dict['analysis'] = {
@@ -1597,6 +2880,101 @@ async def get_vapi_call_details(call_id: str, current_user: dict = Depends(get_c
     except Exception as e:
         logger.exception(f"[VAPI] Failed to fetch call details: {e}")
         raise HTTPException(status_code=500, detail=f'Failed to fetch call details: {str(e)}')
+
+
+@app.post('/cases/{case_id}/call-details')
+async def save_call_details_and_analyze(
+    case_id: str,
+    call_data: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Save call details (transcript, call_id, duration) to a case and analyze using OpenAI.
+    This endpoint is called by the frontend after a call ends.
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    
+    try:
+        from .supabase_client import get_case, update_case
+        from .openai_call_analyzer import analyze_call_conversation_openai
+        
+        # Validate case ownership
+        case = get_case(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail='Case not found')
+        
+        if isinstance(case, list):
+            case = case[0] if len(case) > 0 else None
+            if not case:
+                raise HTTPException(status_code=404, detail='Case not found')
+        
+        if case.get('user_id') != current_user.get('id'):
+            raise HTTPException(status_code=403, detail='Not authorized to update this case')
+        
+        # Extract call data
+        call_id = call_data.get('call_id', '')
+        transcript = call_data.get('transcript', [])
+        duration = call_data.get('duration', 0)
+        timestamp = call_data.get('timestamp', '')
+        
+        logger.info(f"[CALL] Saving call details for case {case_id}: call_id={call_id}, duration={duration}s")
+        
+        # Convert transcript array to string if needed
+        transcript_text = ''
+        if isinstance(transcript, list):
+            transcript_text = '\n'.join(transcript)
+        else:
+            transcript_text = str(transcript)
+        
+        # Analyze conversation using OpenAI
+        logger.info(f"[CALL] Analyzing conversation with OpenAI agent...")
+        analysis_result = await analyze_call_conversation_openai(transcript_text, [])
+        logger.info(f"[CALL] Analysis complete. Documents requested: {len(analysis_result.get('documents_requested_list', []))}")
+        
+        # Build call_details object
+        call_details = {
+            'call_id': call_id,
+            'transcript': transcript_text,
+            'duration': duration,
+            'timestamp': timestamp,
+            'analysis': {
+                'summary': analysis_result.get('call_summary', ''),
+                'structured_data': {
+                    'case_summary': analysis_result.get('case_summary', ''),
+                    'documents_requested_list': analysis_result.get('documents_requested_list', []),
+                    'key_legal_points': analysis_result.get('key_legal_points', []),
+                    'risk_assessment': analysis_result.get('risk_assessment', 'Needs More Info'),
+                    'estimated_claim_amount': analysis_result.get('estimated_claim_amount', 0.0),
+                    'degree_funding': analysis_result.get('degree_funding', 0.0),
+                    'monthly_allowance': analysis_result.get('monthly_allowance', 0.0),
+                    'income_tax_exemption': analysis_result.get('income_tax_exemption', False),
+                    'living_expenses': analysis_result.get('living_expenses', 0.0)
+                }
+            }
+        }
+        
+        # Update case with call details and analysis
+        update_payload = {
+            'call_details': call_details,
+            'call_summary': json.dumps(analysis_result, ensure_ascii=False)
+        }
+        
+        update_case(case_id, update_payload)
+        logger.info(f"[CALL] Successfully saved call details and analysis to case {case_id}")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'message': 'Call details saved and analyzed successfully',
+            'case_id': case_id,
+            'analysis': analysis_result
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[CALL] Failed to save call details: {e}")
+        raise HTTPException(status_code=500, detail=f'Failed to save call details: {str(e)}')
 
 
 @app.post('/vapi/re-analyze-call/{case_id}')
@@ -1753,25 +3131,10 @@ async def get_requested_documents(current_user: dict = Depends(get_current_user)
         except Exception as e:
             logger.warning(f"Failed to fetch uploaded documents: {e}")
         
-        # Create a map of uploaded document types for frontend matching
-        uploaded_types = {doc.get('document_type'): doc for doc in uploaded_documents}
-        
-        # Mark which requested documents have been uploaded
-        requested_with_status = []
-        for req_doc in requested_documents:
-            uploaded_doc = uploaded_types.get(req_doc)
-            requested_with_status.append({
-                'name': req_doc,
-                'uploaded': req_doc in uploaded_types,
-                'file_url': uploaded_doc.get('file_path') if uploaded_doc else None,
-                'file_name': uploaded_doc.get('file_name') if uploaded_doc else None,
-                'uploaded_at': uploaded_doc.get('uploaded_at') if uploaded_doc else None
-            })
-        
         return JSONResponse({
             'status': 'ok',
             'case_id': case_id,
-            'requested_documents': requested_with_status,
+            'requested_documents': requested_documents,
             'uploaded_documents': uploaded_documents,
             'all_documents_uploaded': len(uploaded_documents) >= len(requested_documents) if requested_documents else False
         })
@@ -1829,6 +3192,227 @@ async def get_case_strategy_status(case_id: str, current_user: dict = Depends(ge
     except Exception as e:
         logger.exception(f'Failed to get strategy status: {e}')
         raise HTTPException(status_code=500, detail=f'Failed to get strategy status: {str(e)}')
+
+
+@app.post('/cases/{case_id}/analyze-with-agent')
+async def analyze_case_with_agent(case_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Analyze a case's uploaded documents using the AI agent.
+    Fetches all document summaries from case_documents table and passes them to the agent.
+    
+    Flow:
+    1. Get case and verify access
+    2. Extract document IDs from call_summary.documents_requested_list
+    3. Fetch each document from case_documents table (get metadata.document_summary)
+    4. Concatenate all summaries
+    5. Pass to Anthropic agent for analysis
+    6. Store result in cases.form_7801_analysis
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    
+    try:
+        from .supabase_client import get_case, update_case, _supabase_admin
+        from .document_analyzer_agent import analyze_case_documents_with_agent
+        
+        logger.info(f"🔵 Starting agent analysis for case {case_id}")
+        
+        # Get case and verify access
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='Case not found')
+        
+        case = case_list[0]
+        if current_user['role'] != 'admin' and case.get('user_id') != current_user['id']:
+            raise HTTPException(status_code=403, detail='Access denied')
+        
+        # Extract document IDs from call_summary
+        call_summary = case.get('call_summary', {})
+        if isinstance(call_summary, str):
+            try:
+                call_summary = json.loads(call_summary)
+            except:
+                call_summary = {}
+        
+        documents_requested = call_summary.get('documents_requested_list', [])
+        logger.info(f"📄 Found {len(documents_requested)} documents in call_summary")
+        
+        # Collect all documents with their summaries
+        documents_with_summaries = []
+        
+        if _supabase_admin and documents_requested:
+            # Get document IDs from the documents_requested_list
+            for doc_req in documents_requested:
+                doc_id = doc_req.get('document_id')
+                if not doc_id:
+                    logger.warning(f"⚠️ Document has no document_id: {doc_req.get('name')}")
+                    continue
+                
+                try:
+                    # Fetch the case_documents record
+                    result = _supabase_admin.table('case_documents').select('*').eq('id', doc_id).execute()
+                    if result.data and len(result.data) > 0:
+                        doc_record = result.data[0]
+                        documents_with_summaries.append(doc_record)
+                        logger.info(f"✅ Loaded document: {doc_record.get('file_name')}")
+                    else:
+                        logger.warning(f"⚠️ Document not found in case_documents: {doc_id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to fetch document {doc_id}: {e}")
+        
+        if not documents_with_summaries:
+            logger.warning(f"⚠️ No documents found with summaries for case {case_id}")
+            return JSONResponse({
+                'status': 'error',
+                'message': 'No uploaded documents found to analyze',
+                'case_id': case_id
+            }, status_code=400)
+        
+        logger.info(f"📊 Processing {len(documents_with_summaries)} documents for agent analysis")
+        
+        # Call the agent with concatenated summaries
+        agent_result = await analyze_case_documents_with_agent(case_id, documents_with_summaries)
+        
+        logger.info(f"✅ Agent analysis completed. Storing result in cases table")
+        
+        # Store the result in cases.form_7801_analysis
+        update_case(case_id, {
+            'form_7801_analysis': agent_result,
+            'form_7801_analysis_timestamp': datetime.utcnow().isoformat(),
+            'analysis_status': 'completed'
+        })
+        
+        return JSONResponse({
+            'status': 'ok',
+            'case_id': case_id,
+            'analysis': agent_result,
+            'documents_analyzed': len(documents_with_summaries),
+            'timestamp': datetime.utcnow().isoformat()
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'❌ Error analyzing case with agent: {e}')
+        raise HTTPException(status_code=500, detail=f'Failed to analyze case: {str(e)}')
+
+
+@app.post('/cases/{case_id}/analyze-documents-form7801')
+async def analyze_documents_form7801(case_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Analyze case documents using OpenAI Form 7801 agent.
+    
+    This endpoint is called from the "התחל ניתוח AI" button on the dashboard.
+    
+    Flow:
+    1. Get case and verify access
+    2. Extract document IDs from call_summary.documents_requested_list
+    3. Fetch each document from case_documents table (get metadata.document_summary)
+    4. Concatenate all document summaries with call_summary context
+    5. Pass to OpenAI Form 7801 agent for comprehensive analysis
+    6. Store result in cases.form_7801_analysis
+    
+    Returns:
+        Structured Form 7801 analysis with:
+        - form_7801: Extracted form data
+        - summary: Comprehensive case summary
+        - strategy: Legal strategy and recommendations
+        - claim_rate: Estimated claim success rate (0-100)
+        - recommendations: List of recommended next steps
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    
+    try:
+        from .supabase_client import get_case, update_case, _supabase_admin
+        from .openai_form7801_agent import analyze_documents_with_openai_agent
+        
+        logger.info(f"🔵 Starting OpenAI Form 7801 analysis for case {case_id}")
+        
+        # Get case and verify access
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='Case not found')
+        
+        case = case_list[0]
+        if current_user['role'] != 'admin' and case.get('user_id') != current_user['id']:
+            raise HTTPException(status_code=403, detail='Access denied')
+        
+        # Extract call summary and documents requested list
+        call_summary = case.get('call_summary', {})
+        if isinstance(call_summary, str):
+            try:
+                call_summary = json.loads(call_summary)
+            except:
+                call_summary = {}
+        
+        documents_requested = call_summary.get('documents_requested_list', [])
+        logger.info(f"📄 Found {len(documents_requested)} documents in call_summary")
+        
+        # Collect all documents with their metadata
+        documents_with_metadata = []
+        
+        if _supabase_admin and documents_requested:
+            # Get document IDs from the documents_requested_list
+            for doc_req in documents_requested:
+                doc_id = doc_req.get('document_id')
+                if not doc_id:
+                    logger.warning(f"⚠️ Document has no document_id: {doc_req.get('name')}")
+                    continue
+                
+                try:
+                    # Fetch the case_documents record
+                    result = _supabase_admin.table('case_documents').select('*').eq('id', doc_id).execute()
+                    if result.data and len(result.data) > 0:
+                        doc_record = result.data[0]
+                        documents_with_metadata.append(doc_record)
+                        logger.info(f"✅ Loaded document: {doc_record.get('file_name')}")
+                    else:
+                        logger.warning(f"⚠️ Document not found in case_documents: {doc_id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to fetch document {doc_id}: {e}")
+        
+        if not documents_with_metadata:
+            logger.warning(f"⚠️ No documents found for case {case_id}")
+            # Continue anyway - agent will analyze based on call summary alone
+            documents_with_metadata = []
+        
+        logger.info(f"📊 Processing {len(documents_with_metadata)} documents for Form 7801 analysis")
+        
+        # Call the OpenAI agent with concatenated summaries
+        logger.info(f"🤖 Calling OpenAI Form 7801 agent...")
+        agent_result = await analyze_documents_with_openai_agent(
+            case_id=case_id,
+            documents_data=documents_with_metadata,
+            call_summary=call_summary
+        )
+        
+        logger.info(f"✅ Agent analysis completed. Storing result in cases table")
+        
+        # Store the result in cases.final_document_analysis and update status
+        update_case(case_id, {
+            'final_document_analysis': agent_result,
+            'status': 'Submission Pending'
+        })
+        
+        logger.info(f"✅ Form 7801 analysis saved successfully for case {case_id}")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'case_id': case_id,
+            'analysis': agent_result,
+            'documents_analyzed': len(documents_with_metadata),
+            'timestamp': datetime.utcnow().isoformat()
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'❌ Error analyzing documents with Form 7801 agent: {e}')
+        error_detail = str(e)
+        if "fetch failed" in error_detail.lower():
+            error_detail = "Network connectivity issue. Please try again."
+        raise HTTPException(status_code=500, detail=f'Failed to process Form 7801 analysis: {error_detail}')
 
 
 @app.post('/cases/{case_id}/process-documents')
@@ -2624,6 +4208,512 @@ async def eligibility_submit(
     return JSONResponse({'status': 'ok', 'data': result})
 
 
+@app.post('/admin/cases/{case_id}/documents/request')
+async def admin_request_document(
+    case_id: str,
+    payload: Dict[str, Any] = Body(...),
+    user = Depends(require_admin)
+):
+    """
+    Admin endpoint to request documents from a client for a specific case.
+    
+    Request body:
+    {
+        "name": "Document name",
+        "reason": "Reason for requesting this document",
+        "source": "Where the document should come from",
+        "required": true
+    }
+    
+    Returns the updated documents_requested_list array.
+    """
+    try:
+        from .supabase_client import get_case, update_case
+        
+        # Verify case exists
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        
+        case = case_list[0]
+        
+        # Get current call_summary
+        call_summary = case.get('call_summary', {})
+        
+        # Parse call_summary if it's a string (JSON)
+        if isinstance(call_summary, str):
+            try:
+                call_summary = json.loads(call_summary)
+            except json.JSONDecodeError:
+                call_summary = {}
+        
+        # Ensure call_summary is a dict
+        if not isinstance(call_summary, dict):
+            call_summary = {}
+        
+        # Ensure documents_requested_list exists
+        if 'documents_requested_list' not in call_summary:
+            call_summary['documents_requested_list'] = []
+        
+        # Create document request object
+        document_request = {
+            'id': str(uuid.uuid4()),
+            'name': payload.get('name', ''),
+            'reason': payload.get('reason', ''),
+            'source': payload.get('source', ''),
+            'required': payload.get('required', True),
+            'requested_at': datetime.utcnow().isoformat(),
+            'status': 'pending',
+            'uploaded': False
+        }
+        
+        # Add to documents_requested_list
+        call_summary['documents_requested_list'].append(document_request)
+        
+        # Update case with new call_summary
+        update_case(case_id, {'call_summary': call_summary})
+        
+        logger.info(f"Added document request to case {case_id}: {document_request['name']}")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'document': document_request,
+            'documents': call_summary.get('documents_requested_list', [])
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'admin_request_document failed for case_id={case_id}')
+        raise HTTPException(status_code=500, detail='admin_request_document_failed')
+
+
+@app.get('/admin/cases/{case_id}/documents/requested')
+async def admin_get_requested_documents(
+    case_id: str,
+    user = Depends(require_admin)
+):
+    """
+    Admin endpoint to get list of requested documents for a case.
+    
+    Returns:
+    {
+        "status": "ok",
+        "documents": [
+            {
+                "id": "uuid",
+                "name": "Document name",
+                "reason": "Reason for request",
+                "source": "Where to get it",
+                "required": true,
+                "requested_at": "2024-01-01T00:00:00",
+                "status": "pending" | "received",
+                "uploaded": false
+            }
+        ]
+    }
+    """
+    try:
+        from .supabase_client import get_case
+        
+        # Verify case exists
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        
+        case = case_list[0]
+        
+        # Get call_summary
+        call_summary = case.get('call_summary', {})
+        
+        # Parse call_summary if it's a string (JSON)
+        if isinstance(call_summary, str):
+            try:
+                call_summary = json.loads(call_summary)
+            except json.JSONDecodeError:
+                call_summary = {}
+        
+        # Extract documents_requested_list
+        documents = call_summary.get('documents_requested_list', [])
+        
+        logger.info(f"Retrieved {len(documents)} requested documents for case {case_id}")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'documents': documents
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'admin_get_requested_documents failed for case_id={case_id}')
+        raise HTTPException(status_code=500, detail='admin_get_requested_documents_failed')
+
+
+@app.patch('/admin/cases/{case_id}/documents/requested/{document_id}')
+async def admin_update_requested_document(
+    case_id: str,
+    document_id: str,
+    payload: Dict[str, Any] = Body(...),
+    user = Depends(require_admin)
+):
+    """
+    Admin endpoint to update a requested document's status (mark as received, etc).
+    
+    Request body can contain:
+    {
+        "status": "received" | "pending",
+        "uploaded": true | false,
+        "notes": "Optional notes about the document"
+    }
+    """
+    try:
+        from .supabase_client import get_case, update_case
+        
+        # Verify case exists
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        
+        case = case_list[0]
+        
+        # Get call_summary
+        call_summary = case.get('call_summary', {})
+        
+        # Parse call_summary if it's a string (JSON)
+        if isinstance(call_summary, str):
+            try:
+                call_summary = json.loads(call_summary)
+            except json.JSONDecodeError:
+                call_summary = {}
+        
+        # Find and update the document
+        documents = call_summary.get('documents_requested_list', [])
+        document_found = False
+        
+        for doc in documents:
+            if doc.get('id') == document_id:
+                # Update fields
+                if 'status' in payload:
+                    doc['status'] = payload['status']
+                if 'uploaded' in payload:
+                    doc['uploaded'] = payload['uploaded']
+                if 'notes' in payload:
+                    doc['notes'] = payload['notes']
+                
+                doc['updated_at'] = datetime.utcnow().isoformat()
+                document_found = True
+                break
+        
+        if not document_found:
+            raise HTTPException(status_code=404, detail='document_request_not_found')
+        
+        # Update case with modified call_summary
+        update_case(case_id, {'call_summary': call_summary})
+        
+        logger.info(f"Updated document request {document_id} in case {case_id}")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'document': next((d for d in documents if d.get('id') == document_id), None),
+            'documents': documents
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'admin_update_requested_document failed')
+        raise HTTPException(status_code=500, detail='admin_update_requested_document_failed')
+
+
+@app.delete('/admin/cases/{case_id}/documents/requested/{document_id}')
+async def admin_delete_requested_document(
+    case_id: str,
+    document_id: str,
+    user = Depends(require_admin)
+):
+    """
+    Admin endpoint to delete a requested document from the request list.
+    """
+    try:
+        from .supabase_client import get_case, update_case
+        
+        # Verify case exists
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        
+        case = case_list[0]
+        
+        # Get call_summary
+        call_summary = case.get('call_summary', {})
+        
+        # Parse call_summary if it's a string (JSON)
+        if isinstance(call_summary, str):
+            try:
+                call_summary = json.loads(call_summary)
+            except json.JSONDecodeError:
+                call_summary = {}
+        
+        # Find and remove the document
+        documents = call_summary.get('documents_requested_list', [])
+        initial_count = len(documents)
+        
+        documents = [d for d in documents if d.get('id') != document_id]
+        
+        if len(documents) == initial_count:
+            raise HTTPException(status_code=404, detail='document_request_not_found')
+        
+        call_summary['documents_requested_list'] = documents
+        
+        # Update case with modified call_summary
+        update_case(case_id, {'call_summary': call_summary})
+        
+        logger.info(f"Deleted document request {document_id} from case {case_id}")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'documents': documents
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'admin_delete_requested_document failed')
+        raise HTTPException(status_code=500, detail='admin_delete_requested_document_failed')
+
+
+@app.put('/admin/cases/{case_id}/documents/update-all')
+async def admin_update_all_documents(
+    case_id: str,
+    payload: Dict[str, Any] = Body(...),
+    user = Depends(require_admin)
+):
+    """
+    Admin endpoint to update all requested documents for a case.
+    
+    Request body:
+    {
+        "documents": [
+            {
+                "id": "uuid or empty for new",
+                "name": "Document name",
+                "reason": "Reason for requesting",
+                "source": "Where to get it",
+                "required": true
+            }
+        ]
+    }
+    """
+    try:
+        from .supabase_client import get_case, update_case
+        
+        # Verify case exists
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        
+        case = case_list[0]
+        
+        # Get current call_summary
+        call_summary = case.get('call_summary', {})
+        
+        # Parse call_summary if it's a string (JSON)
+        if isinstance(call_summary, str):
+            try:
+                call_summary = json.loads(call_summary)
+            except json.JSONDecodeError:
+                call_summary = {}
+        
+        # Ensure call_summary is a dict
+        if not isinstance(call_summary, dict):
+            call_summary = {}
+        
+        # Process documents
+        documents = payload.get('documents', [])
+        updated_documents = []
+        
+        for doc in documents:
+            # Keep existing ID or generate new one
+            doc_id = doc.get('id', str(uuid.uuid4()))
+            
+            # Build document object
+            updated_doc = {
+                'id': doc_id,
+                'name': doc.get('name', ''),
+                'reason': doc.get('reason', ''),
+                'source': doc.get('source', ''),
+                'required': doc.get('required', True),
+                'status': doc.get('status', 'pending'),
+                'uploaded': doc.get('uploaded', False)
+            }
+            
+            # Keep requested_at if document already exists, otherwise set current time
+            existing_docs = call_summary.get('documents_requested_list', [])
+            existing_doc = next((d for d in existing_docs if d.get('id') == doc_id), None)
+            if existing_doc:
+                updated_doc['requested_at'] = existing_doc.get('requested_at', datetime.utcnow().isoformat())
+            else:
+                updated_doc['requested_at'] = datetime.utcnow().isoformat()
+            
+            updated_documents.append(updated_doc)
+        
+        # Update call_summary with new documents list
+        call_summary['documents_requested_list'] = updated_documents
+        
+        # Update case
+        update_case(case_id, {'call_summary': call_summary})
+        
+        logger.info(f"Updated {len(updated_documents)} documents for case {case_id}")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'documents': updated_documents
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'admin_update_all_documents failed for case_id={case_id}')
+        raise HTTPException(status_code=500, detail='admin_update_all_documents_failed')
+
+
+@app.get('/admin/cases/{case_id}/uploaded-documents')
+async def admin_get_uploaded_documents(
+    case_id: str,
+    user = Depends(require_admin)
+):
+    """
+    Admin endpoint to get list of actual uploaded documents for a case from case_documents table.
+    
+    Returns:
+    {
+        "status": "ok",
+        "documents": [
+            {
+                "id": "uuid",
+                "file_name": "filename.pdf",
+                "file_type": "application/pdf",
+                "file_size": 1024,
+                "document_type": "medical_report",
+                "file_path": "cases/...",
+                "file_url": "https://...",
+                "metadata": {...},
+                "uploaded_at": "2024-01-01T00:00:00",
+                "created_at": "2024-01-01T00:00:00"
+            }
+        ]
+    }
+    """
+    try:
+        from .supabase_client import _supabase_admin, SUPABASE_URL
+        
+        if not _supabase_admin:
+            raise HTTPException(status_code=500, detail='database_not_available')
+        
+        # Fetch all documents for this case
+        result = _supabase_admin.table('case_documents').select('*').eq('case_id', case_id).execute()
+        
+        if not result or not result.data:
+            return JSONResponse({
+                'status': 'ok',
+                'documents': []
+            })
+        
+        documents = result.data
+        
+        # Construct file URLs and enrich response
+        enriched_documents = []
+        for doc in documents:
+            file_url = None
+            if doc.get('file_path'):
+                # Construct Supabase Storage URL
+                file_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/cases/{doc['file_path']}"
+            
+            enriched_documents.append({
+                'id': doc.get('id'),
+                'file_name': doc.get('file_name'),
+                'file_type': doc.get('file_type'),
+                'file_size': doc.get('file_size'),
+                'document_type': doc.get('document_type'),
+                'file_path': doc.get('file_path'),
+                'file_url': file_url,
+                'metadata': doc.get('metadata', {}),
+                'uploaded_at': doc.get('uploaded_at'),
+                'created_at': doc.get('created_at')
+            })
+        
+        logger.info(f"Retrieved {len(enriched_documents)} uploaded documents for case {case_id}")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'documents': enriched_documents
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'admin_get_uploaded_documents failed for case_id={case_id}')
+        raise HTTPException(status_code=500, detail='admin_get_uploaded_documents_failed')
+
+
+@app.delete('/admin/cases/{case_id}/uploaded-documents/{document_id}')
+async def admin_delete_uploaded_document(
+    case_id: str,
+    document_id: str,
+    user = Depends(require_admin)
+):
+    """
+    Admin endpoint to delete an uploaded document.
+    Deletes from case_documents table and optionally from storage.
+    
+    Returns:
+    {
+        "status": "ok",
+        "deleted_id": "uuid"
+    }
+    """
+    try:
+        from .supabase_client import _supabase_admin, storage_delete_file
+        
+        if not _supabase_admin:
+            raise HTTPException(status_code=500, detail='database_not_available')
+        
+        # Fetch document to verify it belongs to this case
+        result = _supabase_admin.table('case_documents').select('*').eq('id', document_id).eq('case_id', case_id).execute()
+        
+        if not result or not result.data or len(result.data) == 0:
+            raise HTTPException(status_code=404, detail='document_not_found')
+        
+        doc = result.data[0]
+        file_path = doc.get('file_path')
+        
+        # Delete from storage if file_path exists
+        if file_path:
+            try:
+                storage_delete_file(bucket='cases', path=file_path)
+                logger.info(f"Deleted file from storage: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete file from storage: {e}")
+                # Continue with database deletion even if storage deletion fails
+        
+        # Delete from database
+        delete_result = _supabase_admin.table('case_documents').delete().eq('id', document_id).execute()
+        
+        logger.info(f"Deleted document {document_id} from case {case_id}")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'deleted_id': document_id
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'admin_delete_uploaded_document failed')
+        raise HTTPException(status_code=500, detail='admin_delete_uploaded_document_failed')
+
+
 @app.get('/health')
 async def health():
     return {'status': 'ok'}
@@ -2747,17 +4837,21 @@ async def user_register(payload: Dict[str, Any] = Body(...)):
             otp = f"{secrets.randbelow(1000000):06d}"
             otp_expires = datetime.utcnow() + timedelta(minutes=10)
 
-            profile_res = insert_user_profile(
-                user_id=str(user_id),
-                name=name,
-                email=email,
-                phone=phone,
-                identity_code=identity_code or '',
-                otp=otp,
-                otp_expires_at=otp_expires,
-                eligibility=eligibility_payload,
-                verified=False
-            )
+            try:
+                profile_res = insert_user_profile(
+                    user_id=str(user_id),
+                    name=name,
+                    email=email,
+                    phone=phone,
+                    identity_code=identity_code or '',
+                    otp=otp,
+                    otp_expires_at=otp_expires,
+                    eligibility=eligibility_payload,
+                    verified=False
+                )
+            except Exception as e:
+                logger.exception(f'insert_user_profile failed during registration: {e}')
+                raise HTTPException(status_code=500, detail=f'profile_creation_failed: {str(e)}')
             # Send OTP via email (if SMTP configured)
             try:
                 send_otp_email(email, otp)
@@ -2792,17 +4886,21 @@ async def user_register(payload: Dict[str, Any] = Body(...)):
                 response['debug_otp'] = otp
         else:
             # No email verification required: insert profile and mark verified immediately
-            profile_res = insert_user_profile(
-                user_id=str(user_id),
-                name=name,
-                email=email,
-                phone=phone,
-                identity_code=identity_code or '',
-                otp=None,
-                otp_expires_at=None,
-                eligibility=eligibility_payload,
-                verified=True
-            )
+            try:
+                profile_res = insert_user_profile(
+                    user_id=str(user_id),
+                    name=name,
+                    email=email,
+                    phone=phone,
+                    identity_code=identity_code or '',
+                    otp=None,
+                    otp_expires_at=None,
+                    eligibility=eligibility_payload,
+                    verified=True
+                )
+            except Exception as e:
+                logger.exception(f'insert_user_profile failed during registration: {e}')
+                raise HTTPException(status_code=500, detail=f'profile_creation_failed: {str(e)}')
             # Create an initial case for this user to track the signup/eligibility flow
             try:
                 case_metadata = {'initial_eligibility': eligibility_payload}
@@ -2945,6 +5043,105 @@ async def user_login(payload: Dict[str, Any] = Body(...), response: Response = N
         raise HTTPException(status_code=401, detail='login_failed')
 
 
+@app.post('/signup-with-case')
+async def signup_with_case(payload: Dict[str, Any] = Body(...)):
+    """Signup and create case in one step.
+    Creates user account, profile, and a case automatically.
+    Expects: {email, password, name?, phone?}
+    Returns: {status, user_id, case_id, access_token}
+    """
+    email = payload.get('email')
+    password = payload.get('password')
+    name = payload.get('name') or email.split('@')[0]
+    phone = payload.get('phone')
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail='missing_email_or_password')
+
+    logger.info(f"Starting signup-with-case for email={email}")
+
+    try:
+        # Create auth user
+        auth_res = create_auth_user(email=email, password=password, phone=phone)
+        user_id = auth_res.get('id') or auth_res.get('user', {}).get('id') or auth_res.get('aud')
+        if not user_id:
+            raise Exception('Failed to extract user_id from auth response')
+    except Exception as e:
+        logger.exception('Auth user creation failed')
+        raise HTTPException(status_code=400, detail=f'auth_create_failed: {str(e)}')
+
+    try:
+        # Create user profile (marked as verified immediately - no email verification)
+        profile_res = insert_user_profile(
+            user_id=str(user_id),
+            name=name,
+            email=email,
+            phone=phone or '',
+            identity_code='',
+            otp=None,
+            otp_expires_at=None,
+            eligibility=None,
+            verified=True
+        )
+        logger.info(f"Created profile for user {user_id}")
+    except Exception as e:
+        logger.exception(f'insert_user_profile failed: {e}')
+        raise HTTPException(status_code=400, detail=f'profile_creation_failed: {str(e)}')
+
+    # Create initial case
+    case_id = None
+    try:
+        case_metadata = {}
+        created_case = create_case(
+            user_id=str(user_id),
+            title=None,
+            description='Initial case created at signup',
+            metadata=case_metadata
+        )
+        
+        # Extract case_id from response (can be list or dict)
+        if isinstance(created_case, list) and len(created_case) > 0:
+            case_id = created_case[0].get('id')
+        elif isinstance(created_case, dict):
+            case_id = created_case.get('id')
+        
+        logger.info(f"Created case {case_id} for user {user_id}")
+    except Exception as e:
+        logger.exception('Failed to create case (non-fatal)')
+        # Don't fail signup if case creation fails - case_id will be None
+
+    # Generate access token by signing in
+    try:
+        login_res = sign_in(email=email, password=password)
+        
+        # Extract access token
+        access_token = None
+        if isinstance(login_res, dict):
+            if login_res.get('access_token'):
+                access_token = login_res.get('access_token')
+            elif login_res.get('data') and isinstance(login_res.get('data'), dict):
+                session = login_res['data'].get('session') or {}
+                access_token = session.get('access_token') or login_res['data'].get('access_token')
+            elif login_res.get('user'):
+                access_token = login_res.get('access_token') or login_res.get('token')
+        
+        logger.info(f"Successfully logged in user {user_id} after signup")
+    except Exception as e:
+        logger.exception('Failed to generate access token after signup')
+        access_token = None
+
+    response_data = {
+        'status': 'ok',
+        'user_id': str(user_id),
+        'case_id': case_id or '',
+        'access_token': access_token,
+        'email': email
+    }
+
+    logger.info(f"Signup-with-case completed for {email}: user_id={user_id}, case_id={case_id}")
+    return JSONResponse(response_data)
+
+
 @app.post('/user/logout')
 async def user_logout(token: Dict[str, Any] = Body(...), response: Response = None):
     """Logout by revoking the provided access token. Expects {access_token}"""
@@ -3078,8 +5275,11 @@ async def patch_user_profile(payload: Dict[str, Any] = Body(...), request: Reque
             from .supabase_client import admin_upsert_profile
             res = admin_upsert_profile(user_id=str(user_id), fields=payload)
             return JSONResponse({'status': 'ok', 'profile': res})
-        except Exception:
+        except Exception as e:
             logger.exception('patch_user_profile failed')
+            error_detail = str(e)
+            if '409' in error_detail or 'Conflict' in error_detail:
+                raise HTTPException(status_code=409, detail='profile_conflict_error')
             raise HTTPException(status_code=500, detail='profile_update_failed')
     return await _inner(request)
 
@@ -3230,6 +5430,7 @@ async def list_cases(request: Request):
         auth = request.headers.get('authorization')
         user, token = _get_user_from_request_auth(auth)
         user_id = user.get('id')
+        logger.info(f'list_cases: user_id={user_id}, auth_header_present={bool(auth)}')
         try:
             # Prefer direct supabase-py admin client usage when available
             rows = None
@@ -3259,16 +5460,19 @@ async def list_cases(request: Request):
                     cases_out = rows
             except Exception:
                 cases_out = rows
-            return JSONResponse({'status': 'ok', 'cases': cases_out or []})
+            
+            # Ensure we always return a list
+            if not isinstance(cases_out, list):
+                cases_out = list(cases_out) if cases_out else []
+            
+            logger.info(f'list_cases: found {len(cases_out)} cases for user_id={user_id}')
+            return JSONResponse({'status': 'ok', 'cases': cases_out})
         except Exception as e:
             logger.exception('Failed to fetch cases')
             raise HTTPException(status_code=500, detail=f'cases_failed: {str(e)}')
     res = await _inner(request)
     # avoid printing to stdout; use logger.debug if needed
-    logger.debug('list_cases response prepared')
     return res
-
-
 
 @app.post('/cases')
 async def create_case_endpoint(payload: Dict[str, Any] = Body(...), request: Request = None):
@@ -3611,24 +5815,32 @@ async def boldsign_create_embed_link(
         if not email and user_id:
             email = f"user_{user_id}@temp.com"
         
-        # Create a case if not provided
+        # Get existing case or create one only if absolutely necessary
         if not case_id:
+            # Try to find an existing case for this user
             try:
-                case_result = create_case(
-                    user_id=user_id,
-                    title=f"Disability Claim for {name}",
-                    description="E-signature pending",
-                    metadata={"source": "esignature_flow"}
-                )
-                # Extract case_id from result (can be array or dict)
-                if isinstance(case_result, list) and len(case_result) > 0:
-                    case_id = case_result[0].get('id')
-                elif isinstance(case_result, dict):
-                    case_id = case_result.get('id')
-                
-                logger.info(f'Created new case {case_id} for e-signature')
+                existing_cases = list_cases(user_id=user_id)
+                if existing_cases and len(existing_cases) > 0:
+                    # Use the most recent case
+                    case_id = existing_cases[0].get('id')
+                    logger.info(f'Using existing case {case_id} for e-signature')
+                else:
+                    # Only create a new case if none exists
+                    case_result = create_case(
+                        user_id=user_id,
+                        title=f"Disability Claim for {name}",
+                        description="E-signature pending",
+                        metadata={"source": "esignature_flow"}
+                    )
+                    # Extract case_id from result (can be array or dict)
+                    if isinstance(case_result, list) and len(case_result) > 0:
+                        case_id = case_result[0].get('id')
+                    elif isinstance(case_result, dict):
+                        case_id = case_result.get('id')
+                    
+                    logger.info(f'Created new case {case_id} for e-signature')
             except Exception as e:
-                logger.warning(f'Failed to create case for e-signature: {e}')
+                logger.warning(f'Failed to get/create case for e-signature: {e}')
                 # Continue without case - we'll still create the signature
         
         # Create embedded signing link
@@ -3640,18 +5852,19 @@ async def boldsign_create_embed_link(
         )
         
         # Update case metadata with document_id
-        try:
-            case_data = get_case(case_id)
-            if case_data:
-                metadata = case_data.get('metadata', {}) or {}
-                metadata['boldsign_document_id'] = result['documentId']
-                metadata['signature_status'] = 'pending'
-                update_case(
-                    case_id=case_id,
-                    updates={'metadata': metadata}
-                )
-        except Exception as e:
-            logger.warning(f'Failed to update case with signature info: {e}')
+        if case_id:
+            try:
+                case_data = get_case(case_id)
+                if case_data:
+                    metadata = case_data.get('metadata', {}) or {}
+                    metadata['boldsign_document_id'] = result['documentId']
+                    metadata['signature_status'] = 'pending'
+                    update_case(
+                        case_id=case_id,
+                        fields={'metadata': metadata}
+                    )
+            except Exception as e:
+                logger.warning(f'Failed to update case with signature info: {e}')
         
         # Add caseId to response
         result['caseId'] = case_id
@@ -3699,6 +5912,7 @@ async def boldsign_signature_complete(
     """
     Mark signature as complete in the case metadata.
     Called after user finishes signing.
+    Updates agreement_signed to true and tracks signed documents.
     """
     if not user:
         raise HTTPException(status_code=401, detail='unauthorized')
@@ -3706,37 +5920,145 @@ async def boldsign_signature_complete(
     try:
         case_id = payload.get('caseId')
         document_id = payload.get('documentId')
+        document_type = payload.get('documentType', 'unknown')
+        
+        logger.info(f"📝 Processing signature complete request: case_id={case_id}, doc_id={document_id}, doc_type={document_type}")
         
         if not case_id or not document_id:
+            logger.error(f"❌ Missing required fields: case_id={case_id}, document_id={document_id}")
             raise HTTPException(
                 status_code=400,
                 detail='Missing caseId or documentId'
             )
         
         # Update case metadata
-        case_data = get_case(case_id)
-        if not case_data:
+        case_data_list = get_case(case_id)
+        if not case_data_list or len(case_data_list) == 0:
+            logger.error(f"❌ Case not found: {case_id}")
             raise HTTPException(status_code=404, detail='Case not found')
+        
+        # get_case returns a list, get the first item
+        case_data = case_data_list[0] if isinstance(case_data_list, list) else case_data_list
+        logger.info(f"📋 Current case data retrieved, preparing update...")
         
         metadata = case_data.get('metadata', {}) or {}
         metadata['signature_status'] = 'completed'
         metadata['signature_completed_at'] = datetime.utcnow().isoformat()
         
-        update_case(
+        # Track signed documents by type
+        if 'signed_documents' not in metadata:
+            metadata['signed_documents'] = {}
+        
+        metadata['signed_documents'][document_type] = {
+            'document_id': document_id,
+            'signed_at': datetime.utcnow().isoformat(),
+            'status': 'signed'
+        }
+        
+        # Prepare fields to update
+        update_fields = {
+            'metadata': metadata,
+            'agreement_signed': True
+        }
+        
+        logger.info(f"🔄 Updating case {case_id} with fields: {update_fields}")
+        
+        # Update case with agreement_signed = true and metadata
+        result = update_case(
             case_id=case_id,
-            updates={'metadata': metadata}
+            fields=update_fields
         )
         
-        return JSONResponse({'status': 'ok', 'message': 'Signature marked as complete'})
+        logger.info(f"✅ Case updated successfully. Result: {result}")
+        logger.info(f"✅ Document '{document_type}' signed for case {case_id} (document_id: {document_id})")
+        logger.info(f"✅ agreement_signed column set to TRUE for case {case_id}")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'message': f'Signature for {document_type} marked as complete',
+            'document_type': document_type,
+            'document_id': document_id,
+            'agreement_signed': True,
+            'case_id': case_id
+        })
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception('Failed to mark signature complete')
+        logger.exception(f'❌ Failed to mark signature complete: {str(e)}')
         raise HTTPException(
             status_code=500,
             detail=f'Failed to update signature status: {str(e)}'
         )
+
+
+@app.post('/cases/{case_id}/document-signed')
+async def track_document_signed(
+    case_id: str,
+    payload: Dict[str, Any] = Body(...),
+    user = Depends(get_current_user)
+):
+    """
+    Track when a specific document is signed.
+    Updates the documents_signed tracking in case metadata.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail='unauthorized')
+    
+    try:
+        document_id = payload.get('documentId')
+        document_type = payload.get('documentType', 'unknown')
+        signed_at = payload.get('signedAt')
+        
+        if not document_id:
+            raise HTTPException(
+                status_code=400,
+                detail='Missing documentId'
+            )
+        
+        # Get case data - returns a list
+        case_data_list = get_case(case_id)
+        if not case_data_list or len(case_data_list) == 0:
+            raise HTTPException(status_code=404, detail='Case not found')
+        
+        # get_case returns a list, get the first item
+        case_data = case_data_list[0] if isinstance(case_data_list, list) else case_data_list
+        
+        # Update metadata with signed document tracking
+        metadata = case_data.get('metadata', {}) or {}
+        
+        if 'documents_signed' not in metadata:
+            metadata['documents_signed'] = {}
+        
+        metadata['documents_signed'][document_type] = {
+            'document_id': document_id,
+            'signed_at': signed_at or datetime.utcnow().isoformat(),
+            'status': 'signed'
+        }
+        
+        # Update the case
+        update_case(
+            case_id=case_id,
+            fields={'metadata': metadata}
+        )
+        
+        logger.info(f"✅ Document '{document_type}' signed for case {case_id} (doc_id: {document_id})")
+        return JSONResponse({
+            'status': 'ok',
+            'message': f'Document {document_type} tracked as signed',
+            'document_type': document_type,
+            'case_id': case_id
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception('Failed to track document signed')
+        raise HTTPException(
+            status_code=500,
+            detail=f'Failed to track document signed: {str(e)}'
+        )
+
 
 
 @app.post('/eligibility/check-document-relevance')
@@ -3932,6 +6254,256 @@ async def analyze_questionnaire_endpoint(
             status_code=500,
             detail=f'Questionnaire analysis failed: {str(e)}'
         )
+
+
+@app.post('/vapi/re-analyze-call/{case_id}')
+async def re_analyze_call(case_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Re-analyze existing call_details and user_eligibility without needing to re-interview.
+    Useful for testing the analysis flow during development.
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    
+    try:
+        from .supabase_client import get_case, get_user_eligibility, update_case
+        from .openai_call_analyzer import analyze_call_conversation_openai
+        
+        user_id = current_user.get('id')
+        
+        # Get the case
+        case_result = get_case(case_id)
+        if not case_result or not isinstance(case_result, list) or len(case_result) == 0:
+            raise HTTPException(status_code=404, detail=f'Case {case_id} not found')
+        
+        case = case_result[0]  # Extract first result from list
+        
+        # Verify the case belongs to the current user
+        if case.get('user_id') != user_id:
+            raise HTTPException(status_code=403, detail='Unauthorized access to case')
+        
+        # Get call_details from the case
+        call_details = case.get('call_details')
+        if not call_details:
+            raise HTTPException(status_code=400, detail='No call_details found in case')
+        
+        # Parse call_details if it's a JSON string
+        if isinstance(call_details, str):
+            call_details = json.loads(call_details)
+        
+        # Extract transcript and messages
+        transcript = call_details.get('transcript', '')
+        messages = call_details.get('messages', [])
+        
+        if not transcript:
+            raise HTTPException(status_code=400, detail='No transcript found in call_details')
+        
+        logger.info(f"[REANALYZE] Re-analyzing case {case_id} with transcript ({len(transcript)} chars)")
+        
+        # Fetch user_eligibility data
+        eligibility_records = []
+        try:
+            eligibility_records = get_user_eligibility(user_id=user_id)
+            logger.info(f"[REANALYZE] Found {len(eligibility_records) if eligibility_records else 0} eligibility records")
+        except Exception as e:
+            logger.warning(f"[REANALYZE] Could not fetch eligibility records: {e}")
+        
+        # Analyze conversation using OpenAI agent
+        try:
+            analysis_result = await analyze_call_conversation_openai(transcript, messages, eligibility_records)
+            logger.info(f"[REANALYZE] Successfully re-analyzed conversation. Summary length: {len(analysis_result.get('call_summary', ''))} chars")
+        except Exception as e:
+            logger.exception(f"[REANALYZE] Failed to analyze conversation: {e}")
+            analysis_result = {
+                'call_summary': 'Re-analysis failed. Please review transcript manually.',
+                'documents_requested_list': [],
+                'case_summary': 'Analysis pending',
+                'key_legal_points': [],
+                'risk_assessment': 'Needs More Info',
+                'estimated_claim_amount': 'Pending evaluation'
+            }
+        
+        # Update case with new analysis
+        update_payload = {
+            'call_summary': json.dumps(analysis_result, ensure_ascii=False)
+        }
+        
+        update_case(case_id, update_payload)
+        logger.info(f"[REANALYZE] Updated case {case_id} with new analysis")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'message': 'Case re-analyzed successfully',
+            'analysis': analysis_result
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[REANALYZE] Failed to re-analyze call: {e}")
+        raise HTTPException(status_code=500, detail=f'Failed to re-analyze call: {str(e)}')
+
+
+@app.get('/admin/analytics')
+async def get_analytics(
+    time_range: str = "30days"
+):
+    """
+    Get analytics and metrics for admin dashboard.
+    time_range: 7days, 30days, 90days, year
+    """
+    try:
+        from datetime import datetime, timedelta
+        from .supabase_client import _postgrest_headers
+        
+        # Calculate date range
+        end_date = datetime.now()
+        if time_range == "7days":
+            start_date = end_date - timedelta(days=7)
+        elif time_range == "90days":
+            start_date = end_date - timedelta(days=90)
+        elif time_range == "year":
+            start_date = end_date - timedelta(days=365)
+        else:  # 30days default
+            start_date = end_date - timedelta(days=30)
+        
+        # Get cases in the time range
+        cases_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/cases?created_at.gte.{start_date.isoformat()}&created_at.lte.{end_date.isoformat()}&limit=500"
+        cases_resp = requests.get(cases_url, headers=_postgrest_headers(), timeout=15)
+        cases_resp.raise_for_status()
+        cases = cases_resp.json()
+        
+        total_cases = len(cases)
+        
+        # Count by status
+        status_counts = {}
+        for case in cases:
+            status = case.get('status', 'Unknown')
+            status_counts[status] = status_counts.get(status, 0) + 1
+        
+        # Fetch user profiles for eligibility data
+        profiles_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?limit=500"
+        profiles_resp = requests.get(profiles_url, headers=_postgrest_headers(), timeout=15)
+        profiles_resp.raise_for_status()
+        profiles = profiles_resp.json()
+        
+        # Calculate metrics
+        avg_ai_score = 0
+        if profiles:
+            total_score = 0
+            count = 0
+            for profile in profiles:
+                try:
+                    eligibility_raw = profile.get('eligibility_raw', {})
+                    if isinstance(eligibility_raw, str):
+                        eligibility_raw = json.loads(eligibility_raw)
+                    score = eligibility_raw.get('eligibility_score', 0)
+                    if score:
+                        total_score += score
+                        count += 1
+                except:
+                    pass
+            avg_ai_score = int(total_score / count) if count > 0 else 0
+        
+        # Calculate claim amounts and extract disability types
+        total_claim_amount = 0
+        disability_type_counts = {}
+        
+        for case in cases:
+            try:
+                call_summary = case.get('call_summary', {})
+                if isinstance(call_summary, str):
+                    call_summary = json.loads(call_summary)
+                
+                # Extract claim amount
+                amount = call_summary.get('estimated_claim_amount', 0)
+                if amount:
+                    total_claim_amount += amount
+                
+                # Extract disability types from products field
+                products = call_summary.get('products', [])
+                if isinstance(products, str):
+                    products = json.loads(products)
+                
+                if products:
+                    for product in products:
+                        disability_type_counts[product] = disability_type_counts.get(product, 0) + 1
+                else:
+                    # Default to 'General Disability' if no products specified
+                    disability_type_counts['General Disability'] = disability_type_counts.get('General Disability', 0) + 1
+            except Exception as parse_err:
+                logger.warning(f'Failed to parse call_summary for case: {parse_err}')
+                disability_type_counts['General Disability'] = disability_type_counts.get('General Disability', 0) + 1
+        
+        # Stage distribution
+        stage_distribution = {}
+        for status, count in status_counts.items():
+            percentage = int((count / total_cases) * 100) if total_cases > 0 else 0
+            stage_distribution[status] = {
+                'count': count,
+                'percentage': percentage
+            }
+        
+        # Calculate previous period for comparison
+        if time_range == "7days":
+            prev_start = start_date - timedelta(days=7)
+        elif time_range == "90days":
+            prev_start = start_date - timedelta(days=90)
+        elif time_range == "year":
+            prev_start = start_date - timedelta(days=365)
+        else:
+            prev_start = start_date - timedelta(days=30)
+        
+        prev_cases_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/cases?created_at.gte.{prev_start.isoformat()}&created_at.lt.{start_date.isoformat()}&limit=500"
+        prev_cases_resp = requests.get(prev_cases_url, headers=_postgrest_headers(), timeout=15)
+        prev_cases = prev_cases_resp.json() if prev_cases_resp.ok else []
+        prev_total_cases = len(prev_cases)
+        
+        # Calculate conversion rate (cases that reached submission)
+        submitted_count = status_counts.get('Submitted', 0)
+        conversion_rate = int((submitted_count / total_cases) * 100) if total_cases > 0 else 0
+        
+        prev_submitted = sum(1 for c in prev_cases if c.get('status') == 'Submitted')
+        prev_conversion = int((prev_submitted / prev_total_cases) * 100) if prev_total_cases > 0 else 0
+        conversion_change = conversion_rate - prev_conversion
+        
+        # Calculate new cases change percentage
+        cases_change = int(((total_cases - prev_total_cases) / prev_total_cases) * 100) if prev_total_cases > 0 else 0
+        
+        # Average processing time (days)
+        total_days = 0
+        count = 0
+        for case in cases:
+            try:
+                created = datetime.fromisoformat(case.get('created_at', '').replace('Z', '+00:00'))
+                updated = datetime.fromisoformat(case.get('updated_at', '').replace('Z', '+00:00'))
+                days = (updated - created).days
+                if days >= 0:
+                    total_days += days
+                    count += 1
+            except:
+                pass
+        avg_processing_days = int(total_days / count) if count > 0 else 0
+        
+        return JSONResponse({
+            'status': 'ok',
+            'metrics': {
+                'total_cases': total_cases,
+                'cases_change': f"+{cases_change}%" if cases_change >= 0 else f"{cases_change}%",
+                'conversion_rate': conversion_rate,
+                'conversion_change': f"+{conversion_change}%" if conversion_change >= 0 else f"{conversion_change}%",
+                'avg_ai_score': avg_ai_score,
+                'avg_processing_days': avg_processing_days,
+                'total_claim_potential': total_claim_amount,
+            },
+            'stage_distribution': stage_distribution,
+            'claim_types': disability_type_counts
+        })
+        
+    except Exception as e:
+        logger.error(f'Failed to get analytics: {e}')
+        raise HTTPException(status_code=500, detail=f'Failed to get analytics: {str(e)}')
+
 
 
 # Starting command: python -m uvicorn app.main:app --reload --port 8000

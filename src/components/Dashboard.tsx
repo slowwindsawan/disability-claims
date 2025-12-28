@@ -189,7 +189,7 @@ function Dashboard({ onNavigate, onSwitchToAdmin }: DashboardProps) {
           <div className="status-card shadow-lg">
             <div className="status-header">
               <h2>Current Case Status:</h2>
-              <span className="case-id">Case ID: # 111 222 333</span>
+              <span className="case-id">Case Number: # 111 222 333</span>
             </div>
             <div className="status-content">
               {loading ? (

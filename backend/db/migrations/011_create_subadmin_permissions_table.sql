@@ -1,0 +1,4 @@
+-- NOTE: This migration is not needed.
+-- The admin_permissions JSONB column already exists in the user_profile table.
+-- Subadmin permissions are stored directly in the admin_permissions JSONB column.
+-- No additional migration is required.

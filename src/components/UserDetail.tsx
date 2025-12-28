@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import './UserDetail.css'
 import { apiGetProfile, apiGetCases, apiGetCase } from '../lib/api'
-import Skeleton, { SkeletonCard } from './Skeleton'
 
 interface UserDetailProps {
   onLogout: () => void
@@ -282,9 +281,7 @@ function UserDetail({ onLogout, onNavigate, onSwitchToUser }: UserDetailProps) {
           {activeTab === 'profile' && (
             <div className="user-detail-content">
               {loading ? (
-                <div style={{ padding: '2rem', textAlign: 'center' }}>
-                  <SkeletonCard lines={4} />
-                </div>
+                <div style={{ padding: '2rem', textAlign: 'center' }}>Loading profile...</div>
               ) : (
                 <>
               <section className="user-detail-section">
@@ -391,9 +388,7 @@ function UserDetail({ onLogout, onNavigate, onSwitchToUser }: UserDetailProps) {
           {activeTab === 'case' && (
             <div className="user-detail-case-layout">
               {loading ? (
-                <div style={{ padding: '2rem', textAlign: 'center' }}>
-                  <SkeletonCard lines={5} />
-                </div>
+                <div style={{ padding: '2rem', textAlign: 'center' }}>Loading case details...</div>
               ) : !selectedCase ? (
                 <div style={{ padding: '2rem', textAlign: 'center' }}>
                   <p>No case found.</p>
@@ -418,7 +413,7 @@ function UserDetail({ onLogout, onNavigate, onSwitchToUser }: UserDetailProps) {
                 <section className="user-detail-case-status-card">
                   <div className="user-detail-case-status-header">
                     <h3>Current Case Status:</h3>
-                    <span className="user-detail-case-id">Case ID: # {selectedCase.id || 'N/A'}</span>
+                    <span className="user-detail-case-id">Case Number: # {selectedCase.id || 'N/A'}</span>
                   </div>
 
                   <div className="user-detail-case-status-body">

@@ -12,6 +12,7 @@ import AnalysisPaymentScreen from './screens/AnalysisPaymentScreen';
 import PostPaymentQuestionnaire from './screens/PostPaymentQuestionnaire';
 import MedicalDocumentsUpload from './screens/MedicalDocumentsUpload';
 import CaseDocumentUploadScreen from './screens/CaseDocumentUploadScreen';
+import FollowupQuestionsScreen from './screens/FollowupQuestionsScreen';
 import SubmissionScreen from './screens/SubmissionScreen';
 import SuccessScreen from './screens/SuccessScreen';
 
@@ -30,6 +31,7 @@ export type OnboardingStep =
   | 'post-payment' 
   | 'medical-documents'
   | 'case-documents'
+  | 'followup'
   | 'submission' 
   | 'success';
 
@@ -249,7 +251,7 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   }, [])
 
   // Prevent navigating backwards: set a minimum allowed step index (forward-only progress)
-  const stepsOrder: OnboardingStep[] = ['landing','questionnaire','upload','processing','eligibility','signup','verify-email','analysis','voice','esignature','payment','post-payment','medical-documents','case-documents','submission','success']
+  const stepsOrder: OnboardingStep[] = ['landing','questionnaire','upload','processing','eligibility','signup','verify-email','analysis','voice','esignature','payment','post-payment','medical-documents','case-documents','followup','submission','success']
   const [minAllowedIndex, setMinAllowedIndex] = React.useState<number>(0)
 
   // update minAllowedIndex whenever currentStep moves forward
@@ -321,6 +323,7 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         {currentStep === 'post-payment' && <PostPaymentQuestionnaire />}
         {currentStep === 'medical-documents' && <MedicalDocumentsUpload />}
         {currentStep === 'case-documents' && <CaseDocumentUploadScreen />}
+        {currentStep === 'followup' && <FollowupQuestionsScreen />}
         {currentStep === 'submission' && <SubmissionScreen />}
         {currentStep === 'success' && <SuccessScreen onComplete={onComplete} />}
       </div>

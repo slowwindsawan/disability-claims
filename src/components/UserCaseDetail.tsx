@@ -192,7 +192,7 @@ function UserCaseDetail({ onLogout }: UserCaseDetailProps) {
                     <section className="user-case-detail-case-status-card">
                       <div className="user-case-detail-case-status-header">
                         <h3>Current Case Status:</h3>
-                        <span className="user-case-detail-case-id">Case ID: {caseId}</span>
+                        <span className="user-case-detail-case-id">Case Number: {caseId}</span>
                       </div>
 
                       <div className="user-case-detail-case-status-body">

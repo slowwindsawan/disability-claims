@@ -196,10 +196,16 @@ export async function apiGetCaseDocuments(caseId: string) {
   return request(`/cases/${caseId}/documents`)
 }
 
-export async function apiUploadCaseDocument(caseId: string, file: File, documentType: string = 'general') {
+export async function apiUploadCaseDocument(caseId: string, file: File, documentType: string = 'general', documentId?: string, documentName?: string) {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('document_type', documentType)
+  if (documentId) {
+    formData.append('document_id', documentId)
+  }
+  if (documentName) {
+    formData.append('document_name', documentName)
+  }
   
   const headers: any = {}
   const token = localStorage.getItem('access_token')

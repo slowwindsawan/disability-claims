@@ -24,27 +24,30 @@ logger = logging.getLogger('eligibility_processor')
 load_dotenv()
 OPENAI_API_KEY: Optional[str] = os.getenv('OPENAI_API_KEY')
 # Default model used here; override via OPENAI_MODEL in .env
-OPENAI_MODEL: str = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+OPENAI_MODEL: str = os.getenv('OPENAI_MODEL', 'gpt-5-mini')
 
-# Responses endpoint
+# Chat completions endpoint
 _OPENAI_BASE = "https://api.openai.com/v1"
 
 # Gemini configuration (optional, enable switching)
 GEMINI_API_KEY: Optional[str] = os.getenv('GEMINI_API_KEY')
-GEMINI_MODEL_ID: str = os.getenv('GEMINI_MODEL_ID', 'gemini-5-mini')
+GEMINI_MODEL_ID: str = os.getenv('GEMINI_MODEL_ID', 'gemini-1.5-mini')
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1"
 
-def _call_gpt(prompt: str,
-              model: Optional[str] = None,
-              temperature: float = 0.2,
-              max_output_tokens: int = 1024,
-              timeout: int = 90) -> Dict[str, Any]:
+def _call_gpt(
+    prompt: str,
+    model: Optional[str] = "gpt-5-mini",
+    temperature: float = 0.2,
+    max_output_tokens: int = 1024,
+    timeout: int = 90,
+) -> Dict[str, Any]:
     """
-    Internal helper: call OpenAI Responses endpoint via REST and return parsed JSON.
+    Internal helper: call OpenAI Responses API using gpt-5-mini
+    and return parsed response JSON.
 
-    Uses Authorization: Bearer <OPENAI_API_KEY> header for authentication.
+    Uses Authorization: Bearer <OPENAI_API_KEY>
     """
-    model = model or OPENAI_MODEL
+
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured in environment")
 
@@ -54,96 +57,93 @@ def _call_gpt(prompt: str,
         "Authorization": f"Bearer {OPENAI_API_KEY}",
     }
 
-    # The Responses API accepts "input" as a single string or a messages array.
-    # We use the single-string "input" for simplicity (keeps parity with your prompt usage).
     body = {
         "model": model,
-        "input": prompt,
-        "temperature": temperature,
-        # Some implementations accept max_output_tokens directly; if not, the model will handle length.
-        "max_output_tokens": max_output_tokens,
+        "input": prompt
     }
 
-    logger.debug("POST %s (model=%s) payload size=%d", endpoint, model, len(prompt))
-    resp = requests.post(endpoint, headers=headers, json=body, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()
+    logger.debug(
+        "POST %s (model=%s) payload size=%d",
+        endpoint,
+        model,
+        len(prompt),
+    )
+
+    try:
+        resp = requests.post(
+            endpoint,
+            headers=headers,
+            json=body,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    except requests.exceptions.HTTPError as e:
+        try:
+            error_detail = resp.json()
+            logger.error("OpenAI API Error: %s", error_detail)
+            raise RuntimeError(
+                error_detail.get("error", {}).get("message", str(e))
+            )
+        except Exception:
+            logger.error(
+                "OpenAI API Error (status %s): %s",
+                resp.status_code,
+                resp.text,
+            )
+            raise RuntimeError(
+                f"OpenAI API Error (status {resp.status_code}): {resp.text}"
+            )
 
 
 def _extract_text_from_gpt_response(data: Dict[str, Any]) -> str:
     """
-    Pulls concatenated text from common OpenAI Responses shapes.
-    Handles multiple possible shapes to be robust across API versions:
-      - data["output"] -> list of dicts with "content" entries
-      - data["choices"] -> list with "message", or "text"
-      - data["generations"] etc.
+    Pulls concatenated text from OpenAI Chat Completions API response.
+    
+    Expected format: data["choices"][0]["message"]["content"]
+    Also handles alternative formats for robustness.
 
     Returns concatenated text or empty string if none found.
     """
     texts: List[str] = []
 
-    # Modern Responses API may include top-level "output" array
+    # Primary Chat Completions format: choices[0].message.content
+    choices = data.get("choices", [])
+    if isinstance(choices, list):
+        for choice in choices:
+            if isinstance(choice, dict):
+                msg = choice.get("message")
+                if isinstance(msg, dict):
+                    content = msg.get("content")
+                    if isinstance(content, str):
+                        texts.append(content)
+                    elif isinstance(content, list):
+                        for c in content:
+                            if isinstance(c, dict) and c.get("type") == "text":
+                                texts.append(c.get("text", ""))
+                            elif isinstance(c, str):
+                                texts.append(c)
+                # Fallback: choice.text
+                elif choice.get("text"):
+                    texts.append(choice.get("text"))
+    
+    # Fallback: older/alternative shapes for compatibility
     output = data.get("output") or data.get("outputs")
     if isinstance(output, list):
         for item in output:
-            # item can be a dict containing 'content' which can be a list of {"type":"output_text", "text": "..." }
             if isinstance(item, dict):
-                # attempt to extract several common nested shapes
-                # 1) item.get("content") -> list of blocks with "text"
                 content = item.get("content") or item.get("contents")
                 if isinstance(content, list):
                     for c in content:
-                        if isinstance(c, dict) and 'text' in c:
-                            texts.append(c.get('text') or '')
+                        if isinstance(c, dict) and c.get("text"):
+                            texts.append(c.get("text"))
                         elif isinstance(c, str):
                             texts.append(c)
-                # 2) item.get("text")
+                elif isinstance(content, str):
+                    texts.append(content)
                 if item.get("text"):
                     texts.append(item.get("text"))
-                # 3) item.get("message") with "content"
-                msg = item.get("message")
-                if isinstance(msg, dict):
-                    # message.content can be list or str
-                    mcont = msg.get("content")
-                    if isinstance(mcont, list):
-                        for m in mcont:
-                            if isinstance(m, dict) and m.get("type") == "output_text" and m.get("text"):
-                                texts.append(m.get("text"))
-                            elif isinstance(m, str):
-                                texts.append(m)
-                    elif isinstance(mcont, str):
-                        texts.append(mcont)
-
-    # Fallback: older/alternative shapes:
-    for key in ("choices", "generations", "data"):
-        arr = data.get(key)
-        if isinstance(arr, list):
-            for choice in arr:
-                if isinstance(choice, dict):
-                    # 1) choice.message.content -> list
-                    msg = choice.get("message")
-                    if isinstance(msg, dict):
-                        cnt = msg.get("content")
-                        if isinstance(cnt, list):
-                            for c in cnt:
-                                if isinstance(c, dict) and c.get("type") == "output_text" and c.get("text"):
-                                    texts.append(c.get("text"))
-                                elif isinstance(c, str):
-                                    texts.append(c)
-                        elif isinstance(cnt, str):
-                            texts.append(cnt)
-                    # 2) choice.get("text")
-                    if choice.get("text"):
-                        texts.append(choice.get("text"))
-                    # 3) choice.get("output") or choice.get("content")
-                    if choice.get("output"):
-                        out = choice.get("output")
-                        if isinstance(out, str):
-                            texts.append(out)
-                        elif isinstance(out, list):
-                            for o in out:
-                                if isinstance(o, dict) and o.get("text"):
-                                    texts.append(o.get("text"))
 
     # Final fallback: top-level 'text' key
     if not texts and isinstance(data.get("text"), str):
@@ -386,9 +386,9 @@ Return ONLY valid JSON matching this schema:
     except json.JSONDecodeError as je:
         logger.exception("Failed to parse JSON from GPT scoring response")
         return {
-            'eligibility_score': 40,
+            'eligibility_score': 0,
             'eligibility_status': 'needs_review',
-            'confidence': 20,
+            'confidence': 0,
             'reason_summary': f'Error parsing AI output JSON: {str(je)}',
             'rule_references': [],
             'required_next_steps': ['Manual review required due to processing error'],
@@ -398,9 +398,9 @@ Return ONLY valid JSON matching this schema:
     except Exception as e:
         logger.exception("Failed to call GPT for scoring")
         return {
-            'eligibility_score': 40,
+            'eligibility_score': 0,
             'eligibility_status': 'needs_review',
-            'confidence': 20,
+            'confidence': 0,
             'reason_summary': f'Error during AI scoring: {str(e)}',
             'rule_references': [],
             'required_next_steps': ['Manual review required due to processing error'],
@@ -697,17 +697,24 @@ Return ONLY valid JSON:
   "is_relevant": boolean (TRUE only if contains valid medical evidence for legal claim),
   "relevance_score": integer (0-30 for non-medical; 40-69 for administrative/weak; 70-100 for strong medical evidence),
   "relevance_reason": "ONE clear sentence explaining why rejected/accepted (max 15 words) - e.g. 'This is a billing receipt without any medical findings' or 'Contains diagnosis and clinical examination results'",
-  "document_summary": "if rejected: 2-4 words describing what it is (e.g. 'Payment receipt', 'Blank scan', 'Appointment card'); if relevant: DETAILED 3-5 sentence summary covering: 1) diagnoses/conditions identified, 2) test results/clinical findings, 3) treatment/functional impact, 4) provider/specialist type (e.g. 'Neuropsychological evaluation by licensed psychologist. Diagnosed with ADHD-Combined Type and Learning Disability in reading. WAIS-IV showed processing speed deficit (5th percentile). Recommends accommodations and ongoing treatment.')",
-  "key_points": ["if relevant: array of 3-7 specific medical facts extracted from document (e.g., 'Diagnosed with Major Depressive Disorder', 'MRI shows disc herniation L4-L5', 'Unable to work full-time per physician', 'Prescribed Ritalin 20mg daily'). If not relevant: empty array []"],
+  "document_summary": "if rejected: 2-4 words describing what it is (e.g. 'Payment receipt', 'Blank scan', 'Appointment card'); if RELEVANT MEDICAL DOCUMENT: COMPREHENSIVE DETAILED SUMMARY (200-500 words) that captures EVERY important detail including: 1) ALL diagnoses/conditions mentioned with severity/type, 2) ALL test results with specific scores/values/findings, 3) Clinical observations and examination findings, 4) Functional limitations and work restrictions documented, 5) Treatment plan and medications with dosages, 6) Provider credentials and type of evaluation, 7) Patient history relevant to claims, 8) Prognosis and recommendations. NEVER summarize medical documents in less than 100 words - include EVERY medical fact that could support the disability claim.",
+  "key_points": ["if relevant: array of 8-20 SPECIFIC medical facts extracted from document - include EVERY diagnosis, test result, medication, functional limitation, work restriction, clinical finding. Examples: 'Diagnosed with Major Depressive Disorder, Severe, Recurrent', 'Beck Depression Inventory score: 32 (severe range)', 'MRI shows disc herniation L4-L5 with nerve root compression', 'Unable to sit for more than 30 minutes per physician note', 'Prescribed Lexapro 20mg daily for depression', 'Processing speed 5th percentile on WAIS-IV', 'Patient reports difficulty concentrating, completing tasks', 'Orthopedist recommends no lifting over 10 lbs'. If not relevant: empty array []"],
   "focus_excerpt": "most critical section showing document type (100-300 chars)",
   "document_type": "medical_report|discharge_summary|specialist_evaluation|psychological_evaluation|neuropsych_evaluation|psychiatric_assessment|diagnostic_report|surgical_report|receipt|blank_page|administrative|other",
   "statement": "clear message to client about whether this document supports their legal case",
   "directions": ["if rejected: specific guidance on what medical documents they need to obtain; if accepted: note strengths"]
 }}
 
-CRITICAL FOR REJECTED DOCUMENTS:
+CRITICAL REQUIREMENTS:
+
+FOR REJECTED DOCUMENTS:
 - relevance_reason: ONE sentence max 15 words explaining the rejection (e.g., "Receipt without clinical findings", "Administrative form lacking medical evidence")
 - document_summary: 2-4 words only (e.g., "Billing receipt", "Blank page", "Insurance form")
+- key_points: empty array []
+
+FOR ACCEPTED MEDICAL DOCUMENTS (THIS IS CRITICAL):
+- document_summary: MUST BE 200-500 WORDS MINIMUM. Extract and include EVERY medical detail: all diagnoses (with subtypes/severity), all test results (with scores/values), all medications (with dosages), all functional limitations, all work restrictions, all clinical findings, provider type, evaluation type, dates, history. DO NOT write generic summaries like "Learning disability evaluation report" - this is UNACCEPTABLE. You must extract and list EVERY specific medical finding.
+- key_points: MUST have 8-20 items minimum. Include EVERY diagnosis, EVERY test score, EVERY medication, EVERY limitation, EVERY clinical observation mentioned in the document.
 
 BE STRICT. Only accept documents with real medical evidence. Reject receipts and administrative paperwork."""
 
@@ -749,7 +756,7 @@ BE STRICT. Only accept documents with real medical evidence. Reject receipts and
         result['is_relevant'] = bool(result.get('is_relevant', False))
         result['relevance_score'] = int(result.get('relevance_score', 0))
         result['relevance_reason'] = str(result.get('relevance_reason', ''))[:150]  # Truncate to ensure brevity
-        result['document_summary'] = str(result.get('document_summary', ''))[:2000]  # Allow detailed summaries (up to 2000 chars)
+        result['document_summary'] = str(result.get('document_summary', ''))[:5000]  # Allow comprehensive medical summaries (up to 5000 chars)
         result['focus_excerpt'] = str(result.get('focus_excerpt', ''))[:500]
         result['document_type'] = str(result.get('document_type', 'unknown'))
         result['statement'] = str(result.get('statement', ''))
@@ -940,9 +947,9 @@ BE THOROUGH and LEGALLY RIGOROUS. Your client's claim depends on your assessment
     except json.JSONDecodeError as je:
         logger.exception("Failed to parse JSON from questionnaire analysis")
         return {
-            'eligibility_score': 40,
+            'eligibility_score': 0,
             'eligibility_status': 'needs_review',
-            'confidence': 20,
+            'confidence': 0,
             'reason_summary': f'Error parsing AI response: {str(je)}',
             'rule_references': [],
             'required_next_steps': ['Manual review required due to processing error'],
@@ -953,9 +960,9 @@ BE THOROUGH and LEGALLY RIGOROUS. Your client's claim depends on your assessment
     except Exception as e:
         logger.exception("Failed to analyze questionnaire")
         return {
-            'eligibility_score': 40,
+            'eligibility_score': 0,
             'eligibility_status': 'needs_review',
-            'confidence': 20,
+            'confidence': 0,
             'reason_summary': f'Error during analysis: {str(e)}',
             'rule_references': [],
             'required_next_steps': ['Manual review required due to processing error'],

@@ -28,9 +28,12 @@ interface Case {
   status: string
   eligibility_rating?: number
   description?: string
+  call_summary?: any
+  document_summaries?: any
   created_at?: string
   user_id?: string
 }
+
 
 function UserCases({ onLogout }: UserCasesProps) {
   const { userId } = useParams<{ userId: string }>()
@@ -85,6 +88,12 @@ function UserCases({ onLogout }: UserCasesProps) {
     } finally {
       setUpdatingCaseId(null)
     }
+  }
+
+  const formatSummary = (c: Case) => {
+    const raw = c.description || (c.call_summary ? (typeof c.call_summary === 'string' ? c.call_summary : JSON.stringify(c.call_summary)) : '') || (c.document_summaries ? JSON.stringify(c.document_summaries) : '')
+    const cleaned = String(raw).replace(/\s+/g, ' ').trim()
+    return cleaned.length > 160 ? cleaned.slice(0, 157) + '...' : cleaned
   }
 
   return (
@@ -221,8 +230,10 @@ function UserCases({ onLogout }: UserCasesProps) {
               ) : (
                 <div className="user-cases-table">
                   <div className="user-cases-table-header">
-                    <div className="user-cases-col-id">Case ID</div>
+                    <div className="user-cases-col-id">Case Number</div>
                     <div className="user-cases-col-title">Title</div>
+                    <div className="user-cases-col-opening">Opening Date</div>
+                    <div className="user-cases-col-summary">Case Summary</div>
                     <div className="user-cases-col-status">Status</div>
                     <div className="user-cases-col-eligibility">Eligibility</div>
                     <div className="user-cases-col-actions">Actions</div>
@@ -235,6 +246,21 @@ function UserCases({ onLogout }: UserCasesProps) {
                         </div>
                         <div className="user-cases-col-title" onClick={() => openCase(c)}>
                           {c.title || 'Untitled case'}
+                        </div>
+                        <div className="user-cases-col-opening">
+                          {c.created_at ? new Date(c.created_at).toLocaleDateString() : 'N/A'}
+                        </div>
+                        <div className="user-cases-col-summary">
+                          <div
+                            className="text-card-foreground flex flex-col gap-6 rounded-xl border p-6 bg-white shadow-md"
+                            onClick={() => openCase(c)}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            {(c.id || c.case_id) && (
+                              <div className="text-sm font-semibold">Case Number: {(c.id || c.case_id).toString().slice(0, 8)}</div>
+                            )}
+                            <div className="text-sm">{formatSummary(c) || 'No summary available'}</div>
+                          </div>
                         </div>
                         <div className="user-cases-col-status">
                           <span className={`user-cases-status-badge ${(c.status || '').toLowerCase().replace('_', '-')}`}>

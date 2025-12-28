@@ -1,0 +1,32 @@
+-- DEPRECATED: This table is no longer used
+-- Filters are now stored as JSON in user_profile.admin_filters column
+-- Keep this migration for backward compatibility only
+-- 
+-- If you want to clean up, you can drop this table:
+-- DROP TABLE IF EXISTS public.saved_filters CASCADE;
+
+-- Original table schema (preserved for reference):
+-- create table if not exists public.saved_filters (
+--   id uuid not null default gen_random_uuid (),
+--   admin_id uuid not null,
+--   name text not null,
+--   description text null,
+--   status text[] null,
+--   min_ai_score integer null,
+--   max_ai_score integer null,
+--   min_income_potential float null,
+--   max_income_potential float null,
+--   start_date timestamp with time zone null,
+--   end_date timestamp with time zone null,
+--   search_query text null,
+--   is_default boolean not null default false,
+--   created_at timestamp with time zone not null default now(),
+--   updated_at timestamp with time zone not null default now(),
+--   constraint saved_filters_pkey primary key (id),
+--   constraint saved_filters_admin_id_fkey foreign key (admin_id) references user_profile (id) on delete cascade
+-- ) TABLESPACE pg_default;
+-- 
+-- -- Create index for faster queries
+-- create index if not exists saved_filters_admin_id_idx on public.saved_filters (admin_id);
+-- create index if not exists saved_filters_created_at_idx on public.saved_filters (created_at desc);
+

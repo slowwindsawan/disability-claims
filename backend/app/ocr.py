@@ -173,3 +173,44 @@ def extract_text_from_pdf(path: str) -> Tuple[str, bool]:
     except Exception as e:
         logger.error(f"Failed to extract text from {path}: {e}")
         raise
+
+
+def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> Tuple[str, bool]:
+    """
+    Fallback PDF text extraction using PyPDF2 (digital PDFs only).
+    Does NOT use OCR - only extracts embedded text.
+    Returns (text, success) tuple.
+    """
+    try:
+        try:
+            import PyPDF2
+        except ImportError:
+            logger.warning("PyPDF2 not installed for fallback PDF extraction")
+            return "", False
+        
+        # Create a PDF reader object from bytes
+        pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+        all_text = []
+        
+        for page_num in range(len(pdf_reader.pages)):
+            try:
+                page = pdf_reader.pages[page_num]
+                text = page.extract_text()
+                if text:
+                    all_text.append(text)
+            except Exception as e:
+                logger.warning(f"Failed to extract text from page {page_num}: {e}")
+                continue
+        
+        extracted_text = "\n".join(all_text)
+        
+        if extracted_text.strip():
+            logger.info(f"Extracted {len(extracted_text)} chars from PDF using PyPDF2 fallback")
+            return extracted_text, True
+        else:
+            logger.warning("No embedded text found in PDF - document may be scanned/image-based")
+            return "", False
+        
+    except Exception as e:
+        logger.exception(f"PyPDF2 fallback extraction failed: {e}")
+        return "", False

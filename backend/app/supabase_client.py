@@ -112,8 +112,8 @@ def create_auth_user(email: str, password: str, phone: str = None, email_confirm
 
     url = f"{SUPABASE_URL.rstrip('/')}/auth/v1/admin/users"
     payload = {'email': email, 'password': password}
-    if phone:
-        payload['phone'] = phone
+    if phone and phone.strip():  # Only add phone if provided and non-empty
+        payload['phone'] = phone.strip()
     # Mark email as confirmed by default when creating admin user
     if email_confirm:
         # GoTrue/Supabase admin API supports `email_confirm` boolean to mark the
@@ -126,6 +126,24 @@ def create_auth_user(email: str, password: str, phone: str = None, email_confirm
         resp.raise_for_status()
         logger.info(f"Created auth user for {email} (email_confirm={email_confirm})")
         return resp.json()
+    except requests.exceptions.HTTPError as e:
+        # Parse error response to get detailed error info
+        error_detail = None
+        try:
+            error_body = e.response.json()
+            error_code = error_body.get('error_code', '')
+            error_msg = error_body.get('msg', '')
+            
+            # Check for specific known errors
+            if error_code == 'email_exists':
+                error_detail = f'email_exists: {email}'
+            elif error_msg:
+                error_detail = error_msg
+        except:
+            error_detail = e.response.text if hasattr(e.response, 'text') else str(e)
+        
+        logger.error(f'Failed to create auth user: {e.response.status_code} - {error_detail}')
+        raise ValueError(f'Failed to create auth user: {error_detail}')
     except Exception:
         logger.exception('Failed to create auth user')
         raise
@@ -1033,38 +1051,58 @@ def admin_list_subadmins(limit: int = 100) -> list:
         return []
 
 
-def admin_create_subadmin(email: str, name: str = None, phone: str = None, password: str = None) -> dict:
+def admin_create_subadmin(email: str, name: str = None, phone: str = None, password: str = None, permissions: dict = None) -> dict:
     """Create an auth user and insert/patch a profile with role='subadmin'. Returns created profile or error."""
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         raise RuntimeError('Supabase config missing')
+    
+    # Validate email
+    if not email or '@' not in email:
+        raise ValueError('Invalid email address')
+    
     # create auth user (service role required)
     try:
         # If password not supplied, generate a random one
         if not password:
             import secrets as _secrets
             password = _secrets.token_urlsafe(16)
+        
+        # Ensure password meets minimum requirements
+        if len(password) < 6:
+            raise ValueError('Password must be at least 6 characters')
+        
         auth_res = create_auth_user(email=email, password=password, phone=phone, email_confirm=True)
         # extract user id
         user_id = auth_res.get('id') or auth_res.get('user', {}).get('id') or auth_res.get('aud')
+        
+        if not user_id:
+            raise ValueError('Failed to get user ID from auth response')
+            
+    except ValueError as e:
+        logger.exception(f'Validation error creating auth user: {str(e)}')
+        raise
     except Exception:
         logger.exception('Failed to create auth user for subadmin')
         raise
 
     try:
-        # upsert profile
+        # upsert profile with admin_permissions JSONB column
         body = {
             'user_id': str(user_id),
             'full_name': name or '',
-            'email': email,
-            'phone': phone or '',
+            'email': email.lower(),  # Normalize email to lowercase
+            'phone': (phone or '').strip(),
             'role': 'subadmin',
+            'is_subadmin': True,
             'verified': True,
+            'admin_permissions': permissions or {},
             'created_at': datetime.utcnow().isoformat()
         }
         url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile"
         resp = requests.post(url, headers=_postgrest_headers(), json=body, timeout=15)
         resp.raise_for_status()
-        return resp.json()
+        profile_data = resp.json()
+        return profile_data
     except Exception:
         logger.exception('Failed to insert subadmin profile')
         raise
@@ -1085,18 +1123,38 @@ def admin_update_profile(user_id: str, fields: dict) -> dict:
 
 
 def admin_upsert_profile(user_id: str, fields: dict) -> dict:
-    """Upsert a user_profile row using PostgREST merge-duplicates resolution.
-    This will insert when missing or merge when present. Returns the resulting row(s).
+    """Upsert a user_profile row by updating the existing record.
+    Performs a PATCH request filtered by user_id to safely update or insert via merge.
+    Returns the resulting row(s).
     """
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         raise RuntimeError('Supabase config missing')
+    
+    # First, try to update the existing record
     url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile"
     body = {**fields, 'user_id': user_id}
     headers = _postgrest_headers().copy()
-    # Ask PostgREST to merge duplicates on conflict (upsert)
-    headers['Prefer'] = 'return=representation,resolution=merge-duplicates'
+    headers['Prefer'] = 'return=representation'
+    
     try:
-        resp = requests.post(url, headers=headers, json=body, timeout=15)
+        # Use PATCH with user_id filter to update existing record
+        # This avoids 409 Conflict errors from unique constraint violations
+        query = f"user_id=eq.{user_id}"
+        patch_url = f"{url}?{query}"
+        resp = requests.patch(patch_url, headers=headers, json=fields, timeout=15)
+        
+        # If record exists, patch will return 200 with updated rows
+        if resp.status_code == 200:
+            result = resp.json()
+            if result and len(result) > 0:
+                return result
+        
+        # If no rows were updated (404 or empty result), insert a new record
+        if resp.status_code == 200 and (not result or len(result) == 0):
+            resp = requests.post(url, headers=headers, json=body, timeout=15)
+            resp.raise_for_status()
+            return resp.json()
+        
         resp.raise_for_status()
         return resp.json()
     except Exception:
@@ -1105,16 +1163,59 @@ def admin_upsert_profile(user_id: str, fields: dict) -> dict:
 
 
 def admin_delete_auth_user(user_id: str) -> dict:
-    """Delete an auth user via GoTrue admin endpoint. Use with care."""
+    """Delete an auth user directly by user_id."""
+    try:
+        if _has_supabase_py and _supabase_admin:
+            # Use the supabase-py client for proper admin deletion
+            logger.info(f'Deleting auth user {user_id} using supabase-py admin client')
+            try:
+                response = _supabase_admin.auth.admin.delete_user(user_id)
+                logger.info(f'Successfully deleted auth user {user_id}')
+                return {'status': 'ok', 'data': response}
+            except Exception as e:
+                # If user not found, that's OK (already deleted)
+                if 'not found' in str(e).lower():
+                    logger.info(f'User {user_id} not found in auth (already deleted)')
+                    return {'status': 'ok', 'note': 'user_already_deleted'}
+                raise
+        else:
+            # Fallback to HTTP requests if supabase-py is not available
+            if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+                raise RuntimeError('Supabase config missing')
+            
+            url = f"{SUPABASE_URL.rstrip('/')}/auth/v1/admin/users/{user_id}"
+            resp = requests.delete(url, headers=_admin_headers(), timeout=15)
+            
+            if resp.status_code in [200, 204]:
+                logger.info(f'Successfully deleted auth user {user_id} via HTTP')
+                return {'status': 'ok'}
+            elif resp.status_code == 404:
+                logger.info(f'User {user_id} not found (already deleted)')
+                return {'status': 'ok', 'note': 'user_already_deleted'}
+            else:
+                logger.error(f'Delete failed with status {resp.status_code}: {resp.text}')
+                resp.raise_for_status()
+                
+    except Exception as e:
+        logger.exception(f'Failed to delete auth user {user_id}: {e}')
+        raise
+
+
+def delete_user_profile(user_id: str) -> dict:
+    """Delete a user profile from user_profile table."""
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         raise RuntimeError('Supabase config missing')
-    url = f"{SUPABASE_URL.rstrip('/')}/auth/v1/admin/users/{user_id}"
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?user_id=eq.{user_id}"
     try:
-        resp = requests.delete(url, headers=_admin_headers(), timeout=15)
+        resp = requests.delete(url, headers=_postgrest_headers(), timeout=15)
+        # 404 or 0 rows deleted is fine - just means user doesn't exist
+        if resp.status_code in [200, 204, 404]:
+            logger.info(f'User profile deleted for {user_id}')
+            return {'status': 'ok'}
         resp.raise_for_status()
         return {'status': 'ok'}
     except Exception:
-        logger.exception('Failed to delete auth user')
+        logger.exception('Failed to delete user profile')
         raise
 
 
@@ -1321,6 +1422,8 @@ def insert_case_document(case_id: str, file_path: str, file_name: str, file_type
     Returns:
         dict: Created document record
     """
+    from datetime import datetime, timezone
+    
     url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/case_documents"
     body = {
         'case_id': case_id,
@@ -1330,6 +1433,7 @@ def insert_case_document(case_id: str, file_path: str, file_name: str, file_type
         'file_size': file_size,
         'document_type': document_type,
         'uploaded_by': uploaded_by,
+        'uploaded_at': datetime.now(timezone.utc).isoformat(),
         'metadata': metadata or {}
     }
     
@@ -1347,73 +1451,10 @@ def insert_case_document(case_id: str, file_path: str, file_name: str, file_type
             error_detail = resp.text
         except:
             pass
-        
-        # If foreign key constraint violation on uploaded_by, retry without it
-        if resp.status_code == 409 and 'uploaded_by' in error_detail and 'foreign key constraint' in error_detail:
-            logger.warning(f'User {uploaded_by} not in user_profile table, retrying without uploaded_by')
-            body['uploaded_by'] = None
-            try:
-                resp = requests.post(url, json=body, headers=headers, timeout=10)
-                resp.raise_for_status()
-                data = resp.json()
-                return data[0] if isinstance(data, list) and len(data) > 0 else data
-            except Exception as retry_error:
-                logger.error(f'Retry also failed: {retry_error}')
-                raise
-        
         logger.error(f'Failed to insert case document for case_id={case_id}, status={resp.status_code}, error={error_detail}, body={body}')
         raise
     except Exception:
         logger.exception(f'Failed to insert case document for case_id={case_id}')
-        raise
-
-
-def update_case_document(document_id: str, file_path: str = None, file_name: str = None,
-                        file_type: str = None, file_size: int = None, metadata: dict = None) -> dict:
-    """
-    Update an existing case document record.
-    
-    Args:
-        document_id: UUID of the document to update
-        file_path: New file path/URL (if replacing file)
-        file_name: New original filename
-        file_type: New MIME type
-        file_size: New size in bytes
-        metadata: Updated or additional metadata
-    
-    Returns:
-        dict: Updated document record
-    """
-    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/case_documents"
-    
-    # Build update body with only provided fields
-    body = {}
-    if file_path is not None:
-        body['file_path'] = file_path
-    if file_name is not None:
-        body['file_name'] = file_name
-    if file_type is not None:
-        body['file_type'] = file_type
-    if file_size is not None:
-        body['file_size'] = file_size
-    if metadata is not None:
-        body['metadata'] = metadata
-    
-    # Update uploaded_at timestamp when file is replaced
-    if file_path is not None:
-        from datetime import datetime
-        body['uploaded_at'] = datetime.utcnow().isoformat()
-    
-    headers = _postgrest_headers()
-    headers['Prefer'] = 'return=representation'
-    
-    try:
-        resp = requests.patch(f"{url}?id=eq.{document_id}", json=body, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        return data[0] if isinstance(data, list) and len(data) > 0 else data
-    except Exception:
-        logger.exception(f'Failed to update case document id={document_id}')
         raise
 
 
@@ -1507,3 +1548,21 @@ def storage_delete_file(bucket: str, path: str) -> dict:
         logger.exception(f'Failed to delete file from storage: {bucket}/{path}')
         raise
 
+
+# Permission management for subadmins
+def update_subadmin_permissions(user_id: str, permissions: dict) -> dict:
+    """Update subadmin permissions in admin_permissions JSONB column."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError('Supabase config missing')
+    
+    try:
+        url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?user_id=eq.{user_id}"
+        body = {'admin_permissions': permissions}
+        headers = _postgrest_headers().copy()
+        headers['Prefer'] = 'return=representation'
+        resp = requests.patch(url, headers=headers, json=body, timeout=15)
+        resp.raise_for_status()
+        return {'status': 'ok'}
+    except Exception:
+        logger.exception(f'Failed to update subadmin permissions for {user_id}')
+        raise

@@ -60,7 +60,13 @@ def apply_sql(database_url: str, sql_text: str):
 def main():
     # Default path to migration file
     base = pathlib.Path(__file__).parent.parent
-    mig_path = base / 'db' / 'migrations' / '001_create_user_tables.sql'
+    
+    # Allow overriding migration file via command-line argument
+    migration_file = sys.argv[1] if len(sys.argv) > 1 else '001_create_user_tables.sql'
+    if not migration_file.endswith('.sql'):
+        migration_file = migration_file + '.sql'
+    
+    mig_path = base / 'db' / 'migrations' / migration_file
 
     database_url = os.environ.get('DATABASE_URL')
     if not database_url:

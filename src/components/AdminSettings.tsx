@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { apiGetProfile, apiUpdateProfile, apiUploadProfilePhoto, apiChangePassword } from '../lib/api'
 import './AdminSettings.css'
-import Skeleton, { SkeletonCard } from './Skeleton'
 
 interface AdminSettingsProps {
   onLogout: () => void
@@ -17,7 +16,6 @@ function AdminSettings({ onLogout, onNavigate, onSwitchToUser }: AdminSettingsPr
   const [email, setEmail] = useState('killanjames@gmail.com')
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [loadingProfile, setLoadingProfile] = useState<boolean>(true)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [newPassword, setNewPassword] = useState('')
@@ -26,7 +24,6 @@ function AdminSettings({ onLogout, onNavigate, onSwitchToUser }: AdminSettingsPr
   useEffect(() => {
     let mounted = true
     async function load() {
-      setLoadingProfile(true)
       try {
         const res: any = await apiGetProfile()
         const user = res?.user || res?.data?.user || res?.user
@@ -44,8 +41,6 @@ function AdminSettings({ onLogout, onNavigate, onSwitchToUser }: AdminSettingsPr
         }
       } catch (err) {
         console.warn('Failed to load profile for admin settings', err)
-      } finally {
-        if (mounted) setLoadingProfile(false)
       }
     }
     load()
@@ -157,9 +152,7 @@ function AdminSettings({ onLogout, onNavigate, onSwitchToUser }: AdminSettingsPr
           <div className="admin-set-content">
             <div className="admin-set-profile-section">
               <div className="admin-set-avatar" onClick={handlePhotoClick} style={{ cursor: 'pointer' }}>
-                {loadingProfile ? (
-                  <Skeleton width={120} height={120} className="rounded-full" />
-                ) : photoPreview ? (
+                {photoPreview ? (
                   <div style={{ width: 120, height: 120, borderRadius: 9999, overflow: 'hidden', backgroundColor: '#e5e7eb' }}>
                     <img src={photoPreview} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </div>
@@ -172,51 +165,40 @@ function AdminSettings({ onLogout, onNavigate, onSwitchToUser }: AdminSettingsPr
               </div>
 
               <div className="admin-set-header">
-                {loadingProfile ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <Skeleton width={160} height={28} />
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <Skeleton width={80} height={32} />
-                      <Skeleton width={80} height={32} />
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <h1>Settings</h1>
-                    <div className="admin-set-actions">
-                      <button className="admin-set-btn-cancel" onClick={() => { setMessage(null); setError(null); }}>Cancel</button>
-                      <button className="admin-set-btn-save" onClick={async () => {
-                        setLoading(true)
-                        setMessage(null)
-                        setError(null)
-                        try {
-                          if (activeTab === 'profile') {
-                            const full_name = `${firstName || ''}${lastName ? ' ' + lastName : ''}`.trim()
-                            const payload: any = { full_name, email }
-                            await apiUpdateProfile(payload)
-                            setMessage('Settings saved')
-                          } else if (activeTab === 'password') {
-                            if (!newPassword) {
-                              setError('Please enter a new password')
-                            } else if (newPassword !== confirmPassword) {
-                              setError('New passwords do not match')
-                            } else {
-                              await apiChangePassword(newPassword)
-                              setMessage('Password changed')
-                              setNewPassword('')
-                              setConfirmPassword('')
-                            }
-                          }
-                        } catch (err: any) {
-                          console.error('Failed to save admin settings', err)
-                          setError(err?.body?.detail || err?.message || 'Failed to save settings')
-                        } finally {
-                          setLoading(false)
+                <h1>Settings</h1>
+                <div className="admin-set-actions">
+                  <button className="admin-set-btn-cancel" onClick={() => { setMessage(null); setError(null); }}>Cancel</button>
+                  <button className="admin-set-btn-save" onClick={async () => {
+                    setLoading(true)
+                    setMessage(null)
+                    setError(null)
+                    try {
+                      if (activeTab === 'profile') {
+                        const full_name = `${firstName || ''}${lastName ? ' ' + lastName : ''}`.trim()
+                        const payload: any = { full_name, email }
+                        await apiUpdateProfile(payload)
+                        setMessage('Settings saved')
+                      } else if (activeTab === 'password') {
+                        // Validate inputs (no current-password required)
+                        if (!newPassword) {
+                          setError('Please enter a new password')
+                        } else if (newPassword !== confirmPassword) {
+                          setError('New passwords do not match')
+                        } else {
+                          await apiChangePassword(newPassword)
+                          setMessage('Password changed')
+                          setNewPassword('')
+                          setConfirmPassword('')
                         }
-                      }}>{loading ? 'Saving…' : 'Save'}</button>
-                    </div>
-                  </>
-                )}
+                      }
+                    } catch (err: any) {
+                      console.error('Failed to save admin settings', err)
+                      setError(err?.body?.detail || err?.message || 'Failed to save settings')
+                    } finally {
+                      setLoading(false)
+                    }
+                  }}>{loading ? 'Saving…' : 'Save'}</button>
+                </div>
               </div>
 
               <div className="admin-set-tabs">
@@ -235,47 +217,41 @@ function AdminSettings({ onLogout, onNavigate, onSwitchToUser }: AdminSettingsPr
               </div>
 
               <div className="admin-set-form">
-                {loadingProfile ? (
-                  <SkeletonCard lines={5} />
-                ) : (
+                {activeTab === 'profile' && (
                   <>
-                    {activeTab === 'profile' && (
-                      <>
-                        <div className="admin-set-form-row">
-                          <div className="admin-set-form-group">
-                            <label>First name</label>
-                            <input
-                              type="text"
-                              value={firstName}
-                              onChange={(e) => setFirstName(e.target.value)}
-                            />
-                          </div>
-                          <div className="admin-set-form-group">
-                            <label>Last name</label>
-                            <input
-                              type="text"
-                              value={lastName}
-                              onChange={(e) => setLastName(e.target.value)}
-                            />
-                          </div>
-                        </div>
+                    <div className="admin-set-form-row">
+                      <div className="admin-set-form-group">
+                        <label>First name</label>
+                        <input
+                          type="text"
+                          value={firstName}
+                          onChange={(e) => setFirstName(e.target.value)}
+                        />
+                      </div>
+                      <div className="admin-set-form-group">
+                        <label>Last name</label>
+                        <input
+                          type="text"
+                          value={lastName}
+                          onChange={(e) => setLastName(e.target.value)}
+                        />
+                      </div>
+                    </div>
 
-                        <div className="admin-set-form-group">
-                          <label>Email</label>
-                          <div className="admin-set-input-with-icon">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-                              <polyline points="22,6 12,13 2,6"/>
-                            </svg>
-                            <input
-                              type="email"
-                              value={email}
-                              onChange={(e) => setEmail(e.target.value)}
-                            />
-                          </div>
-                        </div>
-                      </>
-                    )}
+                    <div className="admin-set-form-group">
+                      <label>Email</label>
+                      <div className="admin-set-input-with-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                          <polyline points="22,6 12,13 2,6"/>
+                        </svg>
+                        <input
+                          type="email"
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                        />
+                      </div>
+                    </div>
                   </>
                 )}
 
