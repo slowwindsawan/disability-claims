@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
 import { Upload, FileText, CreditCard, FileCheck, ArrowLeft, CheckCircle2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -48,14 +48,14 @@ export default function WorkInjuryDocumentsPage() {
 
   const [isMobile, setIsMobile] = useState(false)
 
-  useState(() => {
+  useEffect(() => {
     const checkMobile = () => {
       setIsMobile(window.innerWidth < 768)
     }
     checkMobile()
     window.addEventListener("resize", checkMobile)
     return () => window.removeEventListener("resize", checkMobile)
-  })
+  }, [])
 
   const handleFileUpload = (id: string, file: File) => {
     setDocuments((prev) => prev.map((doc) => (doc.id === id ? { ...doc, file } : doc)))

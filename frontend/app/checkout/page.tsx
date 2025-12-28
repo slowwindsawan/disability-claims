@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion"
 import { useState, useEffect } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
+import { useRouter } from "next/navigation"
 import { BACKEND_BASE_URL } from '@/variables'
 import {
   CreditCard,
@@ -22,8 +22,9 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentSigningIframe } from "@/components/document-signing-iframe"
 import { useLanguage } from "@/lib/language-context"
+import { useSearchParams } from "next/navigation"
 
-export default function Checkout() {
+function CheckoutContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const { language } = useLanguage()
@@ -514,5 +515,15 @@ export default function Checkout() {
         </div>
       </motion.div>
     </div>
+  )
+}
+
+import { Suspense } from 'react'
+
+export default function Checkout() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center">Loading...</div>}>
+      <CheckoutContent />
+    </Suspense>
   )
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { BACKEND_BASE_URL } from '@/variables'
 
 export async function GET(request: NextRequest) {
   try {
@@ -6,8 +7,6 @@ export async function GET(request: NextRequest) {
     const page = searchParams.get('page') || '1';
     const limit = searchParams.get('limit') || '20';
     
-import { BACKEND_BASE_URL } from '@/variables'
-
     const backendUrl = BACKEND_BASE_URL;
     const authHeader = request.headers.get('authorization');
     
