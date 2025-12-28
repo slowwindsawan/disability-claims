@@ -1,15 +1,12 @@
 // API Configuration
 import { BACKEND_BASE_URL } from '@/variables'
 
-const API_BASE_URL = BACKEND_BASE_URL
-const API_BASE = API_BASE_URL
-
 async function request(path: string, opts: any = {}) {
   const headers: any = opts.headers || {}
   // attach token if available
   const token = localStorage.getItem('access_token')
   if (token && !headers['Authorization']) headers['Authorization'] = `Bearer ${token}`
-  const res = await fetch(`${API_BASE}${path}`, { ...opts, headers })
+  const res = await fetch(`${BACKEND_BASE_URL}${path}`, { ...opts, headers })
   const text = await res.text()
   let json: any = null
   try {
@@ -120,7 +117,7 @@ export async function apiUploadProfilePhoto(formData: FormData) {
   const headers: any = {}
   const token = localStorage.getItem('access_token')
   if (token) headers['Authorization'] = `Bearer ${token}`
-  const res = await fetch(API_BASE_URL + '/user/profile/photo', { method: 'POST', body: formData, headers })
+  const res = await fetch(`${BACKEND_BASE_URL}/user/profile/photo`, { method: 'POST', body: formData, headers })
   const text = await res.text()
   let json: any = null
   try { json = text ? JSON.parse(text) : null } catch (e) { json = { text } }
@@ -213,7 +210,7 @@ export async function apiUploadCaseDocument(caseId: string, file: File, document
   const token = localStorage.getItem('access_token')
   if (token) headers['Authorization'] = `Bearer ${token}`
   
-  const res = await fetch(`${API_BASE}/cases/${caseId}/documents`, {
+  const res = await fetch(`${BACKEND_BASE_URL}/cases/${caseId}/documents`, {
     method: 'POST',
     body: formData,
     headers
