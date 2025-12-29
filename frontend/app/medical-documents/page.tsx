@@ -4,6 +4,10 @@ import type React from "react"
 
 import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
+
+// Force dynamic rendering - prevent static generation
+export const dynamic = 'force-dynamic'
+
 import { Upload, FileText, Shield, CheckCircle2, Stethoscope, ClipboardList, Lock, Loader2, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -122,18 +126,54 @@ export default function MedicalDocumentsPage() {
     try {
       // Get user credentials
       const token = localStorage.getItem('access_token')
-      const userId = localStorage.getItem('user_id')
+      let userId = localStorage.getItem('user_id')
       const caseId = localStorage.getItem('case_id')
       
-      if (!token || !userId) {
+      if (!token) {
         toast({
           title: "שגיאת אימות",
-          description: "נא להתחבר מחדש",
+          description: "נא להתחבר תחילה",
           variant: "destructive"
         })
-        router.push('/')
+        setTimeout(() => router.push('/'), 2000)
         return
       }
+      
+      // If userId is missing, try to fetch user profile
+      if (!userId) {
+        console.log('No user_id found, fetching from profile...')
+        try {
+          const profileResponse = await fetch(`${BACKEND_BASE_URL}/user/profile`, {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          })
+          
+          if (profileResponse.ok) {
+            const profileData = await profileResponse.json()
+            console.log('Fetched profile data:', profileData)
+            userId = profileData?.profile?.id || profileData?.profile?.user_id
+            if (userId) {
+              localStorage.setItem('user_id', userId)
+            }
+          }
+        } catch (profileError) {
+          console.error('Failed to fetch user profile:', profileError)
+        }
+        
+        // If still no userId, show error
+        if (!userId) {
+          toast({
+            title: "שגיאת משתמש",
+            description: "לא נמצא מזהה משתמש. נא להתחבר מחדש",
+            variant: "destructive"
+          })
+          // setTimeout(() => router.push('/'), 2000)
+          return
+        }
+      }
+      
+      console.log('Proceeding with User ID:', userId, 'Case ID:', caseId)
       
       setAnalysisProgress(20)
       setAnalysisStep("מנתח את השאלון...")
@@ -213,7 +253,8 @@ export default function MedicalDocumentsPage() {
         )
         
         if (!response.ok) {
-          throw new Error('Failed to save questionnaire')
+          const errorData = await response.json().catch(() => ({ detail: 'Failed to save questionnaire' }))
+          throw new Error(errorData.detail || `Failed to save questionnaire (${response.status})`)
         }
         
         setAnalysisProgress(90)
@@ -234,6 +275,7 @@ export default function MedicalDocumentsPage() {
     } catch (error: any) {
       console.error('Analysis error:', error)
       setIsAnalyzing(false)
+      setAnalysisProgress(0)
       toast({
         title: "שגיאה בניתוח",
         description: error.message || "אירעה שגיאה. נסה שוב.",

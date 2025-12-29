@@ -1566,3 +1566,64 @@ def update_subadmin_permissions(user_id: str, permissions: dict) -> dict:
     except Exception:
         logger.exception(f'Failed to update subadmin permissions for {user_id}')
         raise
+
+
+# Agent prompt management
+_agent_cache = {}  # Cache for agent prompts to reduce DB calls
+
+def get_agent_prompt(agent_name: str, fallback_prompt: str = None) -> dict:
+    """
+    Fetch agent configuration from database by name.
+    Returns dict with: prompt, model, output_schema
+    Uses in-memory cache to reduce DB calls.
+    Falls back to provided fallback_prompt if agent not found or DB unavailable.
+    """
+    # Check cache first
+    if agent_name in _agent_cache:
+        logger.debug(f"Using cached prompt for agent: {agent_name}")
+        return _agent_cache[agent_name]
+    
+    try:
+        if not _has_supabase_py or not _supabase_admin:
+            logger.warning(f"Supabase not configured, using fallback prompt for {agent_name}")
+            return {
+                'prompt': fallback_prompt,
+                'model': 'gpt-4o',
+                'output_schema': None
+            }
+        
+        # Fetch from database
+        response = _supabase_admin.table('agents').select('*').eq('name', agent_name).eq('is_active', True).execute()
+        
+        if response.data and len(response.data) > 0:
+            agent = response.data[0]
+            result = {
+                'prompt': agent.get('prompt'),
+                'model': agent.get('model', 'gpt-4o'),
+                'output_schema': agent.get('output_schema')
+            }
+            # Cache the result
+            _agent_cache[agent_name] = result
+            logger.info(f"Loaded agent '{agent_name}' from database (model: {result['model']})")
+            return result
+        else:
+            logger.warning(f"Agent '{agent_name}' not found in database, using fallback")
+            return {
+                'prompt': fallback_prompt,
+                'model': 'gpt-4o',
+                'output_schema': None
+            }
+    except Exception as e:
+        logger.exception(f"Failed to fetch agent '{agent_name}' from database: {e}")
+        return {
+            'prompt': fallback_prompt,
+            'model': 'gpt-4o',
+            'output_schema': None
+        }
+
+
+def clear_agent_cache():
+    """Clear the agent prompt cache. Useful after updating agents in the database."""
+    global _agent_cache
+    _agent_cache = {}
+    logger.info("Agent prompt cache cleared")

@@ -179,6 +179,49 @@ export default function Home() {
       const token = loginRes?.data?.access_token || loginRes?.data?.accessToken
       if (token) {
         localStorage.setItem('access_token', token)
+        
+        // Fetch user data to get user_id
+        try {
+          const userRes = await fetch(`${BACKEND_BASE_URL}/user/profile`, {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          })
+          
+          if (userRes.ok) {
+            const userData = await userRes.json()
+            if (userData.id || userData.user_id) {
+              localStorage.setItem('user_id', userData.id || userData.user_id)
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to fetch user profile:', e)
+        }
+        
+        // Fetch cases and set first case_id
+        try {
+          const casesRes = await fetch(`${BACKEND_BASE_URL}/cases`, {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          })
+          
+          if (casesRes.ok) {
+            const casesData = await casesRes.json()
+            const cases = Array.isArray(casesData) ? casesData : casesData.cases || casesData.data || []
+            
+            if (cases.length > 0) {
+              const firstCaseId = cases[0].id || cases[0].case_id
+              if (firstCaseId) {
+                localStorage.setItem('case_id', firstCaseId)
+                console.log('✅ Set case_id from first case:', firstCaseId)
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to fetch cases:', e)
+        }
+        
         setShowLoginModal(false)
         router.push('/dashboard')
         return

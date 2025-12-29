@@ -57,7 +57,11 @@ async def analyze_for_followup(
 
 {documents_context}"""
     
-    prompt = f"""You are a legal case analyst specializing in disability claims, with expertise in interpreting and applying BTL disability evaluation guidelines.
+    # Fetch agent configuration from database
+    from .supabase_client import get_agent_prompt
+    
+    # FALLBACK PROMPT (Original hardcoded version - kept for safety)
+    fallback_prompt = """You are a legal case analyst specializing in disability claims, with expertise in interpreting and applying BTL disability evaluation guidelines.
 
 You will be provided with:
 - The claimant's interview summary
@@ -105,8 +109,15 @@ Rules:
 - Do not generate questions for minor details or information already implied in the documents
 
 Context:
-{full_context}
+{case_data}
 """
+    
+    # Load agent configuration from database
+    agent_config = get_agent_prompt('followup_agent', fallback_prompt)
+    prompt_template = agent_config['prompt']
+    
+    # Replace placeholders in prompt
+    prompt = prompt_template.replace('{case_data}', full_context)
 
     try:
         if provider == 'gemini':
@@ -121,8 +132,8 @@ Context:
                 text = str(response)
         else:
             from .eligibility_processor import _call_gpt, _extract_text_from_gpt_response
-            logger.info(f"Calling OpenAI API for follow-up analysis")
-            response = _call_gpt(prompt, temperature=0.2, max_output_tokens=3000)
+            logger.info(f"Calling OpenAI API for follow-up analysis with model: {agent_config['model']}")
+            response = _call_gpt(prompt, model=agent_config['model'], temperature=0.2, max_output_tokens=3000)
             text = _extract_text_from_gpt_response(response)
         
         logger.info("-"*80)

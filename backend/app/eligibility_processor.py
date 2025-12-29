@@ -230,13 +230,17 @@ def summarize_and_extract_keypoints(ocr_text: str, answers: Dict[str, Any]) -> D
             'treatment_details': ''
         }
 
-    prompt = f"""You are a medical-legal document analyst. Analyze the following medical document and questionnaire answers to extract critical information for a disability claim.
+    # Fetch agent configuration from database
+    from .supabase_client import get_agent_prompt
+    
+    # FALLBACK PROMPT (Original hardcoded version - kept for safety)
+    fallback_prompt = """You are a medical-legal document analyst. Analyze the following medical document and questionnaire answers to extract critical information for a disability claim.
 
 QUESTIONNAIRE ANSWERS:
-{json.dumps(answers, indent=2)}
+{answers}
 
 MEDICAL DOCUMENT TEXT:
-{ocr_text[:20000]}
+{ocr_text}
 
 TASK:
 Provide a comprehensive analysis in JSON format with these exact keys:
@@ -258,6 +262,13 @@ Return ONLY valid JSON matching this schema:
   "treatment_details": "string"
 }}
 """
+    
+    # Load agent configuration from database
+    agent_config = get_agent_prompt('eligibility_processor', fallback_prompt)
+    prompt_template = agent_config['prompt']
+    
+    # Replace placeholders in prompt
+    prompt = prompt_template.replace('{answers}', json.dumps(answers, indent=2)).replace('{ocr_text}', ocr_text[:20000]).replace('{document_text}', ocr_text[:20000])
 
     try:
         logger.info("Calling OpenAI for document summarization and key points extraction (model=%s)", OPENAI_MODEL)
@@ -334,16 +345,19 @@ def score_eligibility_with_guidelines(
             'weaknesses': []
         }
 
-    prompt = f"""You are a disability claims eligibility expert. Analyze the following information and determine eligibility based on the official guidelines.
+    from .supabase_client import get_agent_prompt
+    
+    # FALLBACK PROMPT (Original hardcoded version - kept for safety)
+    fallback_prompt = """You are a disability claims eligibility expert. Analyze the following information and determine eligibility based on the official guidelines.
 
 OFFICIAL GUIDELINES:
-{guidelines_text[:20000]}
+{guidelines_text}
 
 QUESTIONNAIRE ANSWERS:
-{json.dumps(answers, indent=2)}
+{answers}
 
 DOCUMENT ANALYSIS:
-{json.dumps(document_analysis, indent=2)}
+{document_analysis}
 
 TASK:
 Carefully review all information against the official guidelines and provide a comprehensive eligibility assessment.
@@ -362,10 +376,19 @@ Return ONLY valid JSON matching this schema:
   "weaknesses": ["array of concerns or missing elements"]
 }}
 """
+    
+    # Load agent configuration from database
+    agent_config = get_agent_prompt('eligibility_scorer', fallback_prompt)
+    prompt_template = agent_config['prompt']
+    
+    # Replace placeholders in prompt
+    prompt = prompt_template.replace('{guidelines_text}', guidelines_text[:20000])
+    prompt = prompt.replace('{answers}', json.dumps(answers, indent=2))
+    prompt = prompt.replace('{document_analysis}', json.dumps(document_analysis, indent=2))
 
     try:
-        logger.info("Calling OpenAI for eligibility scoring (model=%s)", OPENAI_MODEL)
-        raw = _call_gpt(prompt, temperature=0.1, max_output_tokens=1024)
+        logger.info("Calling OpenAI for eligibility scoring (model=%s)", agent_config['model'])
+        raw = _call_gpt(prompt, model=agent_config['model'], temperature=0.1, max_output_tokens=1024)
         raw_text = _extract_text_from_gpt_response(raw)
         raw_text = _strip_markdown_json_block(raw_text)
 
@@ -439,7 +462,10 @@ def analyze_document_with_guidelines(
     """
     extra_context = extra_context or {}
 
-    prompt = f"""
+    from .supabase_client import get_agent_prompt
+    
+    # FALLBACK PROMPT (Original hardcoded version - kept for safety)
+    fallback_prompt = """
 You are an expert reviewer. First, determine if the OCR-extracted document is a relevant medical report for disability/clinical assessment. If irrelevant (e.g., receipts, unrelated letters, blank/garbled scans), clearly flag this and provide guidance. Then, if relevant, evaluate the document against the GUIDELINES.
 
 Return ONLY valid JSON with the following keys:
@@ -453,13 +479,13 @@ Return ONLY valid JSON with the following keys:
 - directions: array of concrete next steps for the user; if irrelevant, include exact document types needed (e.g., discharge summary, imaging report, specialist note)
 
 GUIDELINES:
-{guidelines_text[:12000]}
+{guidelines_text}
 
 OCR_DOCUMENT_TEXT:
-{ocr_text[:12000]}
+{ocr_text}
 
 CONTEXT:
-{json.dumps(extra_context, ensure_ascii=False)}
+{extra_context}
 
 SCHEMA:
 {{
@@ -473,15 +499,24 @@ SCHEMA:
   "directions": ["string"]
 }}
 """
+    
+    # Load agent configuration from database
+    agent_config = get_agent_prompt('guidelines_analyzer', fallback_prompt)
+    prompt_template = agent_config['prompt']
+    
+    # Replace placeholders in prompt
+    prompt = prompt_template.replace('{guidelines_text}', guidelines_text[:12000])
+    prompt = prompt.replace('{ocr_text}', ocr_text[:12000])
+    prompt = prompt.replace('{extra_context}', json.dumps(extra_context, ensure_ascii=False))
 
     try:
         if provider == 'gemini':
-            logger.info("Calling Gemini for doc+guidelines analysis (model=%s)", GEMINI_MODEL_ID)
+            logger.info("Calling Gemini for doc+guidelines analysis (model=%s)", agent_config['model'])
             raw = _call_gemini(prompt, temperature=0.2, max_output_tokens=1024)
             raw_text = _extract_text_from_gemini_response(raw)
         else:
-            logger.info("Calling OpenAI for doc+guidelines analysis (model=%s)", OPENAI_MODEL)
-            raw = _call_gpt(prompt, temperature=0.2, max_output_tokens=1024)
+            logger.info("Calling OpenAI for doc+guidelines analysis (model=%s)", agent_config['model'])
+            raw = _call_gpt(prompt, model=agent_config['model'], temperature=0.2, max_output_tokens=1024)
             raw_text = _extract_text_from_gpt_response(raw)
 
         raw_text = _strip_markdown_json_block(raw_text)
@@ -645,7 +680,11 @@ def check_document_relevance(
             'directions': [str] (what user should do if irrelevant)
         }
     """
-    prompt = f"""You are a LAWYER specializing in disability claims. You are reviewing a document submitted by your client to determine if it contains VALID MEDICAL EVIDENCE that can support their disability claim case.
+    # Fetch agent configuration from database
+    from .supabase_client import get_agent_prompt
+    
+    # FALLBACK PROMPT (Original hardcoded version - kept for safety)
+    fallback_prompt = """You are a LAWYER specializing in disability claims. You are reviewing a document submitted by your client to determine if it contains VALID MEDICAL EVIDENCE that can support their disability claim case.
 
 YOU MUST BE STRICT. Your client's claim depends on having proper medical documentation that meets legal requirements.
 
@@ -682,7 +721,7 @@ INVALID DOCUMENTS (Reject these - NOT legal evidence):
 
 DOCUMENT TO ANALYZE:
 ---
-{ocr_text[:15000]}
+{ocr_text}
 ---
 
 AS THE CLIENT'S LAWYER, evaluate this document:
@@ -696,8 +735,27 @@ Return ONLY valid JSON:
 {{
   "is_relevant": boolean (TRUE only if contains valid medical evidence for legal claim),
   "relevance_score": integer (0-30 for non-medical; 40-69 for administrative/weak; 70-100 for strong medical evidence),
-  "relevance_reason": "ONE clear sentence explaining why rejected/accepted (max 15 words) - e.g. 'This is a billing receipt without any medical findings' or 'Contains diagnosis and clinical examination results'",
-  "document_summary": "if rejected: 2-4 words describing what it is (e.g. 'Payment receipt', 'Blank scan', 'Appointment card'); if RELEVANT MEDICAL DOCUMENT: COMPREHENSIVE DETAILED SUMMARY (200-500 words) that captures EVERY important detail including: 1) ALL diagnoses/conditions mentioned with severity/type, 2) ALL test results with specific scores/values/findings, 3) Clinical observations and examination findings, 4) Functional limitations and work restrictions documented, 5) Treatment plan and medications with dosages, 6) Provider credentials and type of evaluation, 7) Patient history relevant to claims, 8) Prognosis and recommendations. NEVER summarize medical documents in less than 100 words - include EVERY medical fact that could support the disability claim.",
+  "relevance_reason": "ONE clear sentence explaining why rejected/accepted (max 15 words)",
+  "document_summary": "if rejected: 2-4 words; if relevant: COMPREHENSIVE 200-500 words summary with ALL medical details",
+  "key_points": [array of specific medical facts],
+  "document_type": "string",
+  "relevance_guidance": "specific guidance",
+  "structured_data": {{
+    "diagnoses": [],
+    "test_results": [],
+    "medications": [],
+    "functional_limitations": [],
+    "work_restrictions": [],
+    "provider_info": ""
+  }}
+}}"""
+    
+    # Load agent configuration from database
+    agent_config = get_agent_prompt('document_relevance_checker', fallback_prompt)
+    prompt_template = agent_config['prompt']
+    
+    # Replace placeholders in prompt
+    prompt = prompt_template.replace('{ocr_text}', ocr_text[:15000]).replace('{document_text}', ocr_text[:15000])
   "key_points": ["if relevant: array of 8-20 SPECIFIC medical facts extracted from document - include EVERY diagnosis, test result, medication, functional limitation, work restriction, clinical finding. Examples: 'Diagnosed with Major Depressive Disorder, Severe, Recurrent', 'Beck Depression Inventory score: 32 (severe range)', 'MRI shows disc herniation L4-L5 with nerve root compression', 'Unable to sit for more than 30 minutes per physician note', 'Prescribed Lexapro 20mg daily for depression', 'Processing speed 5th percentile on WAIS-IV', 'Patient reports difficulty concentrating, completing tasks', 'Orthopedist recommends no lifting over 10 lbs'. If not relevant: empty array []"],
   "focus_excerpt": "most critical section showing document type (100-300 chars)",
   "document_type": "medical_report|discharge_summary|specialist_evaluation|psychological_evaluation|neuropsych_evaluation|psychiatric_assessment|diagnostic_report|surgical_report|receipt|blank_page|administrative|other",
@@ -847,7 +905,10 @@ The answers should align with the medical evidence. Flag any discrepancies betwe
 the client states and what the medical record shows.
 """
     
-    prompt = f"""You are a LAWYER specializing in disability claims. You are evaluating your client's case to determine 
+    from .supabase_client import get_agent_prompt
+    
+    # FALLBACK PROMPT (Original hardcoded version - kept for safety)
+    fallback_prompt = """You are a LAWYER specializing in disability claims. You are evaluating your client's case to determine 
 eligibility for disability benefits. Your job is to:
 
 1. Build the strongest possible legal case for your client
@@ -857,7 +918,7 @@ eligibility for disability benefits. Your job is to:
 
 OFFICIAL DISABILITY CLAIM GUIDELINES:
 ---
-{guidelines_text[:18000]}
+{guidelines_text}
 ---
 
 KEY LEGAL REQUIREMENTS (from guidelines):
@@ -873,7 +934,7 @@ KEY LEGAL REQUIREMENTS (from guidelines):
 
 CLIENT'S QUESTIONNAIRE ANSWERS:
 ---
-{json.dumps(answers, indent=2)}
+{answers}
 ---
 
 YOUR LEGAL ASSESSMENT TASK:
@@ -914,15 +975,24 @@ Return ONLY valid JSON:
 }}
 
 BE THOROUGH and LEGALLY RIGOROUS. Your client's claim depends on your assessment."""
+    
+    # Load agent configuration from database
+    agent_config = get_agent_prompt('legal_case_evaluator', fallback_prompt)
+    prompt_template = agent_config['prompt']
+    
+    # Replace placeholders in prompt
+    prompt = prompt_template.replace('{guidelines_text}', guidelines_text[:18000])
+    prompt = prompt.replace('{document_context}', document_context)
+    prompt = prompt.replace('{answers}', json.dumps(answers, indent=2))
 
     try:
         if provider == 'gemini':
-            logger.info("Calling Gemini for questionnaire analysis (model=%s)", GEMINI_MODEL_ID)
+            logger.info("Calling Gemini for questionnaire analysis (model=%s)", agent_config['model'])
             raw = _call_gemini(prompt, temperature=0.1, max_output_tokens=1200)
             raw_text = _extract_text_from_gemini_response(raw)
         else:
-            logger.info("Calling OpenAI for questionnaire analysis (model=%s)", OPENAI_MODEL)
-            raw = _call_gpt(prompt, temperature=0.1, max_output_tokens=1200)
+            logger.info("Calling OpenAI for questionnaire analysis (model=%s)", agent_config['model'])
+            raw = _call_gpt(prompt, model=agent_config['model'], temperature=0.1, max_output_tokens=1200)
             raw_text = _extract_text_from_gpt_response(raw)
 
         raw_text = _strip_markdown_json_block(raw_text)

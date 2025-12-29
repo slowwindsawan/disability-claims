@@ -81,7 +81,11 @@ def summarize_dashboard_document(
             }
         }
     
-    prompt = f"""You are a specialized medical document analyzer. Your ONLY task is to comprehensively summarize and extract information from the following document.
+    # Fetch agent configuration from database
+    from .supabase_client import get_agent_prompt
+    
+    # FALLBACK PROMPT (Original hardcoded version - kept for safety)
+    fallback_prompt = """You are a specialized medical document analyzer. Your ONLY task is to comprehensively summarize and extract information from the following document.
 
 DOCUMENT NAME: {document_name}
 DOCUMENT TYPE: {document_type}
@@ -157,12 +161,22 @@ CRITICAL REQUIREMENTS:
 5. Be comprehensive - include EVERY diagnosis, test, medication, and limitation mentioned
 
 Return ONLY valid JSON."""
+    
+    # Load agent configuration from database
+    agent_config = get_agent_prompt('document_summarizer', fallback_prompt)
+    prompt_template = agent_config['prompt']
+    model = agent_config.get('model', OPENAI_MODEL)
+    
+    # Replace placeholders in prompt
+    prompt = prompt_template.replace('{document_name}', document_name).replace('{document_type}', document_type).replace('{ocr_text}', ocr_text).replace('{document_text}', ocr_text)
+    # Replace placeholders in prompt
+    prompt = prompt_template.replace('{document_name}', document_name).replace('{document_type}', document_type).replace('{ocr_text}', ocr_text).replace('{document_text}', ocr_text)
 
     try:
-        logger.info(f"Calling OpenAI API with model: {OPENAI_MODEL}")
+        logger.info(f"Calling OpenAI API with model: {model}")
         
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=model,
             messages=[
                 {
                     "role": "system",

@@ -2,6 +2,9 @@
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
+
+// Force dynamic rendering - prevent static generation
+export const dynamic = 'force-dynamic'
 import { motion, AnimatePresence } from "framer-motion"
 import { useLanguage } from "@/lib/language-context"
 import * as legacyApi from "@/lib/api"
@@ -34,6 +37,7 @@ import {
   Mail,
   Phone,
   Shield,
+  Zap,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -456,6 +460,12 @@ export default function TeamManagement() {
               <Button variant="ghost" className="w-full justify-start text-slate-300 hover:bg-slate-800">
                 <BarChart3 className={`w-5 h-5 ${language === "he" ? "ml-3" : "mr-3"}`} />
                 {language === "he" ? "אנליטיקס" : "Analytics"}
+              </Button>
+            </Link>
+            <Link href="/admin/prompts">
+              <Button variant="ghost" className="w-full justify-start text-slate-300 hover:bg-slate-800">
+                <Zap className={`w-5 h-5 ${language === "he" ? "ml-3" : "mr-3"}`} />
+                {language === "he" ? "AI Prompts" : "AI Prompts"}
               </Button>
             </Link>
             <Link href="/admin/settings">

@@ -129,6 +129,9 @@ interface WorkInjuryLead {
 
 const mockWorkInjuryLeads: WorkInjuryLead[] = []
 
+// Force dynamic rendering - prevent static generation
+export const dynamic = 'force-dynamic'
+
 export default function AdminDashboard() {
   const router = useRouter()
   const { language } = useLanguage()
@@ -826,6 +829,12 @@ export default function AdminDashboard() {
                 <Button variant="ghost" className="w-full justify-start text-slate-300 hover:bg-slate-800">
                   <BarChart3 className={`w-5 h-5 ${language === "he" ? "ml-3" : "mr-3"}`} />
                   אנליטיקס
+                </Button>
+              </Link>
+              <Link href="/admin/prompts">
+                <Button variant="ghost" className="w-full justify-start text-slate-300 hover:bg-slate-800">
+                  <Zap className={`w-5 h-5 ${language === "he" ? "ml-3" : "mr-3"}`} />
+                  AI Prompts
                 </Button>
               </Link>
               {/* Settings hidden for now */}

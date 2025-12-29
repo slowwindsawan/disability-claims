@@ -34,13 +34,76 @@ export default function ValueRevealPage() {
   useEffect(() => {
     const fetchCaseSummary = async () => {
       try {
-        const caseId = localStorage.getItem("case_id")
+        let caseId = localStorage.getItem("case_id")
         const token = localStorage.getItem("access_token")
 
-        if (!caseId || !token) {
-          console.error("❌ Missing case_id or access_token")
-          console.error("case_id:", caseId)
-          console.error("token:", token)
+        if (!token) {
+          console.error("❌ Missing access_token - redirecting to login")
+          setLoading(false)
+          router.push('/')
+          return
+        }
+
+        // Case ID is optional - if missing, we'll try to fetch user's latest case
+        if (!caseId) {
+          console.warn("⚠️ No case_id in localStorage, attempting to fetch from profile")
+          try {
+            const profileResponse = await fetch(`${BACKEND_BASE_URL}/user/profile`, {
+              headers: {
+                'Authorization': `Bearer ${token}`
+              }
+            })
+            
+            if (profileResponse.ok) {
+              const profileData = await profileResponse.json()
+              caseId = profileData?.profile?.case_id || profileData?.profile?.latest_case_id || profileData?.case_id || profileData?.latest_case_id
+              if (caseId) {
+                localStorage.setItem('case_id', caseId)
+                console.log('✅ Retrieved case_id from profile:', caseId)
+              }
+            }
+          } catch (e) {
+            console.error('Failed to fetch profile for case_id:', e)
+          }
+        }
+
+        // If still no case_id, fetch all cases and use the first one
+        if (!caseId) {
+          console.warn("⚠️ Still no case_id, fetching all user cases from database")
+          try {
+            let userId = localStorage.getItem("user_id")
+            const casesResponse = await fetch(`${BACKEND_BASE_URL}/cases?user_id=${userId}`, {
+              headers: {
+                'Authorization': `Bearer ${token}`
+              }
+            })
+            
+            if (casesResponse.ok) {
+              const casesData = await casesResponse.json()
+              const cases = Array.isArray(casesData) ? casesData : casesData.cases || casesData.data || []
+              
+              if (cases.length > 0) {
+                caseId = cases[0].id || cases[0].case_id
+                if (caseId) {
+                  localStorage.setItem('case_id', caseId)
+                  console.log('✅ Retrieved case_id from first case in list:', caseId)
+                }
+              }
+              
+              // Get user_id from the response payload if not already set
+              if (!userId && casesData?.user_id) {
+                userId = casesData.user_id
+                localStorage.setItem('user_id', userId)
+                console.log('✅ Retrieved user_id from response payload:', userId)
+              }
+            }
+          } catch (e) {
+            console.error('Failed to fetch cases list:', e)
+          }
+        }
+
+        if (!caseId) {
+          console.warn("⚠️ No case_id available - cannot load case summary")
           setLoading(false)
           return
         }
@@ -102,8 +165,14 @@ export default function ValueRevealPage() {
       const caseId = localStorage.getItem("case_id")
       const token = localStorage.getItem("access_token")
 
-      if (!caseId || !token) {
-        console.error("❌ Missing case_id or access_token")
+      if (!token) {
+        console.error("❌ Missing access_token")
+        router.push('/')
+        return
+      }
+
+      if (!caseId) {
+        console.warn("⚠️ No case_id available for reanalysis")
         return
       }
 

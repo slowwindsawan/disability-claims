@@ -64,7 +64,11 @@ async def run_document_analysis_agent(case_id: str, context_text: str) -> Dict[s
         
         logger.info(f"🔵 Starting OpenAI agent analysis for case {case_id}")
         
-        prompt = f"""You are an expert Israeli disability claims attorney specializing in BTL (Bittuach Leumi - National Insurance Institute) claims.
+        # Fetch agent configuration from database
+        from .supabase_client import get_agent_prompt
+        
+        # FALLBACK PROMPT (Original hardcoded version - kept for safety)
+        fallback_prompt = """You are an expert Israeli disability claims attorney specializing in BTL (Bittuach Leumi - National Insurance Institute) claims.
 
 Your task is to analyze the provided medical documents and generate a comprehensive analysis for Form 7801 (disability pension claim).
 
@@ -109,10 +113,20 @@ Return your response as a JSON object with these fields:
     "recommendations": ["rec1", "rec2", ...],
     "gaps": ["gap1", "gap2", ...]
 }"""
+        
+        # Load agent configuration from database
+        agent_config = get_agent_prompt('form_7801_analyzer', fallback_prompt)
+        prompt_template = agent_config['prompt']
+        model = agent_config['model']
+        
+        # Replace context placeholder in prompt
+        prompt = prompt_template.replace('{context_text}', context_text)
+        
+        logger.info(f"Using agent model: {model}")
 
-        # Call OpenAI API
+        # Call OpenAI API with dynamic model from database
         response = await client.chat.completions.create(
-            model="gpt-4-turbo",
+            model=model,
             messages=[
                 {
                     "role": "system",

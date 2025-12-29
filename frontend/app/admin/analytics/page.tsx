@@ -2,6 +2,9 @@
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
+
+// Force dynamic rendering - prevent static generation
+export const dynamic = 'force-dynamic'
 import { motion } from "framer-motion"
 import { useLanguage } from "@/lib/language-context"
 import * as legacyApi from "@/lib/api"
@@ -20,6 +23,7 @@ import {
   LogOut,
   Activity,
   ShieldCheck,
+  Zap,
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -211,6 +215,12 @@ export default function AnalyticsPage() {
               <BarChart3 className={`w-5 h-5 ${language === "he" ? "ml-3" : "mr-3"}`} />
               אנליטיקס
             </Button>
+            <Link href="/admin/prompts">
+              <Button variant="ghost" className="w-full justify-start text-slate-300 hover:bg-slate-800">
+                <Zap className={`w-5 h-5 ${language === "he" ? "ml-3" : "mr-3"}`} />
+                AI Prompts
+              </Button>
+            </Link>
             <Link href="/admin/settings">
               <Button variant="ghost" className="w-full justify-start text-slate-300 hover:bg-slate-800">
                 <Settings className={`w-5 h-5 ${language === "he" ? "ml-3" : "mr-3"}`} />
