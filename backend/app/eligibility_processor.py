@@ -750,31 +750,12 @@ Return ONLY valid JSON:
   }}
 }}"""
     
-    # Load agent configuration from database
+    # Load agent configuration from database    
     agent_config = get_agent_prompt('document_relevance_checker', fallback_prompt)
     prompt_template = agent_config['prompt']
     
     # Replace placeholders in prompt
     prompt = prompt_template.replace('{ocr_text}', ocr_text[:15000]).replace('{document_text}', ocr_text[:15000])
-  "key_points": ["if relevant: array of 8-20 SPECIFIC medical facts extracted from document - include EVERY diagnosis, test result, medication, functional limitation, work restriction, clinical finding. Examples: 'Diagnosed with Major Depressive Disorder, Severe, Recurrent', 'Beck Depression Inventory score: 32 (severe range)', 'MRI shows disc herniation L4-L5 with nerve root compression', 'Unable to sit for more than 30 minutes per physician note', 'Prescribed Lexapro 20mg daily for depression', 'Processing speed 5th percentile on WAIS-IV', 'Patient reports difficulty concentrating, completing tasks', 'Orthopedist recommends no lifting over 10 lbs'. If not relevant: empty array []"],
-  "focus_excerpt": "most critical section showing document type (100-300 chars)",
-  "document_type": "medical_report|discharge_summary|specialist_evaluation|psychological_evaluation|neuropsych_evaluation|psychiatric_assessment|diagnostic_report|surgical_report|receipt|blank_page|administrative|other",
-  "statement": "clear message to client about whether this document supports their legal case",
-  "directions": ["if rejected: specific guidance on what medical documents they need to obtain; if accepted: note strengths"]
-}}
-
-CRITICAL REQUIREMENTS:
-
-FOR REJECTED DOCUMENTS:
-- relevance_reason: ONE sentence max 15 words explaining the rejection (e.g., "Receipt without clinical findings", "Administrative form lacking medical evidence")
-- document_summary: 2-4 words only (e.g., "Billing receipt", "Blank page", "Insurance form")
-- key_points: empty array []
-
-FOR ACCEPTED MEDICAL DOCUMENTS (THIS IS CRITICAL):
-- document_summary: MUST BE 200-500 WORDS MINIMUM. Extract and include EVERY medical detail: all diagnoses (with subtypes/severity), all test results (with scores/values), all medications (with dosages), all functional limitations, all work restrictions, all clinical findings, provider type, evaluation type, dates, history. DO NOT write generic summaries like "Learning disability evaluation report" - this is UNACCEPTABLE. You must extract and list EVERY specific medical finding.
-- key_points: MUST have 8-20 items minimum. Include EVERY diagnosis, EVERY test score, EVERY medication, EVERY limitation, EVERY clinical observation mentioned in the document.
-
-BE STRICT. Only accept documents with real medical evidence. Reject receipts and administrative paperwork."""
 
     try:
         logger.info("="*80)
