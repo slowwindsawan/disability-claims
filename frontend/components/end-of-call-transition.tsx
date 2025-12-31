@@ -74,10 +74,21 @@ export function EndOfCallTransition() {
     try {
       const token = localStorage.getItem("access_token")
       const callId = localStorage.getItem("vapi_call_id")
+      const caseId = localStorage.getItem("case_id")
 
       if (!token || !callId) {
         console.error("❌ Missing access_token or vapi_call_id")
         const errorMsg = isRTL ? "לא נמצא מזהה שיחה. נא להתחיל מחדש." : "Call ID not found. Please start over."
+        if (isMountedRef.current) {
+          setError(errorMsg)
+          setShouldNavigate(true)
+        }
+        return
+      }
+
+      if (!caseId) {
+        console.error("❌ Missing case_id in localStorage")
+        const errorMsg = isRTL ? "לא נמצא מזהה תיק. נא להתחיל מחדש." : "Case ID not found. Please start over."
         if (isMountedRef.current) {
           setError(errorMsg)
           setShouldNavigate(true)
@@ -99,17 +110,18 @@ export function EndOfCallTransition() {
         }
       }, 1500)
 
-      // Poll for call details from VAPI until ready
+      // Poll for call details and analysis
       let attempts = 0
-      const maxAttempts = 20
+      const maxAttempts = 40  // Increased for job queue polling
       let pollSuccess = false
+      let currentJobId: string | null = null
 
       while (attempts < maxAttempts && !pollSuccess && isMountedRef.current) {
         try {
           console.log(`🔄 Polling call details (attempt ${attempts + 1}/${maxAttempts})...`)
           
           const response = await fetch(
-            `${BACKEND_BASE_URL}/vapi/call-details/${callId}`,
+            `${BACKEND_BASE_URL}/vapi/call-details/${callId}?case_id=${caseId}`,
             {
               method: "GET",
               headers: {
@@ -120,8 +132,9 @@ export function EndOfCallTransition() {
 
           if (response.ok) {
             const result = await response.json()
-            console.log("✅ Call details retrieved:", result)
+            console.log("✅ Call details response:", result)
 
+            // Check if analysis is complete (status === 'ok')
             if (result.status === "ok" && result.call && result.analysis) {
               console.log("📝 Call transcript ready and analyzed!")
               
@@ -153,17 +166,71 @@ export function EndOfCallTransition() {
               }
               return
             }
+            
+            // Check if analysis is in progress (status === 'analyzing')
+            if (result.status === "analyzing" && result.job_id) {
+              console.log(`⏳ Analysis in progress, job_id: ${result.job_id}`)
+              currentJobId = result.job_id
+              
+              // Poll the job status endpoint instead
+              const jobResponse = await fetch(
+                `${BACKEND_BASE_URL}/jobs/${currentJobId}`,
+                {
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                  },
+                }
+              )
+              
+              if (jobResponse.ok) {
+                const jobStatus = await jobResponse.json()
+                console.log(`📊 Job status: ${jobStatus.status}, progress: ${jobStatus.progress}%`)
+                
+                // Check if job completed
+                if (jobStatus.status === "completed" && jobStatus.result) {
+                  console.log("✅ Job completed! Using result from job...")
+                  
+                  // Use the analysis result directly from the job
+                  const analysisResult = jobStatus.result.analysis || jobStatus.result
+                  
+                  if (analysisResult) {
+                    console.log("✅ Analysis extracted from job result")
+                    localStorage.setItem("call_summary", JSON.stringify(analysisResult))
+                    localStorage.removeItem("vapi_call_id")
+                    pollSuccess = true
+                    
+                    if (messageIntervalRef.current) {
+                      clearInterval(messageIntervalRef.current)
+                      messageIntervalRef.current = null
+                    }
+                    
+                    await new Promise((resolve) => setTimeout(resolve, 2000))
+                    
+                    if (isMountedRef.current) {
+                      setIsComplete(true)
+                      setShouldNavigate(true)
+                    }
+                    return
+                  }
+                } else if (jobStatus.status === "failed") {
+                  console.error("❌ Job failed:", jobStatus.error)
+                  throw new Error(jobStatus.error || "Analysis job failed")
+                }
+                // If still running, continue polling
+              }
+            }
           }
 
           attempts++
           if (attempts < maxAttempts && isMountedRef.current) {
-            await new Promise((resolve) => setTimeout(resolve, 15000))
+            // Shorter poll interval for job queue (3 seconds)
+            await new Promise((resolve) => setTimeout(resolve, 3000))
           }
         } catch (err: any) {
           console.error("❌ Error polling call details:", err.message)
           attempts++
           if (attempts < maxAttempts && isMountedRef.current) {
-            await new Promise((resolve) => setTimeout(resolve, 15000))
+            await new Promise((resolve) => setTimeout(resolve, 3000))
           }
         }
       }

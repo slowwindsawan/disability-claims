@@ -1,5 +1,6 @@
 import os
 import uuid
+import asyncio
 from dotenv import load_dotenv
 load_dotenv()
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response, Request, Depends, Header
@@ -61,6 +62,7 @@ from .constants import CaseStatusConstants
 from .case_status_manager import CaseStatusManager
 from .document_analyzer_agent import analyze_case_documents_with_agent
 from .openai_form7801_agent import analyze_documents_with_openai_agent
+from .job_queue import get_job_queue, JobStatus
 
 app = FastAPI(title="Eligibility Orchestrator")
 # Default to WARNING to reduce noisy logs; allow override with LOG_LEVEL env var
@@ -1994,6 +1996,145 @@ async def delete_case_document_endpoint(
         raise HTTPException(status_code=500, detail='delete_case_document_failed')
 
 
+# ===========================
+# AGENT PROMPTS MANAGEMENT
+# ===========================
+
+@app.get('/api/agents')
+async def list_agents(user = Depends(require_admin)):
+    """List all agent prompts from the database."""
+    try:
+        from .supabase_client import _supabase_admin
+        
+        response = _supabase_admin.table('agents').select('*').order('updated_at', desc=True).execute()
+        agents = response.data or []
+        
+        return JSONResponse({
+            'status': 'ok',
+            'agents': agents,
+            'can_edit': True
+        })
+    except Exception as e:
+        logger.exception(f'list_agents failed: {e}')
+        raise HTTPException(status_code=500, detail='list_agents_failed')
+
+
+@app.get('/api/agents/{agent_id}')
+async def get_agent(agent_id: str, user = Depends(require_admin)):
+    """Get a single agent prompt by ID."""
+    try:
+        from .supabase_client import _supabase_admin
+        
+        response = _supabase_admin.table('agents').select('*').eq('id', agent_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=404, detail='agent_not_found')
+        
+        return JSONResponse({
+            'status': 'ok',
+            'agent': response.data[0]
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'get_agent failed: {e}')
+        raise HTTPException(status_code=500, detail='get_agent_failed')
+
+
+@app.put('/api/agents/{agent_id}')
+async def update_agent(agent_id: str, payload: Dict[str, Any] = Body(...), user = Depends(require_admin)):
+    """Update an agent prompt."""
+    try:
+        from .supabase_client import _supabase_admin
+        
+        prompt = payload.get('prompt')
+        model = payload.get('model')
+        description = payload.get('description')
+        
+        if not prompt:
+            raise HTTPException(status_code=400, detail='missing_prompt')
+        
+        update_data = {
+            'prompt': prompt,
+            'updated_at': datetime.utcnow().isoformat()
+        }
+        
+        if model:
+            update_data['model'] = model
+        if description:
+            update_data['description'] = description
+        
+        response = _supabase_admin.table('agents').update(update_data).eq('id', agent_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=404, detail='agent_not_found')
+        
+        return JSONResponse({
+            'status': 'ok',
+            'agent': response.data[0]
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'update_agent failed: {e}')
+        raise HTTPException(status_code=500, detail='update_agent_failed')
+
+
+@app.post('/api/agents')
+async def create_agent(payload: Dict[str, Any] = Body(...), user = Depends(require_admin)):
+    """Create a new agent prompt."""
+    try:
+        from .supabase_client import _supabase_admin
+        
+        name = payload.get('name')
+        prompt = payload.get('prompt')
+        model = payload.get('model', 'gpt-4o')
+        description = payload.get('description', '')
+        
+        if not name or not prompt:
+            raise HTTPException(status_code=400, detail='missing_name_or_prompt')
+        
+        new_agent = {
+            'name': name,
+            'prompt': prompt,
+            'model': model,
+            'description': description,
+            'updated_at': datetime.utcnow().isoformat()
+        }
+        
+        response = _supabase_admin.table('agents').insert(new_agent).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=400, detail='failed_to_create_agent')
+        
+        return JSONResponse({
+            'status': 'ok',
+            'agent': response.data[0]
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'create_agent failed: {e}')
+        raise HTTPException(status_code=500, detail='create_agent_failed')
+
+
+@app.delete('/api/agents/{agent_id}')
+async def delete_agent(agent_id: str, user = Depends(require_admin)):
+    """Delete an agent prompt."""
+    try:
+        from .supabase_client import _supabase_admin
+        
+        response = _supabase_admin.table('agents').delete().eq('id', agent_id).execute()
+        
+        return JSONResponse({
+            'status': 'ok',
+            'deleted': True
+        })
+    except Exception as e:
+        logger.exception(f'delete_agent failed: {e}')
+        raise HTTPException(status_code=500, detail='delete_agent_failed')
+
+
 @app.get('/admin/cases/work-disability')
 async def get_work_disability_cases(
     page: int = 1,
@@ -2733,22 +2874,74 @@ async def check_interview_status(current_user: dict = Depends(get_current_user))
 
 
 @app.get('/vapi/call-details/{call_id}')
-async def get_vapi_call_details(call_id: str, current_user: dict = Depends(get_current_user)):
+async def get_vapi_call_details(
+    call_id: str,
+    case_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
     """
     Fetch call details from Vapi API including transcript.
-    Analyze conversation using Gemini to generate comprehensive summary and document list.
+    Creates a job for analysis and returns immediately.
+    Frontend should check for job_id in response and poll if analysis is not complete.
+    
+    Args:
+        call_id: VAPI call ID
+        case_id: Optional case ID from frontend (passed as query param)
+        current_user: Authenticated user
+    
+    Returns:
+        - If analysis job already exists and completed: full call details with analysis
+        - If analysis job is pending/running: job_id for polling
+        - If no job exists yet: creates job and returns job_id
     """
     if not current_user:
         raise HTTPException(status_code=401, detail='Authentication required')
     
     try:
         from vapi import Vapi
-        from .openai_call_analyzer import analyze_call_conversation_openai
+        from .supabase_client import get_case
         
         # Get Vapi API token from environment
         vapi_token = os.getenv('VAPI_API_KEY')
         if not vapi_token:
             raise HTTPException(status_code=500, detail='VAPI_API_KEY not configured')
+        
+        # Get user_id
+        user_id = current_user.get('id')
+        
+        # If case_id provided, verify it exists and belongs to user
+        if case_id:
+            logger.info(f"[VAPI] Using provided case_id: {case_id}")
+            case_result = get_case(case_id)
+            if not case_result:
+                raise HTTPException(status_code=404, detail='Case not found')
+            if isinstance(case_result, list):
+                case = case_result[0] if len(case_result) > 0 else None
+            else:
+                case = case_result
+            if not case:
+                raise HTTPException(status_code=404, detail='Case not found')
+            
+            # Debug logging
+            logger.info(f"[VAPI] Case user_id: {case.get('user_id')}, Current user_id: {user_id}")
+            logger.info(f"[VAPI] Case keys: {list(case.keys())}")
+            
+            # Check ownership - handle both string and UUID comparisons
+            case_user_id = str(case.get('user_id', ''))
+            current_user_id = str(user_id)
+            if case_user_id != current_user_id:
+                logger.error(f"[VAPI] Access denied: case user_id={case_user_id}, current user_id={current_user_id}")
+                raise HTTPException(status_code=403, detail='Access denied to this case')
+        else:
+            # No case_id provided, try to find latest case
+            from .supabase_client import list_cases_for_user
+            cases = list_cases_for_user(user_id)
+            if not cases:
+                raise HTTPException(status_code=404, detail='No case found for user. Please provide case_id.')
+            latest_case = sorted(cases, key=lambda x: x.get('created_at', ''), reverse=True)[0]
+            case_id = latest_case.get('id')
+            case = latest_case
+            logger.info(f"[VAPI] Using latest case_id: {case_id}")
         
         # Initialize Vapi client
         client = Vapi(token=vapi_token)
@@ -2759,127 +2952,170 @@ async def get_vapi_call_details(call_id: str, current_user: dict = Depends(get_c
         
         logger.info(f"[VAPI] Call details retrieved successfully")
         
-        # Convert Pydantic model to dict for JSON serialization with datetime serialization
+        # Convert Pydantic model to dict for JSON serialization
         call_dict = call_details.model_dump(mode='json') if hasattr(call_details, 'model_dump') else call_details.dict()
         
-        # Extract transcript and messages for analysis
+        # Check if analysis already exists in the case
+        existing_call_summary = case.get('call_summary')
+        if existing_call_summary:
+            # Analysis already exists, return it
+            try:
+                analysis_result = json.loads(existing_call_summary) if isinstance(existing_call_summary, str) else existing_call_summary
+                call_dict['analysis'] = {
+                    'summary': analysis_result.get('call_summary', ''),
+                    'structured_data': {
+                        'case_summary': analysis_result.get('case_summary', ''),
+                        'documents_requested_list': analysis_result.get('documents_requested_list', []),
+                        'key_legal_points': analysis_result.get('key_legal_points', []),
+                        'risk_assessment': analysis_result.get('risk_assessment', 'Needs More Info'),
+                        'estimated_claim_amount': analysis_result.get('estimated_claim_amount', 'Pending evaluation')
+                    }
+                }
+                logger.info(f"[VAPI] Returning existing analysis for call {call_id}")
+                return JSONResponse({
+                    'status': 'ok',
+                    'call': call_dict,
+                    'analysis': analysis_result
+                })
+            except Exception as e:
+                logger.warning(f"[VAPI] Could not parse existing call_summary: {e}")
+        
+        # No existing analysis, check for job or create one
+        job_queue = get_job_queue()
+        
+        # Look for existing job for this call
+        existing_job = None
+        for job in job_queue.jobs.values():
+            if (job.metadata.get('call_id') == call_id and 
+                job.metadata.get('user_id') == user_id and
+                job.job_type == 'vapi_call_analysis'):
+                existing_job = job
+                break
+        
+        if existing_job:
+            # Job exists, check status
+            if existing_job.status == JobStatus.COMPLETED:
+                # Job completed, return result
+                logger.info(f"[VAPI] Job completed, returning analysis")
+                return JSONResponse({
+                    'status': 'ok',
+                    'call': call_dict,
+                    'analysis': existing_job.result.get('analysis', {})
+                })
+            else:
+                # Job still running, return job info
+                logger.info(f"[VAPI] Analysis job {existing_job.job_id} still {existing_job.status.value}")
+                return JSONResponse({
+                    'status': 'analyzing',
+                    'job_id': existing_job.job_id,
+                    'job_status': existing_job.status.value,
+                    'progress': existing_job.progress,
+                    'message': f'Call analysis in progress. Poll /jobs/{existing_job.job_id} for status.'
+                })
+        
+        # No job exists, create one
         transcript = call_dict.get('transcript', '')
         messages = call_dict.get('messages', [])
         
-        # Analyze conversation using OpenAI agent
-        logger.info(f"[VAPI] Analyzing call conversation with OpenAI agent")
-        analysis_result = {}
-        
-        if transcript:
-            try:
-                # Fetch user_eligibility data to include in analysis
-                from .supabase_client import get_user_eligibility
-                user_id = current_user.get('id')
-                
-                # Try to get eligibility data for this user
-                eligibility_records = []
-                try:
-                    eligibility_records = get_user_eligibility(user_id=user_id)
-                    logger.info(f"[VAPI] Found {len(eligibility_records) if eligibility_records else 0} eligibility records for user")
-                except Exception as e:
-                    logger.warning(f"[VAPI] Could not fetch eligibility records: {e}")
-                
-                # Pass transcript, messages, AND eligibility data to analyzer
-                analysis_result = await analyze_call_conversation_openai(transcript, messages, eligibility_records)
-                logger.info(f"[VAPI] Successfully analyzed conversation. Summary length: {len(analysis_result.get('call_summary', ''))} chars")
-            except Exception as e:
-                logger.exception(f"[VAPI] Failed to analyze conversation: {e}")
-                # Continue with empty analysis rather than failing the entire request
-                analysis_result = {
-                    'call_summary': 'Analysis failed. Please review transcript manually.',
+        if not transcript:
+            logger.warning(f"[VAPI] No transcript available for analysis")
+            return JSONResponse({
+                'status': 'ok',
+                'call': call_dict,
+                'analysis': {
+                    'call_summary': 'No transcript available',
                     'documents_requested_list': [],
-                    'case_summary': 'Analysis pending',
+                    'case_summary': 'No transcript available',
                     'key_legal_points': [],
                     'risk_assessment': 'Needs More Info',
                     'estimated_claim_amount': 'Pending evaluation'
                 }
-        else:
-            logger.warning(f"[VAPI] No transcript found in call details")
-            analysis_result = {
-                'call_summary': 'No transcript available',
-                'documents_requested_list': [],
-                'case_summary': 'No transcript available',
-                'key_legal_points': [],
-                'risk_assessment': 'Needs More Info',
-                'estimated_claim_amount': 'Pending evaluation'
-            }
+            })
         
-        # Save call details and analysis to the user's case
-        try:
-            from .supabase_client import list_cases_for_user, update_case
-            
-            user_id = current_user.get('id')
-            cases = list_cases_for_user(user_id)
-            
-            if cases:
-                # Get the most recent case
-                latest_case = sorted(cases, key=lambda x: x.get('created_at', ''), reverse=True)[0]
-                case_id = latest_case.get('id')
-                
-                # Build the update payload (store full analysis as JSON in call_summary)
-                update_payload = {
-                    'call_details': call_dict,
-                    'call_summary': json.dumps(analysis_result, ensure_ascii=False),
-                    'status': CaseStatusConstants.INITIAL_QUESTIONNAIRE  # Set status to "Initial questionnaire"
-                }
-                
-                # Update case with call details and our OpenAI analysis
-                update_case(case_id, update_payload)
-                logger.info(f"[VAPI] Saved call details and analysis to case {case_id}")
-                logger.info(f"[VAPI] Updated case status to: {CaseStatusConstants.INITIAL_QUESTIONNAIRE}")
-                
-                # Also add the analysis to the response for immediate use
-                call_dict['analysis'] = {
-                    'summary': analysis_result.get('call_summary', ''),
-                    'structured_data': {
-                        'case_summary': analysis_result.get('case_summary', ''),
-                        'documents_requested_list': analysis_result.get('documents_requested_list', []),
-                        'key_legal_points': analysis_result.get('key_legal_points', []),
-                        'risk_assessment': analysis_result.get('risk_assessment', 'Needs More Info'),
-                        'estimated_claim_amount': analysis_result.get('estimated_claim_amount', 'Pending evaluation')
-                    }
-                }
-            else:
-                logger.warning(f"[VAPI] No cases found for user {user_id}")
-                # Still add analysis to response
-                call_dict['analysis'] = {
-                    'summary': analysis_result.get('call_summary', ''),
-                    'structured_data': {
-                        'case_summary': analysis_result.get('case_summary', ''),
-                        'documents_requested_list': analysis_result.get('documents_requested_list', []),
-                        'key_legal_points': analysis_result.get('key_legal_points', []),
-                        'risk_assessment': analysis_result.get('risk_assessment', 'Needs More Info'),
-                        'estimated_claim_amount': analysis_result.get('estimated_claim_amount', 'Pending evaluation')
-                    }
-                }
-        except Exception as e:
-            logger.exception(f"[VAPI] Failed to save call details to case: {e}")
-            # Still add analysis to response even if save failed
-            call_dict['analysis'] = {
-                'summary': analysis_result.get('call_summary', ''),
-                'structured_data': {
-                    'case_summary': analysis_result.get('case_summary', ''),
-                    'documents_requested_list': analysis_result.get('documents_requested_list', []),
-                    'key_legal_points': analysis_result.get('key_legal_points', []),
-                    'risk_assessment': analysis_result.get('risk_assessment', 'Needs More Info'),
-                    'estimated_claim_amount': analysis_result.get('estimated_claim_amount', 'Pending evaluation')
-                }
+        # Create analysis job
+        job_id = job_queue.create_job(
+            job_type='vapi_call_analysis',
+            metadata={
+                'call_id': call_id,
+                'case_id': case_id,
+                'user_id': user_id,
+                'endpoint': 'vapi-call-details'
             }
+        )
+        
+        # Execute job in background
+        asyncio.create_task(
+            job_queue.execute_job(
+                job_id,
+                _execute_vapi_call_analysis,
+                call_id,
+                case_id,
+                user_id,
+                call_dict,
+                transcript,
+                messages
+            )
+        )
+        
+        logger.info(f"[VAPI] Created analysis job {job_id} for call {call_id}")
         
         return JSONResponse({
-            'status': 'ok',
-            'call': call_dict,
-            'analysis': analysis_result
+            'status': 'analyzing',
+            'job_id': job_id,
+            'job_status': 'pending',
+            'message': f'Call analysis job created. Poll /jobs/{job_id} for status.'
         })
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"[VAPI] Failed to fetch call details: {e}")
         raise HTTPException(status_code=500, detail=f'Failed to fetch call details: {str(e)}')
+
+
+async def _execute_vapi_call_analysis(
+    call_id: str,
+    case_id: str,
+    user_id: str,
+    call_dict: dict,
+    transcript: str,
+    messages: list
+):
+    """Background task for VAPI call analysis"""
+    from .openai_call_analyzer import analyze_call_conversation_openai
+    from .supabase_client import get_user_eligibility, update_case
+    
+    logger.info(f"[VAPI] Starting analysis for call {call_id}")
+    
+    # Fetch user_eligibility data
+    eligibility_records = []
+    try:
+        eligibility_records = get_user_eligibility(user_id=user_id)
+        logger.info(f"[VAPI] Found {len(eligibility_records) if eligibility_records else 0} eligibility records")
+    except Exception as e:
+        logger.warning(f"[VAPI] Could not fetch eligibility records: {e}")
+    
+    # Analyze conversation
+    analysis_result = await analyze_call_conversation_openai(transcript, messages, eligibility_records)
+    logger.info(f"[VAPI] Analysis complete. Documents requested: {len(analysis_result.get('documents_requested_list', []))}")
+    
+    # Save to case
+    update_payload = {
+        'call_details': call_dict,
+        'call_summary': json.dumps(analysis_result, ensure_ascii=False),
+        'status': CaseStatusConstants.INITIAL_QUESTIONNAIRE
+    }
+    
+    update_case(case_id, update_payload)
+    logger.info(f"[VAPI] Saved analysis to case {case_id}")
+    
+    # Return result for job queue
+    return {
+        'call_id': call_id,
+        'case_id': case_id,
+        'analysis': analysis_result,
+        'message': 'Call analysis completed successfully'
+    }
 
 
 @app.post('/cases/{case_id}/call-details')
@@ -2981,32 +3217,33 @@ async def save_call_details_and_analyze(
 async def re_analyze_call(case_id: str, current_user: dict = Depends(get_current_user)):
     """
     Re-analyze an existing call using the latest OpenAI agent.
-    Useful for updating analysis when agent prompts or logic changes.
+    Returns immediately with a job_id. Frontend should poll /jobs/{job_id} for status.
+    
+    Returns:
+        - job_id: ID to poll for status and results
+        - status: 'accepted' (job created)
+        - message: Human-readable message
     """
     if not current_user:
         raise HTTPException(status_code=401, detail='Authentication required')
     
-    # TODO: Re-enable admin check in production
-    # Only admins can re-analyze calls
-    # if current_user.get('role') != 'admin':
-    #     raise HTTPException(status_code=403, detail='Admin access required')
-    
     try:
-        from .supabase_client import get_case, update_case
-        from .openai_call_analyzer import analyze_call_conversation_openai
+        from .supabase_client import get_case
         
-        # Get the case
+        # Get the case to verify it exists
         case = get_case(case_id)
         if not case:
             raise HTTPException(status_code=404, detail='Case not found')
         
-        logger.info(f"[VAPI] Case type: {type(case)}, case data: {case}")
-        
-        # Handle case being a list (supabase sometimes returns list)
+        # Handle case being a list
         if isinstance(case, list):
             if len(case) == 0:
                 raise HTTPException(status_code=404, detail='Case not found')
             case = case[0]
+        
+        # Verify user has access
+        if current_user['role'] != 'admin' and case.get('user_id') != current_user['id']:
+            raise HTTPException(status_code=403, detail='Access denied')
         
         # Get call details from case
         call_details = case.get('call_details')
@@ -3020,53 +3257,83 @@ async def re_analyze_call(case_id: str, current_user: dict = Depends(get_current
         if not transcript:
             raise HTTPException(status_code=400, detail='No transcript found in call details')
         
-        logger.info(f"[VAPI] Re-analyzing call for case {case_id}")
-        
-        # Run new analysis
-        analysis_result = await analyze_call_conversation_openai(transcript, messages)
-        logger.info(f"[VAPI] Re-analysis completed. Documents: {len(analysis_result.get('documents_requested_list', []))}")
-        
-        # Update call_details with new analysis
-        call_details['analysis'] = {
-            'summary': analysis_result.get('call_summary', ''),
-            'structured_data': {
-                'case_summary': analysis_result.get('case_summary', ''),
-                'documents_requested_list': analysis_result.get('documents_requested_list', []),
-                'key_legal_points': analysis_result.get('key_legal_points', []),
-                'risk_assessment': analysis_result.get('risk_assessment', 'Needs More Info'),
-                'estimated_claim_amount': analysis_result.get('estimated_claim_amount', 'Pending evaluation')
+        # Create job
+        job_queue = get_job_queue()
+        job_id = job_queue.create_job(
+            job_type='call_analysis',
+            metadata={
+                'case_id': case_id,
+                'user_id': current_user['id'],
+                'endpoint': 're-analyze-call'
             }
-        }
+        )
         
-        # Save updated call_details and call_summary (store full analysis as JSON)
-        update_payload = {
-            'call_details': call_details,
-            'call_summary': json.dumps(analysis_result, ensure_ascii=False)
-        }
+        # Execute job in background
+        asyncio.create_task(
+            job_queue.execute_job(
+                job_id,
+                _execute_call_analysis,
+                case_id,
+                transcript,
+                messages,
+                call_details
+            )
+        )
         
-        logger.info(f"[VAPI] Attempting to update case {case_id}")
-        logger.debug(f"[VAPI] Update payload keys: {update_payload.keys()}, call_details size: {len(str(call_details))} chars")
-        
-        try:
-            update_case(case_id, update_payload)
-            logger.info(f"[VAPI] Updated case {case_id} with new analysis")
-        except Exception as update_error:
-            logger.exception(f"[VAPI] Failed to update case in database: {update_error}")
-            # Still return success to user since analysis was completed
-            logger.warning(f"[VAPI] Analysis completed but database update failed. Returning analysis anyway.")
+        logger.info(f"[VAPI] Created job {job_id} for re-analyzing call {case_id}")
         
         return JSONResponse({
-            'status': 'ok',
-            'message': 'Call re-analyzed successfully',
-            'analysis': analysis_result,
-            'call_details': call_details
+            'status': 'accepted',
+            'job_id': job_id,
+            'message': 'Call analysis job created. Poll /jobs/{job_id} for status.',
+            'poll_url': f'/jobs/{job_id}'
         })
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"[VAPI] Failed to re-analyze call: {e}")
-        raise HTTPException(status_code=500, detail=f'Failed to re-analyze call: {str(e)}')
+        logger.exception(f"[VAPI] Failed to create call analysis job: {e}")
+        raise HTTPException(status_code=500, detail=f'Failed to create job: {str(e)}')
+
+
+async def _execute_call_analysis(case_id: str, transcript: str, messages: list, call_details: dict):
+    """Background task for call analysis"""
+    from .supabase_client import update_case
+    from .openai_call_analyzer import analyze_call_conversation_openai
+    
+    logger.info(f"[VAPI] Starting call analysis for case {case_id}")
+    
+    # Run analysis
+    analysis_result = await analyze_call_conversation_openai(transcript, messages)
+    logger.info(f"[VAPI] Analysis completed. Documents: {len(analysis_result.get('documents_requested_list', []))}")
+    
+    # Update call_details with new analysis
+    call_details['analysis'] = {
+        'summary': analysis_result.get('call_summary', ''),
+        'structured_data': {
+            'case_summary': analysis_result.get('case_summary', ''),
+            'documents_requested_list': analysis_result.get('documents_requested_list', []),
+            'key_legal_points': analysis_result.get('key_legal_points', []),
+            'risk_assessment': analysis_result.get('risk_assessment', 'Needs More Info'),
+            'estimated_claim_amount': analysis_result.get('estimated_claim_amount', 'Pending evaluation')
+        }
+    }
+    
+    # Save to database
+    update_payload = {
+        'call_details': call_details,
+        'call_summary': json.dumps(analysis_result, ensure_ascii=False)
+    }
+    
+    update_case(case_id, update_payload)
+    logger.info(f"[VAPI] Updated case {case_id} with new analysis")
+    
+    # Return result for job queue
+    return {
+        'case_id': case_id,
+        'analysis': analysis_result,
+        'message': 'Call re-analyzed successfully'
+    }
 
 
 @app.get('/vapi/requested-documents')
@@ -3198,22 +3465,18 @@ async def get_case_strategy_status(case_id: str, current_user: dict = Depends(ge
 async def analyze_case_with_agent(case_id: str, current_user: dict = Depends(get_current_user)):
     """
     Analyze a case's uploaded documents using the AI agent.
-    Fetches all document summaries from case_documents table and passes them to the agent.
+    Returns immediately with a job_id. Frontend should poll /jobs/{job_id} for status.
     
-    Flow:
-    1. Get case and verify access
-    2. Extract document IDs from call_summary.documents_requested_list
-    3. Fetch each document from case_documents table (get metadata.document_summary)
-    4. Concatenate all summaries
-    5. Pass to Anthropic agent for analysis
-    6. Store result in cases.form_7801_analysis
+    Returns:
+        - job_id: ID to poll for status and results
+        - status: 'accepted' (job created)
+        - message: Human-readable message
     """
     if not current_user:
         raise HTTPException(status_code=401, detail='Authentication required')
     
     try:
-        from .supabase_client import get_case, update_case, _supabase_admin
-        from .document_analyzer_agent import analyze_case_documents_with_agent
+        from .supabase_client import get_case, _supabase_admin
         
         logger.info(f"🔵 Starting agent analysis for case {case_id}")
         
@@ -3241,91 +3504,105 @@ async def analyze_case_with_agent(case_id: str, current_user: dict = Depends(get
         documents_with_summaries = []
         
         if _supabase_admin and documents_requested:
-            # Get document IDs from the documents_requested_list
             for doc_req in documents_requested:
                 doc_id = doc_req.get('document_id')
                 if not doc_id:
-                    logger.warning(f"⚠️ Document has no document_id: {doc_req.get('name')}")
                     continue
                 
                 try:
-                    # Fetch the case_documents record
                     result = _supabase_admin.table('case_documents').select('*').eq('id', doc_id).execute()
                     if result.data and len(result.data) > 0:
-                        doc_record = result.data[0]
-                        documents_with_summaries.append(doc_record)
-                        logger.info(f"✅ Loaded document: {doc_record.get('file_name')}")
-                    else:
-                        logger.warning(f"⚠️ Document not found in case_documents: {doc_id}")
+                        documents_with_summaries.append(result.data[0])
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to fetch document {doc_id}: {e}")
         
         if not documents_with_summaries:
-            logger.warning(f"⚠️ No documents found with summaries for case {case_id}")
-            return JSONResponse({
-                'status': 'error',
-                'message': 'No uploaded documents found to analyze',
-                'case_id': case_id
-            }, status_code=400)
+            raise HTTPException(status_code=400, detail='No uploaded documents found to analyze')
         
-        logger.info(f"📊 Processing {len(documents_with_summaries)} documents for agent analysis")
+        # Create job
+        job_queue = get_job_queue()
+        job_id = job_queue.create_job(
+            job_type='document_analysis_agent',
+            metadata={
+                'case_id': case_id,
+                'user_id': current_user['id'],
+                'document_count': len(documents_with_summaries),
+                'endpoint': 'analyze-with-agent'
+            }
+        )
         
-        # Call the agent with concatenated summaries
-        agent_result = await analyze_case_documents_with_agent(case_id, documents_with_summaries)
+        # Execute job in background
+        asyncio.create_task(
+            job_queue.execute_job(
+                job_id,
+                _execute_agent_analysis,
+                case_id,
+                documents_with_summaries
+            )
+        )
         
-        logger.info(f"✅ Agent analysis completed. Storing result in cases table")
-        
-        # Store the result in cases.form_7801_analysis
-        update_case(case_id, {
-            'form_7801_analysis': agent_result,
-            'form_7801_analysis_timestamp': datetime.utcnow().isoformat(),
-            'analysis_status': 'completed'
-        })
+        logger.info(f"✅ Created job {job_id} for agent analysis of case {case_id}")
         
         return JSONResponse({
-            'status': 'ok',
-            'case_id': case_id,
-            'analysis': agent_result,
-            'documents_analyzed': len(documents_with_summaries),
-            'timestamp': datetime.utcnow().isoformat()
+            'status': 'accepted',
+            'job_id': job_id,
+            'message': 'Document analysis job created. Poll /jobs/{job_id} for status.',
+            'poll_url': f'/jobs/{job_id}',
+            'documents_count': len(documents_with_summaries)
         })
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f'❌ Error analyzing case with agent: {e}')
-        raise HTTPException(status_code=500, detail=f'Failed to analyze case: {str(e)}')
+        logger.exception(f'❌ Error creating analysis job: {e}')
+        raise HTTPException(status_code=500, detail=f'Failed to create analysis job: {str(e)}')
+
+
+async def _execute_agent_analysis(case_id: str, documents_with_summaries: list):
+    """Background task for agent-based document analysis"""
+    from .supabase_client import update_case
+    from .document_analyzer_agent import analyze_case_documents_with_agent
+    
+    logger.info(f"📊 Processing {len(documents_with_summaries)} documents for agent analysis")
+    
+    # Call the agent
+    agent_result = await analyze_case_documents_with_agent(case_id, documents_with_summaries)
+    
+    logger.info(f"✅ Agent analysis completed. Storing result")
+    
+    # Store result
+    update_case(case_id, {
+        'form_7801_analysis': agent_result,
+        'form_7801_analysis_timestamp': datetime.utcnow().isoformat(),
+        'analysis_status': 'completed'
+    })
+    
+    return {
+        'case_id': case_id,
+        'analysis': agent_result,
+        'documents_analyzed': len(documents_with_summaries),
+        'timestamp': datetime.utcnow().isoformat()
+    }
 
 
 @app.post('/cases/{case_id}/analyze-documents-form7801')
 async def analyze_documents_form7801(case_id: str, current_user: dict = Depends(get_current_user)):
     """
     Analyze case documents using OpenAI Form 7801 agent.
+    Returns immediately with a job_id. Frontend should poll /jobs/{job_id} for status.
     
     This endpoint is called from the "התחל ניתוח AI" button on the dashboard.
     
-    Flow:
-    1. Get case and verify access
-    2. Extract document IDs from call_summary.documents_requested_list
-    3. Fetch each document from case_documents table (get metadata.document_summary)
-    4. Concatenate all document summaries with call_summary context
-    5. Pass to OpenAI Form 7801 agent for comprehensive analysis
-    6. Store result in cases.form_7801_analysis
-    
     Returns:
-        Structured Form 7801 analysis with:
-        - form_7801: Extracted form data
-        - summary: Comprehensive case summary
-        - strategy: Legal strategy and recommendations
-        - claim_rate: Estimated claim success rate (0-100)
-        - recommendations: List of recommended next steps
+        - job_id: ID to poll for status and results
+        - status: 'accepted' (job created)
+        - message: Human-readable message
     """
     if not current_user:
         raise HTTPException(status_code=401, detail='Authentication required')
     
     try:
-        from .supabase_client import get_case, update_case, _supabase_admin
-        from .openai_form7801_agent import analyze_documents_with_openai_agent
+        from .supabase_client import get_case, _supabase_admin
         
         logger.info(f"🔵 Starting OpenAI Form 7801 analysis for case {case_id}")
         
@@ -3353,66 +3630,89 @@ async def analyze_documents_form7801(case_id: str, current_user: dict = Depends(
         documents_with_metadata = []
         
         if _supabase_admin and documents_requested:
-            # Get document IDs from the documents_requested_list
             for doc_req in documents_requested:
                 doc_id = doc_req.get('document_id')
                 if not doc_id:
-                    logger.warning(f"⚠️ Document has no document_id: {doc_req.get('name')}")
                     continue
                 
                 try:
-                    # Fetch the case_documents record
                     result = _supabase_admin.table('case_documents').select('*').eq('id', doc_id).execute()
                     if result.data and len(result.data) > 0:
-                        doc_record = result.data[0]
-                        documents_with_metadata.append(doc_record)
-                        logger.info(f"✅ Loaded document: {doc_record.get('file_name')}")
-                    else:
-                        logger.warning(f"⚠️ Document not found in case_documents: {doc_id}")
+                        documents_with_metadata.append(result.data[0])
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to fetch document {doc_id}: {e}")
         
-        if not documents_with_metadata:
-            logger.warning(f"⚠️ No documents found for case {case_id}")
-            # Continue anyway - agent will analyze based on call summary alone
-            documents_with_metadata = []
-        
-        logger.info(f"📊 Processing {len(documents_with_metadata)} documents for Form 7801 analysis")
-        
-        # Call the OpenAI agent with concatenated summaries
-        logger.info(f"🤖 Calling OpenAI Form 7801 agent...")
-        agent_result = await analyze_documents_with_openai_agent(
-            case_id=case_id,
-            documents_data=documents_with_metadata,
-            call_summary=call_summary
+        # Create job
+        job_queue = get_job_queue()
+        job_id = job_queue.create_job(
+            job_type='document_analysis_form7801',
+            metadata={
+                'case_id': case_id,
+                'user_id': current_user['id'],
+                'document_count': len(documents_with_metadata),
+                'endpoint': 'analyze-documents-form7801'
+            }
         )
         
-        logger.info(f"✅ Agent analysis completed. Storing result in cases table")
+        # Execute job in background
+        asyncio.create_task(
+            job_queue.execute_job(
+                job_id,
+                _execute_form7801_analysis,
+                case_id,
+                documents_with_metadata,
+                call_summary
+            )
+        )
         
-        # Store the result in cases.final_document_analysis and update status
-        update_case(case_id, {
-            'final_document_analysis': agent_result,
-            'status': 'Submission Pending'
-        })
-        
-        logger.info(f"✅ Form 7801 analysis saved successfully for case {case_id}")
+        logger.info(f"✅ Created job {job_id} for Form 7801 analysis of case {case_id}")
         
         return JSONResponse({
-            'status': 'ok',
-            'case_id': case_id,
-            'analysis': agent_result,
-            'documents_analyzed': len(documents_with_metadata),
-            'timestamp': datetime.utcnow().isoformat()
+            'status': 'accepted',
+            'job_id': job_id,
+            'message': 'Form 7801 analysis job created. Poll /jobs/{job_id} for status.',
+            'poll_url': f'/jobs/{job_id}',
+            'documents_count': len(documents_with_metadata)
         })
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f'❌ Error analyzing documents with Form 7801 agent: {e}')
-        error_detail = str(e)
-        if "fetch failed" in error_detail.lower():
-            error_detail = "Network connectivity issue. Please try again."
-        raise HTTPException(status_code=500, detail=f'Failed to process Form 7801 analysis: {error_detail}')
+        logger.exception(f'❌ Error creating Form 7801 analysis job: {e}')
+        raise HTTPException(status_code=500, detail=f'Failed to create analysis job: {str(e)}')
+
+
+async def _execute_form7801_analysis(case_id: str, documents_with_metadata: list, call_summary: dict):
+    """Background task for Form 7801 document analysis"""
+    from .supabase_client import update_case
+    from .openai_form7801_agent import analyze_documents_with_openai_agent
+    
+    logger.info(f"📊 Processing {len(documents_with_metadata)} documents for Form 7801 analysis")
+    logger.info(f"🤖 Calling OpenAI Form 7801 agent...")
+    
+    # Call the OpenAI agent
+    agent_result = await analyze_documents_with_openai_agent(
+        case_id=case_id,
+        documents_data=documents_with_metadata,
+        call_summary=call_summary
+    )
+    
+    logger.info(f"✅ Agent analysis completed. Storing result")
+    
+    # Store result and update status
+    update_case(case_id, {
+        'final_document_analysis': agent_result,
+        'status': 'Submission Pending'
+    })
+    
+    logger.info(f"✅ Form 7801 analysis saved successfully for case {case_id}")
+    
+    return {
+        'case_id': case_id,
+        'analysis': agent_result,
+        'documents_analyzed': len(documents_with_metadata),
+        'timestamp': datetime.utcnow().isoformat()
+    }
 
 
 @app.post('/cases/{case_id}/process-documents')
@@ -4719,6 +5019,63 @@ async def health():
     return {'status': 'ok'}
 
 
+@app.get('/jobs/{job_id}')
+async def get_job_status(job_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Poll for job status and results.
+    
+    Returns:
+        - job_id: Job identifier
+        - status: 'pending', 'running', 'completed', or 'failed'
+        - progress: Progress percentage (0-100)
+        - progress_message: Human-readable progress message
+        - result: Job result (only when completed)
+        - error: Error message (only when failed)
+        - timestamps: Created, started, and completed times
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    
+    job_queue = get_job_queue()
+    job = job_queue.get_job(job_id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail='Job not found')
+    
+    # Verify user has access to this job (check metadata user_id)
+    job_user_id = job.metadata.get('user_id')
+    if current_user['role'] != 'admin' and job_user_id and job_user_id != current_user['id']:
+        raise HTTPException(status_code=403, detail='Access denied')
+    
+    return JSONResponse(job.to_dict())
+
+
+@app.get('/jobs')
+async def list_jobs(current_user: dict = Depends(get_current_user)):
+    """
+    List all jobs for the current user.
+    Admins can see all jobs.
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    
+    job_queue = get_job_queue()
+    
+    # Filter jobs based on user permissions
+    user_jobs = []
+    for job in job_queue.jobs.values():
+        job_user_id = job.metadata.get('user_id')
+        
+        # Include job if user is admin or job belongs to user
+        if current_user['role'] == 'admin' or (job_user_id and job_user_id == current_user['id']):
+            user_jobs.append(job.to_dict())
+    
+    return JSONResponse({
+        'jobs': user_jobs,
+        'count': len(user_jobs)
+    })
+
+
 def _link_eligibility_documents_to_case(user_id: str, case_id: str):
     """
     Helper function to find any user_eligibility records for this user that have 
@@ -5941,7 +6298,14 @@ async def boldsign_signature_complete(
         case_data = case_data_list[0] if isinstance(case_data_list, list) else case_data_list
         logger.info(f"📋 Current case data retrieved, preparing update...")
         
+        # Parse metadata if it's a JSON string
         metadata = case_data.get('metadata', {}) or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except:
+                metadata = {}
+        
         metadata['signature_status'] = 'completed'
         metadata['signature_completed_at'] = datetime.utcnow().isoformat()
         
@@ -6000,7 +6364,7 @@ async def track_document_signed(
 ):
     """
     Track when a specific document is signed.
-    Updates the documents_signed tracking in case metadata.
+    Updates the documents_signed tracking in case metadata and sets agreement_signed to true.
     """
     if not user:
         raise HTTPException(status_code=401, detail='unauthorized')
@@ -6025,7 +6389,13 @@ async def track_document_signed(
         case_data = case_data_list[0] if isinstance(case_data_list, list) else case_data_list
         
         # Update metadata with signed document tracking
+        # Parse metadata if it's a JSON string
         metadata = case_data.get('metadata', {}) or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except:
+                metadata = {}
         
         if 'documents_signed' not in metadata:
             metadata['documents_signed'] = {}
@@ -6036,18 +6406,23 @@ async def track_document_signed(
             'status': 'signed'
         }
         
-        # Update the case
+        # Update the case with metadata AND agreement_signed = true
         update_case(
             case_id=case_id,
-            fields={'metadata': metadata}
+            fields={
+                'metadata': metadata,
+                'agreement_signed': True
+            }
         )
         
         logger.info(f"✅ Document '{document_type}' signed for case {case_id} (doc_id: {document_id})")
+        logger.info(f"✅ agreement_signed column set to TRUE for case {case_id}")
         return JSONResponse({
             'status': 'ok',
             'message': f'Document {document_type} tracked as signed',
             'document_type': document_type,
-            'case_id': case_id
+            'case_id': case_id,
+            'agreement_signed': True
         })
         
     except HTTPException:
@@ -6342,6 +6717,167 @@ async def re_analyze_call(case_id: str, current_user: dict = Depends(get_current
     except Exception as e:
         logger.exception(f"[REANALYZE] Failed to re-analyze call: {e}")
         raise HTTPException(status_code=500, detail=f'Failed to re-analyze call: {str(e)}')
+
+
+@app.get('/admin/analytics')
+async def get_analytics(
+    time_range: str = "30days"
+):
+    """
+    Get analytics and metrics for admin dashboard.
+    time_range: 7days, 30days, 90days, year
+    """
+    try:
+        from datetime import datetime, timedelta
+        from .supabase_client import _postgrest_headers
+        
+        # Calculate date range
+        end_date = datetime.now()
+        if time_range == "7days":
+            start_date = end_date - timedelta(days=7)
+        elif time_range == "90days":
+            start_date = end_date - timedelta(days=90)
+        elif time_range == "year":
+            start_date = end_date - timedelta(days=365)
+        else:  # 30days default
+            start_date = end_date - timedelta(days=30)
+        
+        # Get cases in the time range
+        cases_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/cases?created_at.gte.{start_date.isoformat()}&created_at.lte.{end_date.isoformat()}&limit=500"
+        cases_resp = requests.get(cases_url, headers=_postgrest_headers(), timeout=15)
+        cases_resp.raise_for_status()
+        cases = cases_resp.json()
+        
+        total_cases = len(cases)
+        
+        # Count by status
+        status_counts = {}
+        for case in cases:
+            status = case.get('status', 'Unknown')
+            status_counts[status] = status_counts.get(status, 0) + 1
+        
+        # Fetch user profiles for eligibility data
+        profiles_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?limit=500"
+        profiles_resp = requests.get(profiles_url, headers=_postgrest_headers(), timeout=15)
+        profiles_resp.raise_for_status()
+        profiles = profiles_resp.json()
+        
+        # Calculate metrics
+        avg_ai_score = 0
+        if profiles:
+            total_score = 0
+            count = 0
+            for profile in profiles:
+                try:
+                    eligibility_raw = profile.get('eligibility_raw', {})
+                    if isinstance(eligibility_raw, str):
+                        eligibility_raw = json.loads(eligibility_raw)
+                    score = eligibility_raw.get('eligibility_score', 0)
+                    if score:
+                        total_score += score
+                        count += 1
+                except:
+                    pass
+            avg_ai_score = int(total_score / count) if count > 0 else 0
+        
+        # Calculate claim amounts and extract disability types
+        total_claim_amount = 0
+        disability_type_counts = {}
+        
+        for case in cases:
+            try:
+                call_summary = case.get('call_summary', {})
+                if isinstance(call_summary, str):
+                    call_summary = json.loads(call_summary)
+                
+                # Extract claim amount
+                amount = call_summary.get('estimated_claim_amount', 0)
+                if amount:
+                    total_claim_amount += amount
+                
+                # Extract disability types from products field
+                products = call_summary.get('products', [])
+                if isinstance(products, str):
+                    products = json.loads(products)
+                
+                if products:
+                    for product in products:
+                        disability_type_counts[product] = disability_type_counts.get(product, 0) + 1
+                else:
+                    # Default to 'General Disability' if no products specified
+                    disability_type_counts['General Disability'] = disability_type_counts.get('General Disability', 0) + 1
+            except Exception as parse_err:
+                logger.warning(f'Failed to parse call_summary for case: {parse_err}')
+                disability_type_counts['General Disability'] = disability_type_counts.get('General Disability', 0) + 1
+        
+        # Stage distribution
+        stage_distribution = {}
+        for status, count in status_counts.items():
+            percentage = int((count / total_cases) * 100) if total_cases > 0 else 0
+            stage_distribution[status] = {
+                'count': count,
+                'percentage': percentage
+            }
+        
+        # Calculate previous period for comparison
+        if time_range == "7days":
+            prev_start = start_date - timedelta(days=7)
+        elif time_range == "90days":
+            prev_start = start_date - timedelta(days=90)
+        elif time_range == "year":
+            prev_start = start_date - timedelta(days=365)
+        else:
+            prev_start = start_date - timedelta(days=30)
+        
+        prev_cases_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/cases?created_at.gte.{prev_start.isoformat()}&created_at.lt.{start_date.isoformat()}&limit=500"
+        prev_cases_resp = requests.get(prev_cases_url, headers=_postgrest_headers(), timeout=15)
+        prev_cases = prev_cases_resp.json() if prev_cases_resp.ok else []
+        prev_total_cases = len(prev_cases)
+        
+        # Calculate conversion rate (cases that reached submission)
+        submitted_count = status_counts.get('Submitted', 0)
+        conversion_rate = int((submitted_count / total_cases) * 100) if total_cases > 0 else 0
+        
+        prev_submitted = sum(1 for c in prev_cases if c.get('status') == 'Submitted')
+        prev_conversion = int((prev_submitted / prev_total_cases) * 100) if prev_total_cases > 0 else 0
+        conversion_change = conversion_rate - prev_conversion
+        
+        # Calculate new cases change percentage
+        cases_change = int(((total_cases - prev_total_cases) / prev_total_cases) * 100) if prev_total_cases > 0 else 0
+        
+        # Average processing time (days)
+        total_days = 0
+        count = 0
+        for case in cases:
+            try:
+                created = datetime.fromisoformat(case.get('created_at', '').replace('Z', '+00:00'))
+                updated = datetime.fromisoformat(case.get('updated_at', '').replace('Z', '+00:00'))
+                days = (updated - created).days
+                if days >= 0:
+                    total_days += days
+                    count += 1
+            except:
+                pass
+        avg_processing_days = int(total_days / count) if count > 0 else 0
+        
+        return JSONResponse({
+            'status': 'ok',
+            'metrics': {
+                'total_cases': total_cases,
+                'cases_change': f"+{cases_change}%" if cases_change >= 0 else f"{cases_change}%",
+                'conversion_rate': conversion_rate,
+                'conversion_change': f"+{conversion_change}%" if conversion_change >= 0 else f"{conversion_change}%",
+                'avg_ai_score': avg_ai_score,
+                'avg_processing_days': avg_processing_days,
+                'total_claim_potential': total_claim_amount,
+            },
+            'stage_distribution': stage_distribution,
+            'claim_types': disability_type_counts
+        })
+        
+    except Exception as e:
+        logger.error(f'Failed to get analytics: {e}')
+        raise HTTPException(status_code=500, detail=f'Failed to get analytics: {str(e)}')
 
 
 @app.get('/admin/analytics')

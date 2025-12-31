@@ -33,6 +33,9 @@ export default function AccountControls() {
       }
     } finally {
       localStorage.removeItem('access_token')
+      localStorage.removeItem('case_id')
+      localStorage.removeItem('vapi_call_id')
+      localStorage.removeItem('call_summary')
       setLoading(false)
       setLoggedIn(false)
       // navigate to home

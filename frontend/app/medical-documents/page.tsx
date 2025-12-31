@@ -240,15 +240,17 @@ export default function MedicalDocumentsPage() {
         setAnalysisProgress(50)
         setAnalysisStep("שומר את תשובות השאלון...")
         
+        const formData = new FormData()
+        formData.append('answers', JSON.stringify(answers))
+        
         const response = await fetch(
           `${BACKEND_BASE_URL}/eligibility-submit`,
           {
             method: 'POST',
             headers: {
-              'Content-Type': 'application/json',
               'Authorization': `Bearer ${token}`
             },
-            body: JSON.stringify(answers)
+            body: formData
           }
         )
         

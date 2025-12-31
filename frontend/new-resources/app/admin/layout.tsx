@@ -48,6 +48,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       }
     } finally {
       localStorage.removeItem('access_token')
+      localStorage.removeItem('case_id')
+      localStorage.removeItem('vapi_call_id')
+      localStorage.removeItem('call_summary')
       setLogoutLoading(false)
       router.push('/')
       try { window.dispatchEvent(new Event('storage')) } catch (e) {}
