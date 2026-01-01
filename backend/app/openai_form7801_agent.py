@@ -32,25 +32,13 @@ def get_btl_content_by_topics(topic_ids: List[str]) -> str:
     
     for topic in btl_data:
         if topic.get("topic_id") in topic_ids:
-            content = f"\n### {topic.get('topic_name', '')} (BTL Section {topic.get('btl_section', '')})\n"
-            content += f"Strategy: {topic.get('vopi_strategy', '')}\n\n"
+            # Create a copy of the topic without topic_id, topic_name, and btl_section
+            topic_content = {k: v for k, v in topic.items() if k not in ['topic_id', 'topic_name', 'btl_section']}
             
-            # Add rules
-            if "rules" in topic and topic["rules"]:
-                content += "**Rules and Criteria:**\n"
-                for rule in topic["rules"]:
-                    content += f"- [{rule.get('code', '')}] {rule.get('criteria', '')}\n"
-                    percent = rule.get('percent') or 0
-                    if percent > 0:
-                        content += f"  Percentage: {percent}%\n"
-                content += "\n"
-            
-            # Add required documents
-            if "required_docs" in topic and topic["required_docs"]:
-                content += "**Required Documents:**\n"
-                for doc in topic["required_docs"]:
-                    content += f"- {doc}\n"
-                content += "\n"
+            # Convert to formatted JSON string
+            content = f"\n### BTL Guideline: {topic.get('topic_name', '')} (Section {topic.get('btl_section', '')})\n"
+            content += json.dumps(topic_content, indent=2, ensure_ascii=False)
+            content += "\n"
             
             relevant_content.append(content)
     

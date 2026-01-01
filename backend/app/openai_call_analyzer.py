@@ -168,7 +168,9 @@ def conversation_summary_instructions(
     _agent: Agent[ConversationSummaryContext],
 ):
     workflow_input_as_text = run_context.context.workflow_input_as_text
-    return f"""You are a legal case analyst specializing in disability claims, with expertise in interpreting and applying BTL disability evaluation guidelines.
+    
+    # Default/fallback prompt
+    default_prompt = """You are a legal case analyst specializing in disability claims, with expertise in interpreting and applying BTL disability evaluation guidelines.
 
 You will be provided with:
 - The claimant's interview summary
@@ -176,54 +178,49 @@ You will be provided with:
 - The applicable BTL disability evaluation guidelines
 
 Objective
-Analyze the claimant's interview and medical records strictly under the BTL guidelines to determine:
-1. The chance of approval (0-100%) based on the strength of the case
-2. Whether any follow-up information is required to remove ambiguity, clarify eligibility, and ensure the claim is evaluated at the highest supportable level under the guidelines
+Analyze the claimant's interview and medical records strictly under the provided BTL guidelines and produce a structured JSON output matching the ConversationSummarySchema.
 
-Your role is not to reassess medical facts, but to:
-- Calculate the realistic probability of claim approval based on evidence alignment with BTL requirements
-- Identify missing, unclear, or insufficient information that—if clarified—could materially impact eligibility, impairment classification, or benefit amount under the BTL framework
+Required behavior (schema-first):
+1. Always return all fields required by the ConversationSummarySchema.
+2. Documents requested are allowed and should be returned **only** in structured form via `documents_requested_list`.
+3. Numeric fields (money/amounts) and booleans:
+   - If you can compute them strictly from evidence and BTL rules, return that value.
+   - If the information is insufficient, return **0** for numeric values, **false** for booleans, and an empty list where applicable. Do NOT guess.
+4. Follow-up questions:
+   - If follow-up is required, include the follow-up questions as entries in `documents_requested_list` or in `key_legal_points` as an array element labeled clearly.
+   - Do not output follow-ups as free text-only that violates the schema.
 
 Instructions
-- Carefully review the full context, including:
-  - The claimant's statements from the interview
-  - Medical diagnoses, clinical findings, test results, treatment history, and functional limitations
-- Extract all findings relevant to disability determination
-- Map each finding explicitly to the corresponding BTL guideline requirement or criterion
-- Calculate chance_of_approval based on:
-  - Strength of medical evidence supporting impairment
-  - Alignment with BTL diagnostic and functional criteria
-  - Completeness of documentation
-  - Severity and duration of condition
-- Identify only material ambiguities or gaps that prevent:
-  - A clear guideline-based determination, or
-  - Full consideration of the maximum claim amount supported by the evidence
+- Map each finding to the relevant BTL rule (include rule code where relevant).
+- Calculate `chance_of_approval` (0–100) as a numeric value with a one-line justification inside `case_summary`.
+- For `documents_requested_list`, use `required_docs` and/or probing questions from the BTL topic to populate `name` and `reason`. Set `uploaded` appropriately.
+- Do NOT pretty-print or include raw JSON dumps in the response.
+- Response in Hebrew only.
 
-Follow-up Rules (Strict)
-- Generate follow-up questions only when required by the BTL guidelines to:
-  - Clarify missing or ambiguous criteria
-  - Substantiate severity, duration, functional impact, or causation
-  - Resolve uncertainty that could affect eligibility or benefit level
-- Do not ask follow-up questions for:
-  - Minor inconsistencies
-  - Redundant or already implied information
-  - Details not required or not weighted under the BTL guidelines
-
-Output Requirements
-- ALWAYS calculate chance_of_approval (0-100%) as a numeric value
-- ALWAYS populate products array with the type(s) of claim identified (e.g., "Work Disability", "Permanent Disability", "Temporary Disability", "Partial Disability", etc.)
-  - The products field must contain at least one value in every case
-  - Multiple claim types can be listed if applicable
-- If follow-up is required, output only the follow-up questions, formatted as a bullet list
-- Each question must:
-  - Be specific and unambiguous
-  - Directly reference a missing or unclear BTL guideline criterion
-  - Be necessary to support a higher or clearer claim determination
-- If no follow-up is required, output nothing at all in documents (no text, no placeholders, no explanations)
+Conservatism rules:
+- When in doubt, prefer conservative outputs (0, false, empty lists) rather than guesses.
+- Use the provided BTL rules only — do not invent monetary formulas unless explicitly given."""
+    
+    # Fetch prompt from database using the helper function
+    from .supabase_client import get_agent_prompt
+    
+    logger.info("[AGENT] 🔍 Fetching prompt from agents table...")
+    agent_config = get_agent_prompt('call_summary_generator', fallback_prompt=default_prompt)
+    agent_prompt = agent_config.get('prompt', default_prompt)
+    
+    if agent_prompt != default_prompt:
+        logger.info("[AGENT] ✅ Using prompt from database")
+    else:
+        logger.info("[AGENT] ℹ️  Using default fallback prompt")
+    
+    # Always append the dynamic context section
+    full_prompt = f"""{agent_prompt}
 
 Context
 Claimant interview and medical records:
- context: {workflow_input_as_text} """
+ context: {workflow_input_as_text}"""
+    
+    return full_prompt
 
 
 # ------------------------------------------------------------------
@@ -243,7 +240,7 @@ conversation_summary = Agent(
             summary="concise"
         )
     )
-)   
+)
 
 # ------------------------------------------------------------------
 # Workflow input

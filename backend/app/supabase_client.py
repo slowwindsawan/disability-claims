@@ -1584,10 +1584,6 @@ def get_agent_prompt(agent_name: str, fallback_prompt: str = None) -> dict:
     Uses in-memory cache to reduce DB calls.
     Falls back to provided fallback_prompt if agent not found or DB unavailable.
     """
-    # Check cache first
-    if agent_name in _agent_cache:
-        logger.debug(f"Using cached prompt for agent: {agent_name}")
-        return _agent_cache[agent_name]
     
     try:
         if not _has_supabase_py or not _supabase_admin:
@@ -1599,10 +1595,16 @@ def get_agent_prompt(agent_name: str, fallback_prompt: str = None) -> dict:
             }
         
         # Fetch from database
+        logger.info(f"[DB] 🔍 Querying agents table for name='{agent_name}', is_active=True")
         response = _supabase_admin.table('agents').select('*').eq('name', agent_name).eq('is_active', True).execute()
+        
+        logger.info(f"[DB] 📊 Query returned {len(response.data) if response.data else 0} results")
         
         if response.data and len(response.data) > 0:
             agent = response.data[0]
+            logger.info(f"[DB] 📋 Agent data keys: {list(agent.keys())}")
+            logger.info(f"[DB] 📝 Prompt length: {len(agent.get('prompt', '')) if agent.get('prompt') else 0} chars")
+            
             result = {
                 'prompt': agent.get('prompt'),
                 'model': agent.get('model', 'gpt-4o'),
@@ -1610,17 +1612,22 @@ def get_agent_prompt(agent_name: str, fallback_prompt: str = None) -> dict:
             }
             # Cache the result
             _agent_cache[agent_name] = result
-            logger.info(f"Loaded agent '{agent_name}' from database (model: {result['model']})")
+            logger.info(f"[DB] ✅ Loaded agent '{agent_name}' from database (model: {result['model']})")
             return result
         else:
-            logger.warning(f"Agent '{agent_name}' not found in database, using fallback")
+            logger.warning(f"[DB] ⚠️  Agent '{agent_name}' not found in database (check name and is_active=true), using fallback")
+            # Try to see if agent exists with different criteria
+            all_agents = _supabase_admin.table('agents').select('name, is_active').execute()
+            if all_agents.data:
+                agent_names = [(a.get('name'), a.get('is_active')) for a in all_agents.data]
+                logger.info(f"[DB] 📋 Available agents in DB: {agent_names}")
             return {
                 'prompt': fallback_prompt,
                 'model': 'gpt-4o',
                 'output_schema': None
             }
     except Exception as e:
-        logger.exception(f"Failed to fetch agent '{agent_name}' from database: {e}")
+        logger.exception(f"[DB] ❌ Failed to fetch agent '{agent_name}' from database: {e}")
         return {
             'prompt': fallback_prompt,
             'model': 'gpt-4o',

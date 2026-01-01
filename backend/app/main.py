@@ -3184,7 +3184,11 @@ async def _execute_vapi_call_analysis(
         logger.info(f"[VAPI] 📏 call_summary length: {len(update_payload['call_summary'])} chars")
         
         update_case(case_id, update_payload)
-        logger.info(f"[VAPI] ✅ Successfully saved analysis to case {case_id}")
+        logger.info(f"[VAPI] ✅ update_case() call completed")
+        
+        # Small delay to ensure DB commit
+        await asyncio.sleep(0.5)
+        logger.info(f"[VAPI] ⏱️  Waited 500ms for DB commit")
         
         # Verify the save by reading back
         try:
@@ -3196,6 +3200,17 @@ async def _execute_vapi_call_analysis(
                     logger.info(f"[VAPI] ✅ Verification: call_summary is now saved (length: {len(str(saved_summary))} chars)")
                 else:
                     logger.error(f"[VAPI] ❌ Verification FAILED: call_summary is still NULL in database!")
+                    # Retry once
+                    logger.info(f"[VAPI] 🔄 Retrying save...")
+                    update_case(case_id, update_payload)
+                    await asyncio.sleep(1)
+                    verification = get_case(case_id)
+                    if verification and len(verification) > 0:
+                        saved_summary = verification[0].get('call_summary')
+                        if saved_summary:
+                            logger.info(f"[VAPI] ✅ Retry successful!")
+                        else:
+                            logger.error(f"[VAPI] ❌ Retry failed - data still not saved!")
             else:
                 logger.error(f"[VAPI] ❌ Verification FAILED: Could not retrieve case {case_id}")
         except Exception as ve:
@@ -3209,15 +3224,19 @@ async def _execute_vapi_call_analysis(
     logger.info(f"[VAPI] 🏁 BACKGROUND TASK COMPLETED!")
     logger.info(f"[VAPI] ✅ All data has been saved to database for case {case_id}")
     logger.info(f"[VAPI] 📢 Frontend can now fetch updated case data")
+    logger.info(f"[VAPI] 🎯 About to return result - job will be marked as COMPLETED")
     logger.info(f"[VAPI] ═══════════════════════════════════════════")
     
-    # Return result for job queue
-    return {
+    # Return result for job queue - THIS MARKS THE JOB AS COMPLETED
+    result = {
         'call_id': call_id,
         'case_id': case_id,
         'analysis': analysis_result,
         'message': 'Call analysis completed successfully'
     }
+    
+    logger.info(f"[VAPI] 🚀 Returning result to job queue now...")
+    return result
 
 
 @app.post('/cases/{case_id}/call-details')
