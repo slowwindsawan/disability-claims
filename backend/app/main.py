@@ -2118,6 +2118,41 @@ async def create_agent(payload: Dict[str, Any] = Body(...), user = Depends(requi
         raise HTTPException(status_code=500, detail='create_agent_failed')
 
 
+@app.get('/api/agents/by-name/{agent_name}')
+async def get_agent_by_name(agent_name: str):
+    """
+    Public endpoint to fetch an active agent configuration by name.
+    Used by VAPI integration to fetch dynamic prompt and model configuration.
+    """
+    try:
+        from .supabase_client import get_agent_prompt
+        
+        # Use existing function with empty fallback - we'll handle the fallback in frontend
+        agent_config = get_agent_prompt(agent_name, fallback_prompt='')
+        
+        if not agent_config.get('prompt'):
+            # Agent not found, return a 404 with helpful message
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Agent '{agent_name}' not found or not active in database"
+            )
+        
+        return JSONResponse({
+            'status': 'ok',
+            'agent': {
+                'name': agent_name,
+                'prompt': agent_config.get('prompt'),
+                'model': agent_config.get('model', 'gpt-4o'),
+                'output_schema': agent_config.get('output_schema')
+            }
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'get_agent_by_name failed for {agent_name}: {e}')
+        raise HTTPException(status_code=500, detail='get_agent_by_name_failed')
+
+
 @app.delete('/api/agents/{agent_id}')
 async def delete_agent(agent_id: str, user = Depends(require_admin)):
     """Delete an agent prompt."""

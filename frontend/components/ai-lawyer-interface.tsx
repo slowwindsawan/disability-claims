@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { ClaimMaximizationModal } from "@/components/claim-maximization-modal";
 import { useLanguage } from "@/lib/language-context";
 import Vapi from "@vapi-ai/web";
+import { BACKEND_BASE_URL } from "@/variables";
 
 type VoiceState = "idle" | "listening" | "speaking";
 type ClaimType = "general" | "work-injury" | "unknown";
@@ -49,6 +50,11 @@ export function AILawyerInterface() {
   );
   const [error, setError] = useState<string | null>(null);
   const [eligibilityData, setEligibilityData] = useState<any>(null);
+  const [agentConfig, setAgentConfig] = useState<{
+    prompt: string;
+    model: string;
+    provider: string;
+  } | null>(null);
   const vapiRef = useRef<Vapi | null>(null);
   const callRef = useRef<any>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -70,6 +76,46 @@ export function AILawyerInterface() {
     setMounted(true);
   }, []);
 
+  // Fetch agent config from database
+  useEffect(() => {
+    const fetchAgentConfig = async () => {
+      try {
+        const response = await fetch(
+          `${BACKEND_BASE_URL}/api/agents/by-name/vapi_main_assistant`
+        );
+
+        if (response.ok) {
+          const data = await response.json();
+          console.log("🤖 Agent config fetched:", data);
+          
+          if (data.agent) {
+            const model = data.agent.model || "gpt-4o";
+            // Determine provider based on model name
+            let provider = "openai"; // default
+            if (model.toLowerCase().includes("gemini")) {
+              provider = "google";
+            } else if (model.toLowerCase().includes("gpt") || model.toLowerCase().includes("o1")) {
+              provider = "openai";
+            }
+            
+            setAgentConfig({
+              prompt: data.agent.prompt,
+              model: model,
+              provider: provider,
+            });
+            console.log("✅ Agent config loaded: model=", model, "provider=", provider);
+          }
+        } else {
+          console.warn("⚠️ Failed to fetch agent config, will use fallback");
+        }
+      } catch (err) {
+        console.error("❌ Failed to fetch agent config:", err);
+      }
+    };
+
+    fetchAgentConfig();
+  }, []);
+
   // Fetch user eligibility data on mount
   useEffect(() => {
     const fetchEligibilityData = async () => {
@@ -80,7 +126,7 @@ export function AILawyerInterface() {
           return;
         }
 
-        const response = await fetch("http://localhost:8000/user-eligibility", {
+        const response = await fetch(`${BACKEND_BASE_URL}/user-eligibility`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -452,7 +498,7 @@ export function AILawyerInterface() {
     console.log("🔄 State reset: isConnecting=true, transcript=[]");
 
     try {
-      console.log("🎤 Creating VAPI call config with gpt-3.5-turbo...");
+      console.log("🎤 Creating VAPI call config...");
 
       // Build patient medical record context from eligibility data
       let patientMedicalContext = "";
@@ -482,18 +528,11 @@ export function AILawyerInterface() {
         console.warn("⚠️ No eligibility data available - using generic prompt");
       }
 
-      const callConfig = {
-        firstMessageMode: "assistant-speaks-first-with-model-generated-message",
-        model: {
-          provider: "openai",
-          model: "gpt-3.5-turbo",
-          messages: [
-            {
-              role: "system",
-              content: `### ROLE
+      // Fallback prompt if database fetch failed
+      const fallbackPrompt = `### ROLE
 You are "Sarah Levy" (עו״ד שרה לוי), the Senior Intake & Strategy Agent for the "Zero-Touch Claims System."
 Your goal is to replace a traditional attorney by executing the **Maximization Principle**: securing the highest possible financial benefit and maximum Retroactivity (up to 12 months).
-You are interviewing the claimant to prepare their "Statement of Claims" for the Bituach Leumi Medical Committee.${patientMedicalContext}
+You are interviewing the claimant to prepare their "Statement of Claims" for the Bituach Leumi Medical Committee.
 
 ### KNOWLEDGE BASE (BTL REGULATIONS)
 You have access to the following knowledge base regarding Bituach Leumi disability claims:
@@ -539,7 +578,28 @@ Your interview must satisfy these three legal priorities in order:
 ### RESTRICTIONS
 - Do NOT list documents orally.
 - Do NOT mention "JSON" or technical backend terms.
-- Focus purely on extracting the **Date of Onset**, **Functional Loss**, and **Secondary Conditions**.`,
+- Focus purely on extracting the **Date of Onset**, **Functional Loss**, and **Secondary Conditions**.`;
+
+      // Use DB-fetched prompt or fallback, always append patient medical context
+      const systemPrompt = agentConfig?.prompt || fallbackPrompt;
+      const finalPrompt = `${systemPrompt}\n\nPatient's medical record: ${patientMedicalContext}.`;
+      
+      // Use DB-fetched model and provider or defaults
+      const modelToUse = agentConfig?.model || "gpt-4o";
+      const providerToUse = agentConfig?.provider || "openai";
+      
+      console.log("🤖 Using model:", modelToUse, "provider:", providerToUse);
+      console.log("📝 Prompt source:", agentConfig ? "database" : "fallback");
+
+      const callConfig = {
+        firstMessageMode: "assistant-speaks-first-with-model-generated-message",
+        model: {
+          provider: providerToUse,
+          model: modelToUse,
+          messages: [
+            {
+              role: "system",
+              content: finalPrompt,
             },
           ],
         },
