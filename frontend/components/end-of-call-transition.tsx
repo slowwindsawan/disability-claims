@@ -76,12 +76,28 @@ export function EndOfCallTransition() {
       const callId = localStorage.getItem("vapi_call_id")
       const caseId = localStorage.getItem("case_id")
 
-      if (!token || !callId) {
-        console.error("❌ Missing access_token or vapi_call_id")
+      // Check authentication first
+      if (!token) {
+        console.error("❌ No access token found")
+        const errorMsg = isRTL ? "נדרשת התחברות. מפנה לדף הבית..." : "Authentication required. Redirecting to home..."
+        if (isMountedRef.current) {
+          setError(errorMsg)
+          // Redirect to home/login instead of ai-lawyer
+          setTimeout(() => {
+            router.push("/")
+          }, 1500)
+        }
+        return
+      }
+
+      if (!callId) {
+        console.error("❌ Missing vapi_call_id")
         const errorMsg = isRTL ? "לא נמצא מזהה שיחה. נא להתחיל מחדש." : "Call ID not found. Please start over."
         if (isMountedRef.current) {
           setError(errorMsg)
-          setShouldNavigate(true)
+          setTimeout(() => {
+            router.push("/ai-lawyer")
+          }, 1500)
         }
         return
       }
@@ -91,7 +107,9 @@ export function EndOfCallTransition() {
         const errorMsg = isRTL ? "לא נמצא מזהה תיק. נא להתחיל מחדש." : "Case ID not found. Please start over."
         if (isMountedRef.current) {
           setError(errorMsg)
-          setShouldNavigate(true)
+          setTimeout(() => {
+            router.push("/ai-lawyer")
+          }, 1500)
         }
         return
       }
@@ -219,6 +237,21 @@ export function EndOfCallTransition() {
                 // If still running, continue polling
               }
             }
+          } else {
+            // Handle non-OK responses
+            if (response.status === 401) {
+              console.error("❌ Authentication failed")
+              const errorMsg = isRTL ? "נדרשת התחברות מחדש" : "Authentication expired. Please login again."
+              if (isMountedRef.current) {
+                setError(errorMsg)
+                setTimeout(() => {
+                  localStorage.removeItem("access_token")
+                  router.push("/")
+                }, 2000)
+              }
+              return
+            }
+            console.error(`❌ Response not OK: ${response.status}`)
           }
 
           attempts++

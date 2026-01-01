@@ -1,0 +1,1328 @@
+[{
+  "topic_id": "disab_2",
+  "topic_name": "Disability Rating Determination",
+  "btl_section": "2",
+  "vopi_strategy": "The BTL cares about 'procedural compliance and thorough evaluation.' Focus questions on medical evidence and adherence to timelines.",
+  "rules": [
+    {
+      "code": "2_a_2",
+      "percent": 0,
+      "criteria": "Disability rating is determined by a medical committee: at least one certified physician and possibly multiple specialists as needed.",
+      "probing_question": "Who made up the committee that determined your disability rating? Was it a single doctor or did multiple specialists participate?"
+    },
+    {
+      "code": "2_a_3",
+      "percent": 0,
+      "criteria": "The authorized doctor may require additional medical tests and appoint consultants to assist in evaluating the claimant's condition.",
+      "probing_question": "Did the doctor ask you to undergo any additional tests or involve any consulting specialists in your evaluation?"
+    },
+    {
+      "code": "2_a_4",
+      "percent": 0,
+      "criteria": "Disability claims must be filed on the official form at an NI branch; eligible claims are forwarded by the claims clerk to the certified doctor for evaluation.",
+      "probing_question": "Did you submit your disability claim using the official NI form? Did you receive confirmation that it was forwarded to a certified doctor?"
+    },
+    {
+      "code": "2_a_5",
+      "percent": 0,
+      "criteria": "The claimant is notified of the date, time, and location to appear before the disability-rating committee.",
+      "probing_question": "Were you given a notice with the appointment date and location for the disability rating examination?"
+    },
+    {
+      "code": "2_b_27a",
+      "percent": 0,
+      "criteria": "The claimant (and the insurer) may appeal the rating decision to a medical appeals committee within 30 days of receiving the decision.",
+      "probing_question": "Did you appeal the decision on your disability rating within 30 days of receiving it? Were you aware of this deadline?"
+    },
+    {
+      "code": "2_b_27b",
+      "percent": 0,
+      "criteria": "The appeals committee is comprised of three doctors selected from the official list, one of whom acts as chair.",
+      "probing_question": "Do you know if the appeals committee reviewing your case had three doctors? One of them serves as the chair of the committee."
+    },
+    {
+      "code": "2_b_27c",
+      "percent": 0,
+      "criteria": "A non-medical specialist (e.g. technical expert) may be appointed to advise the committee on specific questions related to the case.",
+      "probing_question": "Was a technical or vocational expert consulted as part of your appeals process to address specific issues in your case?"
+    }
+  ],
+  "required_docs": [
+    "Disability claim form (NI official form) with proof of filing",
+    "Medical evaluation report(s) by the certified physician (including any test results)",
+    "Official decision notice from the disability committee (with findings and rationale)"
+  ]
+}, {
+  "topic_id": "neuro_3",
+  "topic_name": "Nervous System",
+  "btl_section": "3",
+  "vopi_strategy": "Focus on objective neurological deficits and their functional consequences (motor strength, gait, sphincter function, cognition). Use clinical exam + supporting tests (neuroimaging, EMG/NCS, neuropsychological testing) to map deficit to the closest rule.",
+  "rules": [
+    {
+      "code": "3_neuropsych_32a",
+      "percent": 0,
+      "criteria": "Neurocognitive disorder / dementia spectrum with complaints but no documented impairment in activities of daily living and normal neuropsych testing (borderline findings only).",
+      "probing_question": "Do you manage daily tasks independently and did neurocognitive testing show clear deficits in memory, attention or executive function?"
+    },
+    {
+      "code": "3_neuropsych_32a_1",
+      "percent": 10,
+      "criteria": "Mild cognitive impairment shown on neuropsychological testing with mild functional impact (attention, memory or executive domain impaired mildly).",
+      "probing_question": "Has a neuropsychological evaluation shown clear, mild deficits in memory, attention, or planning that affect day-to-day functioning?"
+    },
+    {
+      "code": "3_hemiplegia",
+      "percent": 30,
+      "criteria": "Partial hemiplegia (mild) — unilateral motor deficit with reduced but preserved functional use of the affected side.",
+      "probing_question": "Do you have weakness affecting one side of the body but still retain useful movement in the affected arm and leg?"
+    },
+    {
+      "code": "3_hemiplegia_mod",
+      "percent": 50,
+      "criteria": "Partial hemiplegia (moderate) — marked weakness causing clear functional limitation (difficulty with independent ADLs).",
+      "probing_question": "Is the weakness on one side significant enough to affect dressing, feeding, walking, or other daily activities?"
+    },
+    {
+      "code": "3_hemiplegia_severe",
+      "percent": 70,
+      "criteria": "Severe hemiplegia — near-paralysis of one side with major functional loss; may have contractures.",
+      "probing_question": "Is movement on the affected side extremely limited or essentially absent, with major impact on independence?"
+    },
+    {
+      "code": "3_paraplegia",
+      "percent": 50,
+      "criteria": "Paraplegia — varying severity; use specific subcategories (mild/moderate/severe) depending on residual motor function of legs and trunk control.",
+      "probing_question": "Is there weakness or paralysis of both legs and, if so, does it prevent independent walking or require constant assistance?"
+    },
+    {
+      "code": "3_quadriplegia",
+      "percent": 60,
+      "criteria": "Quadriplegia — impairment of all four limbs; percent depends on severity (mild/moderate/severe) and respiratory/feeding dependence.",
+      "probing_question": "Are all four limbs affected and do you need help with breathing support, feeding, or full-time care?"
+    },
+    {
+      "code": "3_peripheral_sciatic",
+      "percent": 10,
+      "criteria": "Sciatic nerve impairment — mild functional deficit (e.g., dorsiflexion/plantarflexion weakness graded 4/5).",
+      "probing_question": "Do you have weakness of ankle/foot movements or sensory changes in the back of the leg/foot?"
+    },
+    {
+      "code": "3_peroneal_common",
+      "percent": 10,
+      "criteria": "Common peroneal (fibular) nerve: mild functional deficit — dorsiflexion weakness (4/5).",
+      "probing_question": "Do you have foot drop or difficulty lifting the front of your foot when walking?"
+    },
+    {
+      "code": "3_tibial",
+      "percent": 10,
+      "criteria": "Tibial nerve: mild functional deficit — plantarflexion weakness (4/5).",
+      "probing_question": "Do you have weakness when pushing off with your foot (plantarflexion) or calf weakness?"
+    },
+    {
+      "code": "3_femoral",
+      "percent": 20,
+      "criteria": "Femoral nerve: moderate functional deficit — iliopsoas/quadriceps weakness interfering with stair-climbing/squatting.",
+      "probing_question": "Do you struggle to climb stairs, rise from a chair, or straighten your knee?"
+    },
+    {
+      "code": "3_radialis",
+      "percent": 10,
+      "criteria": "Radial nerve: mild deficit — wrist and finger extension weakness (4/5).",
+      "probing_question": "Can you fully extend your wrist and fingers, or do you have weakness when extending the hand?"
+    },
+    {
+      "code": "3_medianus",
+      "percent": 10,
+      "criteria": "Median nerve: mild deficit — sensory symptoms or mild motor involvement (thumb/index flexion weakness).",
+      "probing_question": "Do you have numbness/tingling in the thumb/index fingers or weakness with pinching/grip?"
+    },
+    {
+      "code": "3_ulnaris",
+      "percent": 5,
+      "criteria": "Ulnar nerve: mild sensory or intrinsic hand weakness (Tinel/positive testing may be present).",
+      "probing_question": "Do you have tingling in the ring/little fingers or weakness of hand intrinsic muscles affecting grip?"
+    },
+    {
+      "code": "3_nerve_root_lumbosacral",
+      "percent": null,
+      "criteria": "Lumbosacral or brachial plexus involvement — percent set according to the specific affected peripheral nerve items and severity (use 3–7 subsections).",
+      "probing_question": "Has imaging/EMG shown radicular compression or plexus injury and how much weakness/sensory loss resulted?"
+    },
+    {
+      "code": "3_ataxic_gait",
+      "percent": 30,
+      "criteria": "Ataxia with repeated documented falls or marked gait instability on exam (sensory or cerebellar ataxia with objective findings).",
+      "probing_question": "Do you have frequent falls or severe gait instability due to unsteadiness or loss of coordination?"
+    },
+    {
+      "code": "3_sphincter_disturbance",
+      "percent": 70,
+      "criteria": "Marked sphincter disturbance (incontinence, loss of sphincter control) — percent adjusted by severity and dependence on catheterization or appliances.",
+      "probing_question": "Do you experience urinary or fecal incontinence or require catheterization/constant care for sphincter control?"
+    },
+    {
+      "code": "3_severe_weakness_dependencies",
+      "percent": 100,
+      "criteria": "Severe generalized weakness with loss of independent ambulation and need for full-time care (e.g., global muscle strength ≤2/5 with dependence).",
+      "probing_question": "Are you unable to walk or perform basic self-care without continuous assistance or mechanical support?"
+    }
+  ],
+  "required_docs": [
+    "Neurology consultation notes with focused neurological exam",
+    "Brain and/or spinal cord imaging (MRI preferred; CT if MRI contra-indicated)",
+    "Electrophysiology: EMG and nerve conduction studies (NCS) where peripheral nerve or radicular injury suspected",
+    "Neuropsychological testing report for cognitive/behavioral syndromes (MMSE, MoCA, formal neuropsych battery)",
+    "Urodynamic studies / pelvic floor evaluation when sphincter dysfunction is claimed",
+    "Operative reports and discharge summaries for neurosurgical procedures",
+    "Rehabilitation/physiotherapy records documenting functional status and assistive-device use",
+    "EEG if seizures or encephalopathy are in the differential"
+  ]
+},{
+  "topic_id": "psych_4",
+  "topic_name": "Psychotic and Psychoneurotic Disorders (Mental Health)",
+  "btl_section": "4",
+  "vopi_strategy": "Evaluate functional impact on work and social adaptation first. Emphasize objective evidence of persistent symptoms, need for ongoing pharmacologic/psychosocial treatment, hospitalizations or supervised care, and clear examples of how symptoms limit daily functioning.",
+  "rules": [
+    {
+      "code": "4_33_a",
+      "percent": 10,
+      "criteria": "Psychotic disorder in full remission or remission with only negligible signs of maladaptation; mild limitation of work/social adaptation.",
+      "probing_question": "Are your psychotic symptoms currently absent or minimal, and do you manage everyday work and social activities without major problems?"
+    },
+    {
+      "code": "4_33_b",
+      "percent": 20,
+      "criteria": "Remission with mild signs of social maladaptation; noticeable but limited impact on work capacity.",
+      "probing_question": "Do you have ongoing mild symptoms that make social interactions or some work tasks noticeably harder?"
+    },
+    {
+      "code": "4_33_c",
+      "percent": 30,
+      "criteria": "Remission with moderate signs of social maladaptation and moderate limitation in work ability.",
+      "probing_question": "Do moderate symptoms interfere with your ability to keep regular work hours or maintain social relationships?"
+    },
+    {
+      "code": "4_33_d",
+      "percent": 50,
+      "criteria": "Partial remission with marked signs of social maladaptation and a marked limitation of work capacity.",
+      "probing_question": "Do you experience marked symptoms that substantially reduce your ability to work or function socially (e.g., frequent absences, inability to manage responsibilities)?"
+    },
+    {
+      "code": "4_33_e",
+      "percent": 70,
+      "criteria": "Typical signs of severe impairment in social adaptation and work capacity (persistent major dysfunction).",
+      "probing_question": "Are your symptoms severe and persistent enough that you struggle to live independently or hold most types of employment?"
+    },
+    {
+      "code": "4_33_f",
+      "percent": 100,
+      "criteria": "Complete lack of social adaptation, total inability to work; requires institutionalization or continuous supervision.",
+      "probing_question": "Do you require continuous supervision, institutional care, or are you completely unable to perform any work due to your psychiatric condition?"
+    },
+    {
+      "code": "4_34_a",
+      "percent": 0,
+      "criteria": "Psychoneurotic / neurotic disorders: mild signs present but no disturbance in social adaptation and no limitation of work.",
+      "probing_question": "Do you have mild symptoms (worry, occasional insomnia) but still maintain full work and social functioning?"
+    },
+    {
+      "code": "4_34_b",
+      "percent": 10,
+      "criteria": "Objective and subjective signs that moderately limit social adaptation and work capacity.",
+      "probing_question": "Do your symptoms moderately interfere with social life or reduce your work effectiveness?"
+    },
+    {
+      "code": "4_34_c",
+      "percent": 20,
+      "criteria": "Objective and subjective signs that markedly limit social adaptation and work capacity.",
+      "probing_question": "Are your symptoms sufficiently pronounced that they noticeably limit your daily work and social activities?"
+    },
+    {
+      "code": "4_34_d",
+      "percent": 30,
+      "criteria": "Clear clinical signs that substantially limit social adaptation and work capacity.",
+      "probing_question": "Do clinicians document clear signs (e.g., persistent panic, major avoidance, functional decline) that substantially limit your working life?"
+    },
+    {
+      "code": "4_34_e",
+      "percent": 50,
+      "criteria": "Definite and persistent clinical signs without remission breaks, causing a marked limitation in social adaptation and work capacity.",
+      "probing_question": "Are your symptoms continuous and stable (not episodic), requiring ongoing treatment and causing marked functional limitations?"
+    },
+    {
+      "code": "4_34_f",
+      "percent": 70,
+      "criteria": "Severe cases bordering on psychotic-level dysfunction, with major social maladaptation.",
+      "probing_question": "Do you have severe, enduring symptoms similar to psychosis that leave you poorly adapted socially and functionally?"
+    },
+    {
+      "code": "4_34_g",
+      "percent": 100,
+      "criteria": "Severe, chronic cases resembling psychosis with complete and long-standing lack of social adaptation.",
+      "probing_question": "Have your symptoms been long-standing and so disabling that you are essentially unable to work or socially adapt for many years?"
+    },
+    {
+      "code": "4_mood_1",
+      "percent": 0,
+      "criteria": "Affective/mood disorders (e.g., depressive episode, bipolar) in full remission without functional impairment.",
+      "probing_question": "Are your mood symptoms currently absent, and do you function normally at work and socially?"
+    },
+    {
+      "code": "4_mood_2",
+      "percent": 10,
+      "criteria": "Full remission or residual affective signs causing mild functional/social limitation.",
+      "probing_question": "Do you have mild residual mood symptoms that slightly reduce your work or social functioning?"
+    },
+    {
+      "code": "4_mood_3",
+      "percent": 20,
+      "criteria": "Clinical signs requiring treatment, moderate disturbance of social/occupational functioning.",
+      "probing_question": "Are you receiving medication or therapy for mood symptoms and experiencing a moderate impact on daily function?"
+    },
+    {
+      "code": "4_mood_4",
+      "percent": 30,
+      "criteria": "Partial remission with moderate to marked symptoms and clear limitation of work (needs continuous treatment).",
+      "probing_question": "Do you need ongoing, regular treatment and still experience significant limitations in work performance?"
+    },
+    {
+      "code": "4_mood_5",
+      "percent": 50,
+      "criteria": "Partial remission with clear, persistent clinical signs and major functional impairment requiring continuous treatment.",
+      "probing_question": "Is your disorder persistent despite treatment and does it seriously impair everyday functioning and employment?"
+    },
+    {
+      "code": "4_mood_6",
+      "percent": 70,
+      "criteria": "Active affective disorder with very severe impairment or need for prolonged day psychiatric care.",
+      "probing_question": "Have you required prolonged day hospital psychiatric care or have very severe functional decline from mood disorder?"
+    },
+    {
+      "code": "4_mood_7",
+      "percent": 100,
+      "criteria": "Active illness requiring full psychiatric hospitalization or continuous supervision; unable to work.",
+      "probing_question": "Has your mood disorder required full-time inpatient psychiatric care or continuous supervision, making work impossible?"
+    },
+    {
+      "code": "4_anxiety_ptsd_1",
+      "percent": 0,
+      "criteria": "Anxiety, PTSD, adjustment, obsessive-compulsive and related disorders in full remission with no functional limitation.",
+      "probing_question": "Are your anxiety/PTSD symptoms in remission and not limiting your work or social life?"
+    },
+    {
+      "code": "4_anxiety_ptsd_2",
+      "percent": 10,
+      "criteria": "Full remission or residual clinical signs causing mild functional/social disturbance; mild work limitation.",
+      "probing_question": "Do you have mild but persistent anxiety/PTSD symptoms that produce a small reduction in job performance or social activity?"
+    },
+    {
+      "code": "4_anxiety_ptsd_3",
+      "percent": 20,
+      "criteria": "Clinical signs requiring treatment and causing moderate impairment of social and occupational functioning.",
+      "probing_question": "Are you on medication/therapy and experiencing a moderate reduction in ability to perform at work or socially due to anxiety/PTSD?"
+    },
+    {
+      "code": "4_anxiety_ptsd_4",
+      "percent": 30,
+      "criteria": "Partial remission with moderate clinical severity and a marked limitation of work/psychosocial functioning.",
+      "probing_question": "Do your symptoms (e.g., flashbacks, panic, severe avoidance) substantially limit your daily activities or work?"
+    },
+    {
+      "code": "4_anxiety_ptsd_5",
+      "percent": 50,
+      "criteria": "Partial remission with clear clinical signs, need for constant treatment, and severe impairment of functioning.",
+      "probing_question": "Are your symptoms persistent despite treatment and do they cause serious, ongoing functional disability?"
+    },
+    {
+      "code": "4_anxiety_ptsd_6",
+      "percent": 70,
+      "criteria": "Very severe affective/ anxiety disturbance with major functional loss or need for day psychiatric care.",
+      "probing_question": "Do you require prolonged psychiatric day care or have a very severe limitation due to anxiety/trauma-related disorder?"
+    },
+    {
+      "code": "4_anxiety_ptsd_7",
+      "percent": 100,
+      "criteria": "Active illness requiring full psychiatric hospitalization or continuous supervision; cannot work.",
+      "probing_question": "Has your anxiety/PTSD required full inpatient psychiatric care or continuous supervision, preventing any work?"
+    }
+  ],
+  "required_docs": [
+    "Comprehensive psychiatric evaluation(s) (diagnostic formulation, mental status exam)",
+    "Treatment history: medication lists, psychiatry clinic notes, psychotherapy progress notes",
+    "Records of psychiatric hospitalizations or day-hospital treatment",
+    "Objective assessments: standardized rating scales (e.g., PANSS, HAM-D, PCL-5), neurocognitive testing when relevant",
+    "Functional assessments: occupational/ADL evaluations, employer statements, social worker reports",
+    "Evidence of ongoing care or supervision if applicable (care plans, guardian appointment, nursing notes)"
+  ]
+},{
+  "topic_id": "upperlimbs_5",
+  "topic_name": "Upper Limbs",
+  "btl_section": "5",
+  "vopi_strategy": "Focus on loss of function (range of motion, strength, sensation), structural loss (amputation, pseudoarthrosis, poor unions), and nerve injuries. Prioritize objective measurements (ROM degrees, nerve conduction/EMG, imaging, operative reports) and the functional impact on daily activities and work (lifting, gripping, fine motor tasks).",
+  "rules": [
+    {
+      "code": "5_41_1",
+      "percent": 20,
+      "criteria": "Recurrent shoulder dislocation — frequent dislocations requiring avoidance of overhead movements.",
+      "probing_question": "Do you have recurrent shoulder dislocations that force you to avoid lifting your arm overhead or require repeated medical reduction?"
+    },
+    {
+      "code": "5_41_1b",
+      "percent": 30,
+      "criteria": "Recurrent shoulder dislocations occurring in all movements (more disabling).",
+      "probing_question": "Does your shoulder dislocate with routine movement (not just extreme positions)?"
+    },
+    {
+      "code": "5_41_1c",
+      "percent": 40,
+      "criteria": "Recurrent dislocations that can be reduced only with medical assistance.",
+      "probing_question": "Have you needed medical help to put your shoulder back in place after a dislocation?"
+    },
+    {
+      "code": "5_41_2",
+      "percent": 50,
+      "criteria": "Flail shoulder (shoulder flail) — severe instability / loss of useful function.",
+      "probing_question": "Does your shoulder have such instability or loss of function that it feels flail-like or essentially non-functional?"
+    },
+    {
+      "code": "5_41_3a",
+      "percent": 30,
+      "criteria": "Ankylosis (stiffness) of the shoulder — comfortable position (useful pinch/grip allowed).",
+      "probing_question": "Is your shoulder fixed in a comfortable position (allowing useful hand function) after stiffness or fusion?"
+    },
+    {
+      "code": "5_41_3b",
+      "percent": 50,
+      "criteria": "Ankylosis of the shoulder — uncomfortable (position significantly impairs function).",
+      "probing_question": "Is your shoulder fixed in an uncomfortable position that severely limits reaching and arm use?"
+    },
+    {
+      "code": "5_41_4a",
+      "percent": 15,
+      "criteria": "Restriction of shoulder movement up to shoulder height (partial functional loss).",
+      "probing_question": "Can you raise your arm only up to shoulder level but not higher?"
+    },
+    {
+      "code": "5_41_4b",
+      "percent": 25,
+      "criteria": "Restriction of shoulder movement to 45° from the body or marked limitation of rotation.",
+      "probing_question": "Is your shoulder movement limited to about 45° from the body or is rotation markedly restricted?"
+    },
+    {
+      "code": "5_41_4c",
+      "percent": 35,
+      "criteria": "Severe restriction of shoulder movement (about 30° from the body).",
+      "probing_question": "Is your active shoulder movement limited to roughly 30° from the body?"
+    },
+    {
+      "code": "5_40_1",
+      "percent": 10,
+      "criteria": "Poor union of humerus with mild shortening or angular deformity with mild movement restriction.",
+      "probing_question": "Following your humeral fracture, was there a poor union with some shortening or deformity but only mild functional limitation?"
+    },
+    {
+      "code": "5_40_2",
+      "percent": 20,
+      "criteria": "Poor union of humerus with major deformity and severe limitation of elbow/shoulder movement.",
+      "probing_question": "Does your humerus show a poor union with major deformity and significant restriction of shoulder or elbow movement?"
+    },
+    {
+      "code": "5_40_3",
+      "percent": 20,
+      "criteria": "Non-union (fibrous union) of humerus without formation of a false joint.",
+      "probing_question": "Was your humeral fracture described as a fibrous non-union without a false joint?"
+    },
+    {
+      "code": "5_40_4",
+      "percent": 40,
+      "criteria": "Non-union with formation of a false (pseudo) joint of the humerus (false flail joint).",
+      "probing_question": "Did imaging or your surgeon report a false joint (pseudoarthrosis) at the humerus?"
+    },
+    {
+      "code": "5_loss_upperlimb_shoulder",
+      "percent": 80,
+      "criteria": "Amputation / loss of upper limb at the shoulder joint (loss above shoulder = highest percent).",
+      "probing_question": "Was your upper limb amputated at or above the shoulder joint?"
+    },
+    {
+      "code": "5_loss_upperlimb_above_deltoid",
+      "percent": 75,
+      "criteria": "Amputation above the deltoid insertion (proximal upper arm amputation).",
+      "probing_question": "Is the limb loss above the deltoid muscle insertion (proximal upper-arm amputation)?"
+    },
+    {
+      "code": "5_loss_forearm",
+      "percent": 60,
+      "criteria": "Loss of forearm (amputation at or below elbow but above wrist).",
+      "probing_question": "Was your arm amputated through the forearm (between elbow and wrist)?"
+    },
+    {
+      "code": "5_loss_hand_wrist_root",
+      "percent": 60,
+      "criteria": "Loss of the hand at the wrist root.",
+      "probing_question": "Was the hand amputated at the wrist (i.e., loss of the hand at wrist/root)?"
+    },
+    {
+      "code": "5_loss_hand_preserve_root",
+      "percent": 55,
+      "criteria": "Loss of the hand while preserving the wrist root (partial hand loss preserving proximal stump).",
+      "probing_question": "Was there a partial hand amputation with preservation of the wrist root?"
+    },
+    {
+      "code": "5_42_rootstiffness_wrist",
+      "percent": 20,
+      "criteria": "Ankylosis (stiffness) of the wrist in a comfortable position.",
+      "probing_question": "Is your wrist fixed in a comfortable position allowing some hand use (e.g., neutral/dorsiflexion 15°)?"
+    },
+    {
+      "code": "5_42_rootstiffness_wrist_uncomfortable",
+      "percent": 40,
+      "criteria": "Ankylosis of the wrist in an uncomfortable position (palmar flexion or radial deviation).",
+      "probing_question": "Is your wrist fixed in a palmar-flexed or radially deviated position that impairs function?"
+    },
+    {
+      "code": "5_42_5_loss_pronation_supination",
+      "percent": 20,
+      "criteria": "Permanent loss of pronation or supination (fixed hyperpronation or fixed supination).",
+      "probing_question": "Is your forearm permanently fixed in pronation or supination, preventing rotation?"
+    },
+    {
+      "code": "5_42_5_loss_both",
+      "percent": 10,
+      "criteria": "Loss or significant limitation of both pronation and supination in a comfortable/natural position.",
+      "probing_question": "Do you have marked limitation of both forearm pronation and supination even in a neutral comfortable position?"
+    },
+    {
+      "code": "5_43_amputations_fingers_thumb",
+      "percent": 25,
+      "criteria": "Thumb amputation including metacarpal head or part of it.",
+      "probing_question": "Has your thumb been amputated including part or all of the metacarpal head?"
+    },
+    {
+      "code": "5_43_finger2",
+      "percent": 15,
+      "criteria": "Amputation of the index finger with metacarpal head or part thereof.",
+      "probing_question": "Has your index finger (finger 2) been amputated including the metacarpal head or part of it?"
+    },
+    {
+      "code": "5_43_other_fingers",
+      "percent": 10,
+      "criteria": "Amputation of fingers 3, 4 or 5 with metacarpal head or part of it (each finger percent varies).",
+      "probing_question": "Have any of the other fingers (3–5) been amputated including the metacarpal head or part of it?"
+    },
+    {
+      "code": "5_44_mallet_swan_neck_stiffness",
+      "percent": 7,
+      "criteria": "Mallet finger (thumb or index) — fixed deformity of terminal phalanx.",
+      "probing_question": "Do you have a fixed mallet deformity of the thumb or index finger limiting tip extension?"
+    },
+    {
+      "code": "5_45_stiffness_pinchingthumb",
+      "percent": 10,
+      "criteria": "‘Comfortable’ stiffness allowing pinch/grip — assigned percentage depends on which digit (thumb highest).",
+      "probing_question": "Is the stiffness of your thumb/fingers in a position that still allows pinch and grip?"
+    },
+    {
+      "code": "5_nerve_radial",
+      "percent": 20,
+      "criteria": "Radial nerve injury — moderate functional impairment (extension weakness); higher percent for severe paralysis or full palsy.",
+      "probing_question": "Do you have wrist/ finger drop or difficulty extending the wrist/fingers consistent with radial nerve dysfunction?"
+    },
+    {
+      "code": "5_nerve_median",
+      "percent": 30,
+      "criteria": "Median nerve injury — ranges from sensory only to severe functional loss (grip/finger flexion impairment).",
+      "probing_question": "Do you have loss of thumb opposition, reduced flexion or sensory changes in the median nerve distribution?"
+    },
+    {
+      "code": "5_nerve_ulnar",
+      "percent": 20,
+      "criteria": "Ulnar nerve injury — ranges from sensory disturbance to severe intrinsic muscle weakness/paralysis.",
+      "probing_question": "Do you have clawing, loss of intrinsic hand strength, or sensory loss in the ulnar distribution?"
+    },
+    {
+      "code": "5_plexus_radicular_groups",
+      "percent": 20,
+      "criteria": "Partial paresis of a radicular group (brachial root group) — mild functional deficit.",
+      "probing_question": "Have you been diagnosed with partial paralysis of one root group of the brachial plexus (mild paresis)?"
+    },
+    {
+      "code": "5_plexus_full",
+      "percent": 80,
+      "criteria": "Complete plexus palsy — full paralysis of the brachial plexus with major functional loss.",
+      "probing_question": "Have you been diagnosed with a complete brachial plexus palsy leaving the arm essentially paralyzed?"
+    }
+  ],
+  "required_docs": [
+    "Orthopedic and hand surgery operative reports (fracture fixation, fusion, amputations).",
+    "Imaging: X-rays (with ROM imaging where relevant), CT or MRI of shoulder/elbow/wrist, and X-rays of hand/fingers.",
+    "ROM measurements and clinical notes documenting degrees of motion (shoulder, elbow, wrist, forearm rotation).",
+    "Nerve testing: EMG / nerve conduction studies for suspected radial/median/ulnar/plexus injuries.",
+    "Ulnar/median/radial specialist clinic notes and rehabilitation records (physiotherapy, splinting).",
+    "Prosthesis / orthosis records and device prescriptions (if applicable).",
+    "Documentation of recurrent instability episodes, reduction procedures, and any revisions/surgeries.",
+    "Follow-up notes showing functional impact on activities of daily living and employment (work limitations, lifting/grip tests)."
+  ],
+  "notes": "Percent values are taken from the BTL tables — the source document often lists two percentage values (typically right/left or dominant/non-dominant). The first numeric value from the table was used above as the primary percent. For items where severity is graded (mild/moderate/severe) the percent shown corresponds to the primary table value for that grade in the BTL."
+},{
+  "topic_id": "lowerlimbs_6",
+  "topic_name": "Lower Limbs",
+  "btl_section": "6",
+  "vopi_strategy": "Focus on functional mobility: gait, weight-bearing, sitting/standing tolerance, need for aids or prosthesis, and objective measures (ROM, leg-length discrepancy, imaging, EMG). Translate anatomical/technical findings into their impact on daily activities (walking, stairs, work).",
+  "rules": [
+    {
+      "code": "6_48_1_hip_flail",
+      "percent": 70,
+      "criteria": "Flail hip joint (false flail joint) with complete loss of joint function.",
+      "probing_question": "Do you have a hip joint so unstable or non-functional that your leg cannot support weight or you have virtually no useful motion at the hip?"
+    },
+    {
+      "code": "6_48_1_hip_ankylosis_uncomfortable",
+      "percent": 50,
+      "criteria": "Unfavourable (uncomfortable) ankylosis of the hip (fixed position that significantly impairs function).",
+      "probing_question": "Is your hip fixed in a position that prevents normal sitting, standing or walking comfortably?"
+    },
+    {
+      "code": "6_48_1_hip_ankylosis_comfortable",
+      "percent": 40,
+      "criteria": "Comfortable ankylosis of the hip (fixed but in a functional position).",
+      "probing_question": "Is your hip stiff/immobile but fixed in a position that still allows reasonable sitting and ambulation?"
+    },
+    {
+      "code": "6_48_1_hip_flexion_limit",
+      "percent": 15,
+      "criteria": "Limited hip extension (loss of extension up to 15°).",
+      "probing_question": "Do you have trouble straightening your hip fully (e.g., difficulty standing upright or climbing) and was extension measured to be limited?"
+    },
+    {
+      "code": "6_48_2_knee_instability_severe",
+      "percent": 50,
+      "criteria": "Marked lateral instability of the knee causing pronounced deformity under weight-bearing.",
+      "probing_question": "Does your knee give way sideways under weight, causing collapse or severe instability when you stand or walk?"
+    },
+    {
+      "code": "6_48_2_knee_shortening_and_contracture",
+      "percent": 40,
+      "criteria": "Knee ankylosis/extension limitation: inability to fully extend — depending on degrees (examples: extension to 30° → 40%).",
+      "probing_question": "What degree of knee extension loss was recorded? (e.g., inability to extend beyond 30°)"
+    },
+    {
+      "code": "6_48_2_knee_flexion_restriction_0_90",
+      "percent": 0,
+      "criteria": "Flexion allowed 0°–90° → no impairment rating.",
+      "probing_question": "Can you bend your knee to about 90° without significant pain or limitation?"
+    },
+    {
+      "code": "6_48_2_knee_flexion_restriction_0_70",
+      "percent": 5,
+      "criteria": "Flexion limited to 0°–70°.",
+      "probing_question": "Is your maximum knee bend around 70° (less than normal) when measured?"
+    },
+    {
+      "code": "6_48_2_knee_flexion_restriction_0_45",
+      "percent": 10,
+      "criteria": "Flexion limited to 0°–45°.",
+      "probing_question": "Is your knee bending limited to roughly 45° when measured?"
+    },
+    {
+      "code": "6_48_2_knee_flexion_restriction_0_30",
+      "percent": 20,
+      "criteria": "Flexion limited to 0°–30°.",
+      "probing_question": "Can you only bend your knee to about 30° or less?"
+    },
+    {
+      "code": "6_48_2_meniscus_minor",
+      "percent": 10,
+      "criteria": "Minor meniscal damage without locking; symptomatic but limited functional loss.",
+      "probing_question": "Have you been diagnosed with a small meniscal tear causing intermittent pain but no locking?"
+    },
+    {
+      "code": "6_48_2_meniscus_with_locking",
+      "percent": 20,
+      "criteria": "Meniscal damage with mechanical locking of the knee.",
+      "probing_question": "Does your knee catch or lock frequently, preventing full movement until manipulated?"
+    },
+    {
+      "code": "6_48_3_ankle_motion_limit",
+      "percent": 10,
+      "criteria": "Marked limitation of ankle movements (but not full ankylosis).",
+      "probing_question": "Is your ankle movement significantly reduced such that walking on uneven ground or rising onto toes is limited?"
+    },
+    {
+      "code": "6_48_3_ankle_ankylosis_comfortable",
+      "percent": 20,
+      "criteria": "Comfortable ankylosis of the ankle (fixed in a functional position).",
+      "probing_question": "Is your ankle fused but in a position that still permits walking with less difficulty?"
+    },
+    {
+      "code": "6_48_3_ankle_ankylosis_uncomfortable",
+      "percent": 30,
+      "criteria": "Uncomfortable ankylosis of the ankle (fixed in a position that hinders function).",
+      "probing_question": "Is your ankle fused in a position that causes significant mobility problems or pain when walking?"
+    },
+    {
+      "code": "6_49_foot_planus_moderate",
+      "percent": 10,
+      "criteria": "Flat foot (valgus/planus) of moderate degree with restricted tarsal motion.",
+      "probing_question": "Has a clinician told you that you have a flatfoot with limited joint movement in the midfoot?"
+    },
+    {
+      "code": "6_49_foot_planus_severe",
+      "percent": 20,
+      "criteria": "Severe flatfoot with muscle contracture and extensive callosities.",
+      "probing_question": "Do you have significant foot deformity with calluses and limited walking tolerance due to the foot shape?"
+    },
+    {
+      "code": "6_leg_length_discrepancy_small",
+      "percent": 0,
+      "criteria": "Leg shortening up to 2 cm — no rating.",
+      "probing_question": "Is your leg-length difference less than or equal to 2 cm?"
+    },
+    {
+      "code": "6_leg_length_discrepancy_2_3cm",
+      "percent": 5,
+      "criteria": "Shortening >2 cm up to 3 cm → 5%.",
+      "probing_question": "Was your leg measured and found to be shortened by more than 2 cm but less than or equal to 3 cm?"
+    },
+    {
+      "code": "6_leg_length_discrepancy_3_5cm",
+      "percent": 10,
+      "criteria": "Shortening >3 cm up to 5 cm → 10%.",
+      "probing_question": "Is your leg shortened by between 3 and 5 cm?"
+    },
+    {
+      "code": "6_leg_length_discrepancy_5_7_5cm",
+      "percent": 20,
+      "criteria": "Shortening >5 cm up to 7.5 cm → 20%.",
+      "probing_question": "Is your leg shortened by more than 5 cm (up to 7.5 cm)?"
+    },
+    {
+      "code": "6_leg_length_discrepancy_over_7_5cm",
+      "percent": 40,
+      "criteria": "Shortening over 7.5 cm → 40%.",
+      "probing_question": "Is your leg-length discrepancy greater than 7.5 cm?"
+    },
+    {
+      "code": "6_amputation_thigh",
+      "percent": 80,
+      "criteria": "Lower limb amputation at hip/thigh level (major limb loss).",
+      "probing_question": "Have you had an amputation at the level of the hip or proximal femur?"
+    },
+    {
+      "code": "6_amputation_shank",
+      "percent": 55,
+      "criteria": "Shank (below-knee) amputation close to knee attachment (examples: high below-knee levels with limited prosthetic options: ~55%).",
+      "probing_question": "Was your lower limb amputated close to the knee (high below-knee) or through the proximal tibia?"
+    },
+    {
+      "code": "6_nonunion_tibia_fibula",
+      "percent": 30,
+      "criteria": "Non-union of tibia/fibula or tibia alone with lax movements requiring walking aid (use of support).",
+      "probing_question": "Do you require a walking aid because of a non-union of the tibia/fibula and unstable movement at the fracture site?"
+    },
+    {
+      "code": "6_muscle_group_injury",
+      "percent": 10,
+      "criteria": "Injury to specific lower limb muscle groups: mild (10%), moderate (20%), severe (30%) depending on clinical severity (examples listed per muscle group).",
+      "probing_question": "Which muscle group was injured and was the weakness classified as mild/moderate/severe on clinical testing?"
+    },
+    {
+      "code": "6_peroneal_nerve",
+      "percent": 0,
+      "criteria": "Peroneal (common) nerve dysfunction — mild dorsiflexion weakness (grade 4/5) → 0%; moderate (3/5) → 10%; severe/paresis (≤2/5) → 20%.",
+      "probing_question": "Do you have foot drop or difficulty lifting the front of the foot? What is the documented muscle power grade for dorsiflexion?"
+    },
+    {
+      "code": "6_tibial_nerve",
+      "percent": 0,
+      "criteria": "Tibial nerve dysfunction — plantarflexion weakness graded similarly: mild 0%, moderate 10%, severe 20%.",
+      "probing_question": "Do you have weakness when pushing down on your toes? What grade was recorded for plantarflexion strength?"
+    },
+    {
+      "code": "6_femoral_nerve",
+      "percent": null,
+      "criteria": "Femoral nerve involvement — ratings vary by degree of iliopsoas/quadriceps weakness; committee to apply matching percentages.",
+      "probing_question": "Have you been diagnosed with femoral nerve injury causing thigh flexor or knee extension weakness, and what was the clinical grade?"
+    }
+  ],
+  "required_docs": [
+    "Orthopaedic specialist consultation and clinical exam notes (ROM, muscle power grades, gait exam)",
+    "Imaging: plain X-rays with weight-bearing views, CT/MRI as indicated, leg-length measurement imaging",
+    "Operative reports (fracture fixation, osteotomy, arthrodesis, amputations, meniscectomy)",
+    "EMG/NCS reports for peripheral nerve injuries",
+    "Cyst/prosthesis records and prosthetic fitting notes if amputated",
+    "Physiotherapy and mobility-aid records (walker/crutch/brace prescriptions)",
+    "Documented measurements of joint ROM (goniometer) and objective functional tests (e.g., timed up-and-go, walking distance)"
+  ]
+},{
+  "topic_id": "ent_7",
+  "topic_name": "Nose, Mouth, Ear and Throat",
+  "btl_section": "7",
+  "vopi_strategy": "Focus on objective ENT function (airway/respiration, smell/taste, hearing, voice) and on procedures/devices (stents, tracheostomy, catheterization). Use ENT-specialist findings (endoscopy, audiometry, laryngoscopy) and imaging as primary evidence; where the BTL gives ranges rather than fixed percents, map clinical severity to the closest listed category.",
+  "rules": [
+    {
+      "code": "7_69_1a",
+      "percent": 0,
+      "criteria": "External nasal shape changes — mild, no breathing disturbance.",
+      "probing_question": "Do you have any visible change to the nose but no trouble breathing through it?"
+    },
+    {
+      "code": "7_69_1b",
+      "percent": 10,
+      "criteria": "External nasal deformity with significant breathing disturbance or loss of part of the nose (nostril not visible).",
+      "probing_question": "Does the deformity of your nose cause noticeable breathing problems or loss of part of the nasal structure?"
+    },
+    {
+      "code": "7_69_1c",
+      "percent": 30,
+      "criteria": "Loss of the whole nose or large part of it (exposed nostrils) with functional/cosmetic defect.",
+      "probing_question": "Has any part or all of your nose been lost or surgically removed, leaving exposed nostrils?"
+    },
+    {
+      "code": "7_69_2a",
+      "percent": 0,
+      "criteria": "Nasal breathing disturbance — mild to moderate (e.g., intermittent obstruction, manageable symptoms).",
+      "probing_question": "Do you have occasional nasal blockage that does not fully obstruct breathing?"
+    },
+    {
+      "code": "7_69_2b",
+      "percent": 10,
+      "criteria": "Nasal breathing disturbance — marked; permanent unilateral complete obstruction.",
+      "probing_question": "Is one nostril permanently completely blocked so you breathe predominantly through the other side?"
+    },
+    {
+      "code": "7_69_2c",
+      "percent": 20,
+      "criteria": "Nasal breathing disturbance — permanent bilateral complete obstruction.",
+      "probing_question": "Are both nostrils permanently and totally blocked, limiting nasal breathing?"
+    },
+    {
+      "code": "7_69_3",
+      "percent": 5,
+      "criteria": "Loss of smell or taste (anosmia or ageusia) — loss of smell or taste documented.",
+      "probing_question": "Have you lost your sense of smell or taste completely since the injury/illness?"
+    },
+    {
+      "code": "7_69_sinusitis_mild",
+      "percent": 0,
+      "criteria": "Chronic rhinosinusitis / rhinitis — mild, no constant discharge.",
+      "probing_question": "Do you have only mild sinus symptoms without constant discharge or crusting?"
+    },
+    {
+      "code": "7_69_sinusitis_mod",
+      "percent": 10,
+      "criteria": "Chronic rhinosinusitis — moderate with persistent discharge, crusting and frequent colds.",
+      "probing_question": "Do you have persistent nasal discharge with crusts and frequent sinus infections affecting daily life?"
+    },
+    {
+      "code": "7_69_sinusitis_sev",
+      "percent": 20,
+      "criteria": "Chronic rhinosinusitis — severe with constant discharge, heavy crusting and frequent bed-rest episodes.",
+      "probing_question": "Do your sinus problems cause frequent severe episodes that sometimes require bed rest?"
+    },
+    {
+      "code": "7_71_hearing_table",
+      "percent": null,
+      "criteria": "Hearing impairment — percent determined from audiometric thresholds using the BTL audiometry table (audiogram-derived percent based on decibel loss across speech frequencies).",
+      "probing_question": "Have you had formal audiometry, and if so what are the dB thresholds across speech frequencies for each ear?"
+    },
+    {
+      "code": "7_71_tinnitus",
+      "percent": 10,
+      "criteria": "Constant tinnitus without measurable hearing loss (persistent tinnitus/noise).",
+      "probing_question": "Do you have constant ringing or noise in your ears even if your hearing tests are near normal?"
+    },
+    {
+      "code": "7_larynx_hoarseness_1",
+      "percent": 5,
+      "criteria": "Hoarseness (mild) due to chronic vocal cord inflammation — slight voice alteration.",
+      "probing_question": "Is your voice hoarse but still functional and only mildly altered most of the time?"
+    },
+    {
+      "code": "7_larynx_hoarseness_2",
+      "percent": 10,
+      "criteria": "Marked and persistent hoarseness (chronic laryngitis) with significant voice change.",
+      "probing_question": "Is your hoarseness marked and persistent, noticeably affecting your voice?"
+    },
+    {
+      "code": "7_larynx_aphonia",
+      "percent": 30,
+      "criteria": "Severe voice loss (aphonia) — inability to speak above a whisper.",
+      "probing_question": "Are you unable to speak normally and limited to whispering or no voice at all?"
+    },
+    {
+      "code": "7_larynx_tb_active",
+      "percent": null,
+      "criteria": "Laryngeal tuberculosis — when associated with active pulmonary TB, disability rated per the pulmonary TB section.",
+      "probing_question": "Were you diagnosed with active tuberculosis of the larynx together with pulmonary TB?"
+    },
+    {
+      "code": "7_larynx_tb_healed",
+      "percent": null,
+      "criteria": "Healed laryngeal TB — rating determined according to the residual impairment and relevant Larynx rules.",
+      "probing_question": "Is your laryngeal TB considered healed and are there persistent symptoms such as hoarseness or stenosis?"
+    },
+    {
+      "code": "7_larynx_stenosis_mild",
+      "percent": 5,
+      "criteria": "Stenosis of larynx/trachea — mild effect on voice or breathing.",
+      "probing_question": "Has narrowing of your larynx or trachea caused only mild breathing or voice changes?"
+    },
+    {
+      "code": "7_larynx_stenosis_mod",
+      "percent": 10,
+      "criteria": "Stenosis with moderate effect on voice or breathing.",
+      "probing_question": "Does the stenosis cause meaningful breathlessness or voice difficulty during ordinary activity?"
+    },
+    {
+      "code": "7_larynx_stenosis_sev",
+      "percent": 30,
+      "criteria": "Severe stenosis affecting breathing/voice substantially.",
+      "probing_question": "Does the airway narrowing significantly limit breathing or speech, requiring ongoing medical care?"
+    },
+    {
+      "code": "7_larynx_tracheostomy",
+      "percent": 50,
+      "criteria": "Very severe stenosis requiring permanent tracheostomy.",
+      "probing_question": "Have you required a tracheostomy (temporary or permanent) because of laryngeal/tracheal obstruction?"
+    }
+  ],
+  "required_docs": [
+    "ENT specialist consultation and examination notes (including nasal endoscopy / nasopharyngoscopy)",
+    "Imaging: sinus CT or facial CT (for nasal/sinus structural assessment)",
+    "Nasal endoscopy / laryngoscopy reports (video/images if available)",
+    "Formal audiometry (pure-tone audiogram) and tympanometry; otologic exam notes",
+    "Pulmonary/TB records if laryngeal tuberculosis suspected (sputum, chest X-ray/CT, microbiology)",
+    "Operative reports for nasal, sinus, ear or laryngeal surgery (including tracheostomy)",
+    "Objective smell/taste testing when anosmia/ageusia claimed (if available) or ENT assessment documenting loss",
+    "Records of treatments: steroid courses, sinus surgeries, repeated dilations/balloon procedures, hearing aids or cochlear implants"
+  ]
+},{
+  "topic_id": "oral_8",
+  "topic_name": "Oral Cavity, Jaws, and Teeth",
+  "btl_section": "8",
+  "vopi_strategy": "Focus on functional outcomes — speech, swallowing, mastication and facial contour. Prioritise objective dental/maxillofacial imaging, operative reports and documented functional tests (speech/swallow reports, sialometry). Use arithmetic combination rules for multiple tooth loss and map jaw/soft-tissue loss to prosthetic/rehabilitation potential.",
+  "rules": [
+    {
+      "code": "8_134_4_a",
+      "percent": 0,
+      "criteria": "Chronic vesiculobullous or ulcerative diseases of the oral mucosa — mild (few or mild attacks).",
+      "probing_question": "Have you had recurrent mouth ulcers/vesicular outbreaks fewer than 3 times in the past year or only brief episodes?",
+      "source": ":contentReference[oaicite:0]{index=0}"
+    },
+    {
+      "code": "8_134_4_b",
+      "percent": 20,
+      "criteria": "Chronic vesiculobullous or ulcerative oral disease — moderate (recurrent attacks meeting the chapter definition).",
+      "probing_question": "Have you had recurrent ulcers/vesicles (≥3 episodes in the past year) lasting more than 14 days or needing repeated treatment?",
+      "source": ":contentReference[oaicite:1]{index=1}"
+    },
+    {
+      "code": "8_134_4_c",
+      "percent": 50,
+      "criteria": "Chronic vesiculobullous or ulcerative oral disease — severe (frequent/long attacks or refractory disease).",
+      "probing_question": "Do your oral ulcers/lesions persist despite treatment and cause significant pain or functional difficulty (eating/speaking)?",
+      "source": ":contentReference[oaicite:2]{index=2}"
+    },
+    {
+      "code": "8_134_4_pain",
+      "percent": 0,
+      "criteria": "Frequent chronic pain located in facial muscles, oral cavity or jaws — moderate (pain present but not supported by objective refractory findings).",
+      "probing_question": "Do you have chronic facial/jaw pain that is present but responds to standard treatment?",
+      "source": ":contentReference[oaicite:3]{index=3}"
+    },
+    {
+      "code": "8_134_4_pain_II",
+      "percent": 10,
+      "criteria": "Frequent chronic facial/jaw pain — severe with objective findings and poor response to treatment.",
+      "probing_question": "Has your facial/jaw pain persisted despite specialist treatment and are there objective findings (e.g., imaging, nerve testing) documenting the condition?",
+      "source": ":contentReference[oaicite:4]{index=4}"
+    },
+    {
+      "code": "8_135_tongue_1a",
+      "percent": 10,
+      "criteria": "Loss of less than half the tongue — without marked effect on speech/swallowing.",
+      "probing_question": "Were you told that less than half of your tongue was removed and do you speak and swallow without substantial difficulty?",
+      "source": ""
+    },
+    {
+      "code": "8_135_tongue_1b",
+      "percent": 20,
+      "criteria": "Loss of less than half the tongue — with marked effect on speech and swallowing.",
+      "probing_question": "Do you have clear, documented speech or swallowing difficulties attributable to partial tongue loss?",
+      "source": ""
+    },
+    {
+      "code": "8_135_tongue_2a",
+      "percent": 40,
+      "criteria": "Loss of half the tongue or more — without complete loss of speech and swallowing.",
+      "probing_question": "Was approximately half (or more) of your tongue removed but you retain some speech and swallowing function?",
+      "source": ""
+    },
+    {
+      "code": "8_135_tongue_2b",
+      "percent": 60,
+      "criteria": "Loss of half the tongue or more — with complete loss of speech and marked impairment of swallowing.",
+      "probing_question": "Do you have severe, documented loss of speech and major swallowing impairment following extensive tongue loss?",
+      "source": ""
+    },
+    {
+      "code": "8_73_maxilla_fracture_displacement",
+      "percent": 0,
+      "criteria": "Fracture of the upper jaw (maxilla) with displacement — mild, occlusion (bite) intact.",
+      "probing_question": "After your maxillary fracture was your bite (occlusion) reported as normal and were symptoms minor?",
+      "source": ":contentReference[oaicite:9]{index=9}"
+    },
+    {
+      "code": "8_73_maxilla_fracture_displacement_II",
+      "percent": 10,
+      "criteria": "Fracture of the upper jaw with moderate displacement — minor disturbance of occlusion.",
+      "probing_question": "Did doctors report a moderate displacement of the upper jaw with some change in bite requiring correction or monitoring?",
+      "source": ":contentReference[oaicite:10]{index=10}"
+    },
+    {
+      "code": "8_73_maxilla_fracture_displacement_III",
+      "percent": 20,
+      "criteria": "Fracture of the upper jaw with severe displacement — significant occlusal disturbance.",
+      "probing_question": "Was there a severe displacement of the maxilla with significant bite disturbance requiring major intervention?",
+      "source": ":contentReference[oaicite:11]{index=11}"
+    },
+    {
+      "code": "8_73_maxilla_nonunion",
+      "percent": 10,
+      "criteria": "Non-union of the upper jaw — mild with slight occlusal disturbance.",
+      "probing_question": "Did your maxillary fracture fail to unite and cause a mild ongoing bite problem?",
+      "source": ":contentReference[oaicite:12]{index=12}"
+    },
+    {
+      "code": "8_73_maxilla_nonunion_II",
+      "percent": 20,
+      "criteria": "Non-union of the upper jaw — moderate occlusal disturbance.",
+      "probing_question": "Is there documented non-union of the maxilla with moderate functional disturbance of occlusion?",
+      "source": ":contentReference[oaicite:13]{index=13}"
+    },
+    {
+      "code": "8_73_alveolar_loss",
+      "percent": 10,
+      "criteria": "Loss of alveolar process of maxilla along half the jaw.",
+      "probing_question": "Has imaging or operative notes documented loss of the alveolar ridge for approximately half the upper jaw?",
+      "source": ":contentReference[oaicite:14]{index=14}"
+    },
+    {
+      "code": "8_73_alveolar_loss_full",
+      "percent": 20,
+      "criteria": "Loss of the alveolar process of the entire upper jaw.",
+      "probing_question": "Is there documentation that the entire alveolar ridge of the upper jaw is lost?",
+      "source": ":contentReference[oaicite:15]{index=15}"
+    },
+    {
+      "code": "8_73_maxilla_loss",
+      "percent": 30,
+      "criteria": "Partial loss of the upper jaw (partial maxillectomy) — partial defect.",
+      "probing_question": "Have you undergone partial resection of the upper jaw and do records describe a partial jaw defect?",
+      "source": ":contentReference[oaicite:16]{index=16}"
+    },
+    {
+      "code": "8_73_maxilla_loss_half",
+      "percent": 50,
+      "criteria": "Loss of half of the upper jaw.",
+      "probing_question": "Do your surgical/CT reports describe loss/removal of approximately half the upper jaw?",
+      "source": ":contentReference[oaicite:17]{index=17}"
+    },
+    {
+      "code": "8_73_maxilla_loss_whole",
+      "percent": 100,
+      "criteria": "Loss/removal of the entire upper jaw (maxilla).",
+      "probing_question": "Is there documentation that the entire upper jaw was removed or non-functional?",
+      "source": ":contentReference[oaicite:18]{index=18}"
+    },
+    {
+      "code": "8_132_condyle_loss_one",
+      "percent": 10,
+      "criteria": "Loss of condyle (mandibular condyle) on one side.",
+      "probing_question": "Do records show loss or resection of the mandibular condyle on one side?",
+      "source": ":contentReference[oaicite:19]{index=19}"
+    },
+    {
+      "code": "8_132_condyle_loss_both",
+      "percent": 30,
+      "criteria": "Loss of condyle on both sides.",
+      "probing_question": "Is there documented bilateral condylar loss or severe condylar dysfunction?",
+      "source": ":contentReference[oaicite:20]{index=20}"
+    },
+    {
+      "code": "8_74_teeth_all_no_prosth",
+      "percent": 30,
+      "criteria": "Loss of all teeth with no possibility of installing implants or stable dentures — whole mouth.",
+      "probing_question": "Is imaging (CT/OPG) documented and does it state that implants/dentures are not possible for the whole mouth?",
+      "source": ""
+    },
+    {
+      "code": "8_74_teeth_all_jaw_no_prosth",
+      "percent": 15,
+      "criteria": "Loss of all teeth of one entire jaw (upper or lower) with no possibility for implants (per CT).",
+      "probing_question": "Do CT/operative notes confirm that an entire jaw cannot receive implants and is edentulous?",
+      "source": ""
+    },
+    {
+      "code": "8_74_teeth_all_with_implants_possible_mouth",
+      "percent": 10,
+      "criteria": "Loss of all teeth but implant-supported fixed prosthesis is possible — whole mouth rating (with rehabilitation possible).",
+      "probing_question": "Were you informed implants or fixed prosthetic rehabilitation are feasible for the whole mouth?",
+      "source": ":contentReference[oaicite:23]{index=23}"
+    },
+    {
+      "code": "8_74_teeth_all_with_implants_possible_jaw",
+      "percent": 5,
+      "criteria": "Loss of all teeth of one jaw (upper or lower) when fixed prosthetic rehabilitation (implants/crowns) is possible.",
+      "probing_question": "Do records show that a single jaw can be rehabilitated with implants or fixed prosthesis?",
+      "source": ":contentReference[oaicite:24]{index=24}"
+    },
+    {
+      "code": "8_74_single_tooth_loss_nonrestorable",
+      "percent": 0.5,
+      "criteria": "Loss of a single natural tooth that is not restorable — fixed percentage per tooth (non-restorable).",
+      "probing_question": "Was a single tooth lost and documented as non-restorable?",
+      "source": ":contentReference[oaicite:25]{index=25}"
+    },
+    {
+      "code": "8_74_single_tooth_loss_restorable",
+      "percent": 0.25,
+      "criteria": "Loss of a single natural tooth that is restorable — lower percentage per tooth (restorable).",
+      "probing_question": "Was a single tooth lost but considered restorable prior to loss?",
+      "source": ":contentReference[oaicite:26]{index=26}"
+    },
+    {
+      "code": "8_74_multiple_teeth_loss",
+      "percent": null,
+      "criteria": "Loss of multiple teeth — disability percentage determined by arithmetic combination of the per-tooth percentages (sum of individual teeth values) as specified in the chapter.",
+      "probing_question": "How many natural teeth were lost and are there records showing which were restorable vs non-restorable?",
+      "source": ""
+    },
+    {
+      "code": "8_130_salivary_hypofunction_I",
+      "percent": 10,
+      "criteria": "Salivary gland hypofunction — mild (sialometry >0.15 ml/min and ≤0.2 ml/min).",
+      "probing_question": "Have you had sialometry showing low but not severely reduced salivary flow (about 0.15–0.2 ml/min)?",
+      "source": ":contentReference[oaicite:28]{index=28}"
+    },
+    {
+      "code": "8_130_salivary_hypofunction_II",
+      "percent": 30,
+      "criteria": "Salivary gland hypofunction — moderate (sialometry >0.1 ml/min and ≤0.15 ml/min).",
+      "probing_question": "Do sialometry results show a marked reduction (approx. 0.1–0.15 ml/min) with dry mouth complaints?",
+      "source": ":contentReference[oaicite:29]{index=29}"
+    },
+    {
+      "code": "8_130_salivary_hypofunction_III",
+      "percent": 50,
+      "criteria": "Salivary gland hypofunction — severe (sialometry ≤0.1 ml/min).",
+      "probing_question": "Is your salivary flow ≤0.1 ml/min on objective testing and do you have severe xerostomia requiring ongoing management?",
+      "source": ":contentReference[oaicite:30]{index=30}"
+    },
+    {
+      "code": "8_tumors",
+      "percent": null,
+      "criteria": "Tumours of the oral cavity/jaws — percentage determined according to extent, organ loss, and sequelae (refer to specific tumour-related provisions).",
+      "probing_question": "Have you had an oral or jaw tumour, and what operations/deficits remain (resections, prosthetic limitations, radiation effects)?",
+      "source": ""
+    }
+  ],
+  "required_docs": [
+    "Panoramic dental X-ray (OPG) and CT/CBCT of the jaws (to document bone loss, condyle loss, implant feasibility).",
+    "Operative reports for jaw resections, fracture repairs, tooth extractions and prosthetic rehabilitation notes.",
+    "Dental records showing which teeth are restorable vs non-restorable, and prosthesis history (dentures/bridges).",
+    "CT/CBCT imaging measurements if the BTL text requires proof for 'no implant possibility' rulings (as noted in the chapter).",
+    "Sialometry results and ENT/urology (sic) specialist notes for salivary gland hypofunction; biopsy/pathology for mucosal disease or tumours.",
+    "Speech and swallowing assessment reports (SLP notes) when tongue or extensive jaw/soft-tissue loss affects function.",
+    "Cystoscopy/other ENT records only if cranial nerve/adjacent head & neck structures involvement is questioned.",
+    "Photographs and dental prosthesis records (dates of dentures, implant attempts) to support prosthetic/rehab possibilities."
+  ],
+  "notes": "Percentages and combination rules follow the chapter text; where the BTL specifies arithmetic combination (e.g., multiple tooth loss) or refers to other provisions for determination, the committee applies the referenced rules. Values above reflect the BTL entries and amendments visible in the uploaded file. For single-tooth values and denture/implant exceptions the BTL contains several amendment notes — see the cited pages for exact legal variants."
+},{
+  "topic_id": "scars_9",
+  "topic_name": "Scars, Skin Diseases, and Skin Impairments",
+  "btl_section": "9",
+  "vopi_strategy": "Evaluate visible disfigurement and functional consequences first (contractures, eyelid/nostril/lip distortion, adhesion to deeper tissues), then assess inflammatory/infectious disease activity and frequency of flares. Prioritize dermatology exam, serial photographic documentation, biopsy/pathology, and objective measures of function (e.g., eyelid closure, contracture range).",
+  "rules": [
+    {
+      "code": "9_75_1a",
+      "percent": 0,
+      "criteria": "Scars on the body that do not cause disfigurement, pain, or weakening of the abdominal wall.",
+      "probing_question": "Do you have scars that are purely cosmetic without pain, functional limitation, or abdominal wall weakness?"
+    },
+    {
+      "code": "9_75_1b",
+      "percent": 10,
+      "criteria": "Scars that are painful or disfiguring (body).",
+      "probing_question": "Do your scars cause ongoing pain or are they visibly disfiguring?"
+    },
+    {
+      "code": "9_75_1c",
+      "percent": 20,
+      "criteria": "Extensive scars located in multiple body areas.",
+      "probing_question": "Are there many areas of your body covered by scars rather than a single localized scar?"
+    },
+    {
+      "code": "9_75_1d",
+      "percent": null,
+      "criteria": "Scars accompanied by abdominal wall laxity/herniation that require use of an orthotic belt — rating determined according to the applicable rule for abdominal wall (see section 19).",
+      "probing_question": "Do your scars connect with a weakened or herniated abdominal wall that requires wearing an orthotic/support belt?"
+    },
+    {
+      "code": "9_75_1e",
+      "percent": null,
+      "criteria": "Scars adherent to underlying tissues or organs — rating set according to resultant movement limitation or organ impairment.",
+      "probing_question": "Are any of your scars stuck down to underlying organs or tissues and do they limit movement or organ function?"
+    },
+    {
+      "code": "9_75_2a",
+      "percent": 0,
+      "criteria": "Facial/neck scars that are superficial and non-disfiguring.",
+      "probing_question": "Do the scars on your face or neck appear superficial and cause no visible disfigurement?"
+    },
+    {
+      "code": "9_75_2b",
+      "percent": 10,
+      "criteria": "Facial/neck scars that are disfiguring or cause changes in eyelids, nose, lips, or ears.",
+      "probing_question": "Have your scars on the face/neck changed the shape of your eyelids, nose, lips or ears, or are they noticeably disfiguring?"
+    },
+    {
+      "code": "9_75_2c",
+      "percent": 20,
+      "criteria": "Wide facial/neck scars with marked ugliness (significant cosmetic defect).",
+      "probing_question": "Are the scars on your face/neck broad enough to cause marked cosmetic deformity?"
+    },
+    {
+      "code": "9_75_2d",
+      "percent": 30,
+      "criteria": "Wide scars or scars causing pronounced changes in facial shape.",
+      "probing_question": "Do your facial scars cause obvious, lasting changes in the overall shape or symmetry of your face?"
+    },
+    {
+      "code": "9_75_2e",
+      "percent": 50,
+      "criteria": "Facial scars that produce changes in facial form that provoke repulsion (severe disfigurement).",
+      "probing_question": "Have clinicians described your facial scars as causing severe disfigurement that would be socially aversive?"
+    },
+    {
+      "code": "9_76_alopecia_areata",
+      "percent": 0,
+      "criteria": "Alopecia areata (patchy hair loss) with no disability percent assigned.",
+      "probing_question": "Do you have patchy hair loss diagnosed as alopecia areata?"
+    },
+    {
+      "code": "9_76_alopecia_universalis",
+      "percent": 20,
+      "criteria": "Alopecia universalis (complete hair loss) — rated 20%.",
+      "probing_question": "Have you lost all (or nearly all) scalp and body hair (diagnosis: alopecia universalis)?"
+    },
+    {
+      "code": "9_derm_occ",
+      "percent": null,
+      "criteria": "Occupational dermatitis: ranges from no disturbance when away from exposure (0%) to prolonged/recurring disturbances even without exposure (10–30%) depending on extent and chronicity.",
+      "probing_question": "Is there a known workplace agent that causes your skin condition and do symptoms persist even when you are not exposed?"
+    },
+    {
+      "code": "9_erysipelas_1",
+      "percent": 10,
+      "criteria": "Recurrent erysipelas, mild — 1–6 attacks per year.",
+      "probing_question": "Have you had around one to six episodes of erysipelas in the past year?"
+    },
+    {
+      "code": "9_erysipelas_2",
+      "percent": 20,
+      "criteria": "Recurrent erysipelas, moderate — at least one attack per month.",
+      "probing_question": "Do you have erysipelas flares about once a month?"
+    },
+    {
+      "code": "9_erysipelas_3a",
+      "percent": 30,
+      "criteria": "Severe venous/dermal disease producing elephantiasis nostras – one leg affected.",
+      "probing_question": "Do you have severe chronic swelling/ulceration (elephantiasis-type changes) limited to one leg?"
+    },
+    {
+      "code": "9_erysipelas_3b",
+      "percent": 50,
+      "criteria": "Severe venous/dermal disease (elephantiasis-type) affecting both legs.",
+      "probing_question": "Are both legs affected by severe chronic swelling/ulceration and recurrent skin infections?"
+    },
+    {
+      "code": "9_tb_skin_active_mild",
+      "percent": 30,
+      "criteria": "Cutaneous tuberculosis, active, mild with limited changes.",
+      "probing_question": "Were you diagnosed with active cutaneous tuberculosis with limited local skin changes?"
+    },
+    {
+      "code": "9_tb_skin_active_severe",
+      "percent": 50,
+      "criteria": "Cutaneous tuberculosis, active, severe with extensive skin changes.",
+      "probing_question": "Did your skin tuberculosis cause extensive lesions requiring significant treatment?"
+    },
+    {
+      "code": "9_tb_skin_stable_mild",
+      "percent": 10,
+      "criteria": "Cutaneous tuberculosis, stable, mild residual changes.",
+      "probing_question": "Is your prior skin TB now stable with only minor residual changes?"
+    },
+    {
+      "code": "9_tb_skin_stable_severe",
+      "percent": 20,
+      "criteria": "Cutaneous tuberculosis, stable, but with broad/marked residual changes.",
+      "probing_question": "Are there broad or marked residual skin changes after your TB that remain stable?"
+    },
+    {
+      "code": "9_tb_skin_healed_scars",
+      "percent": null,
+      "criteria": "Healed cutaneous tuberculosis leaving scars — rate according to the scars rules (section 75).",
+      "probing_question": "Did healed skin TB leave scars, and if so, do they match the scars categories by size and disfigurement?"
+    },
+    {
+      "code": "9_pemphigus_vulgaris_acute",
+      "percent": 100,
+      "criteria": "Pemphigus vulgaris — acute phase requiring hospitalization.",
+      "probing_question": "Were you hospitalized for acute pemphigus vulgaris (extensive blistering/need for inpatient care)?"
+    },
+    {
+      "code": "9_pemphigus_vulgaris_remission",
+      "percent": 50,
+      "criteria": "Pemphigus vulgaris in remission — ongoing sequelae considered at 50%.",
+      "probing_question": "Are you in a documented remission phase of pemphigus with residual problems?"
+    },
+    {
+      "code": "9_leishmania_active_multiple",
+      "percent": 20,
+      "criteria": "Active leishmaniasis with multiple ulcers.",
+      "probing_question": "Have you had active leishmaniasis with multiple open or recently healing ulcers?"
+    },
+    {
+      "code": "9_leishmania_active_single",
+      "percent": 10,
+      "criteria": "Active leishmaniasis with a single ulcer.",
+      "probing_question": "Was your leishmaniasis limited to a single active ulcer?"
+    },
+    {
+      "code": "9_leishmania_scars",
+      "percent": null,
+      "criteria": "Scars remaining after leishmaniasis — rated according to the scars section (75).",
+      "probing_question": "Did leishmaniasis heal leaving scars, and how extensive or disfiguring are they?"
+    },
+    {
+      "code": "9_ulcus_tropicum",
+      "percent": 20,
+      "criteria": "Trophic ulcer (ulcus tropicum) — rated 20% where specified.",
+      "probing_question": "Have you been documented with chronic trophic ulcers consistent with ulcus tropicum?"
+    }
+  ],
+  "required_docs": [
+    "Dermatology consultation notes (initial and follow-up)",
+    "High-resolution standardized photographs (serial) of affected skin/scars",
+    "Biopsy/pathology reports (where applicable) and microbiology/culture results",
+    "Treatment history: topical/systemic therapies, immunosuppressive treatments, antibiotics, antifungals, etc.",
+    "Hospital records for severe disease or inpatient care (e.g., pemphigus hospitalization)",
+    "Documentation of flare frequency (clinic visits, prescriptions, lab results) for recurrent infections/erysipelas",
+    "Operative reports for reconstructive surgery or scar release (if performed)",
+    "Objective functional assessment for contractures or organ adhesion (range-of-motion notes, ophthalmology notes for eyelid dysfunction)"
+  ],
+  "notes": "Entries with null percent indicate the regulation refers rating to another section or to functional sequelae (e.g., abdominal wall rules or movement limitation rules). Probing questions and required documents are inferred from the BTL wording and standard dermatology/forensic practice."
+}]

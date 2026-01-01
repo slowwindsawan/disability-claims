@@ -2,15 +2,31 @@
 
 import React, { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import * as legacyApi from '@/lib/api'
 import { Alert, AlertTitle, AlertDescription } from './ui/alert'
 
 export default function CompleteDetailsNotice() {
   const [visible, setVisible] = useState(false)
   const [checked, setChecked] = useState(false)
+  const pathname = usePathname()
 
   useEffect(() => {
     let mounted = true
+
+    // Don't show on certain pages (end-of-call, ai-lawyer, login, etc.)
+    const excludedPaths = ['/end-of-call', '/ai-lawyer', '/login', '/register', '/']
+    if (excludedPaths.some(path => pathname?.startsWith(path))) {
+      setChecked(true)
+      return
+    }
+
+    // Check if user is logged in before making the API call
+    const token = localStorage.getItem('access_token')
+    if (!token) {
+      setChecked(true)
+      return
+    }
 
     const check = async () => {
       try {

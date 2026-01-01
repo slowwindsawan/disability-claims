@@ -2948,38 +2948,60 @@ async def get_vapi_call_details(
         
         # Fetch call details
         logger.info(f"[VAPI] Fetching call details for call_id: {call_id}")
-        call_details = client.calls.get(id=call_id)
+        try:
+            call_details = client.calls.get(id=call_id)
+        except Exception as e:
+            logger.error(f"[VAPI] Failed to fetch call details: {str(e)}")
+            # Return error response instead of crashing
+            raise HTTPException(
+                status_code=404,
+                detail=f"Call with ID '{call_id}' not found in Vapi. The call may not exist, have been deleted, or the ID may be incorrect."
+            )
         
         logger.info(f"[VAPI] Call details retrieved successfully")
         
         # Convert Pydantic model to dict for JSON serialization
         call_dict = call_details.model_dump(mode='json') if hasattr(call_details, 'model_dump') else call_details.dict()
         
+        # Log important fields from call_details
+        logger.info(f"[VAPI] 🔍 Call details structure:")
+        logger.info(f"[VAPI]   - Call ID: {call_dict.get('id')}")
+        logger.info(f"[VAPI]   - Status: {call_dict.get('status')}")
+        logger.info(f"[VAPI]   - Has 'analysis' key: {'analysis' in call_dict}")
+        
+        if 'analysis' in call_dict:
+            analysis = call_dict.get('analysis', {})
+            logger.info(f"[VAPI] 📊 Analysis in call_details:")
+            logger.info(f"[VAPI]   - Has 'structuredData': {'structuredData' in analysis}")
+            if 'structuredData' in analysis:
+                structured_data = analysis.get('structuredData', {})
+                related_topics = structured_data.get('related_topics', [])
+                logger.info(f"[VAPI] 🏷️  Related topics in fresh call_details: {related_topics}")
+        else:
+            logger.info(f"[VAPI] ⚠️  No 'analysis' key in call_details")
+        
+        # Save call_details to database immediately
+        from .supabase_client import update_case
+        try:
+            update_case(case_id, {'call_details': call_dict})
+            logger.info(f"[VAPI] ✅ Saved call_details to database for case {case_id}")
+        except Exception as e:
+            logger.warning(f"[VAPI] Failed to save call_details to database: {e}")
+        
         # Check if analysis already exists in the case
         existing_call_summary = case.get('call_summary')
         if existing_call_summary:
-            # Analysis already exists, return it
+            logger.info(f"[VAPI] 🔍 Found existing call_summary in case - will REANALYZE anyway")
+            # Log what's in the existing analysis for reference
             try:
                 analysis_result = json.loads(existing_call_summary) if isinstance(existing_call_summary, str) else existing_call_summary
-                call_dict['analysis'] = {
-                    'summary': analysis_result.get('call_summary', ''),
-                    'structured_data': {
-                        'case_summary': analysis_result.get('case_summary', ''),
-                        'documents_requested_list': analysis_result.get('documents_requested_list', []),
-                        'key_legal_points': analysis_result.get('key_legal_points', []),
-                        'risk_assessment': analysis_result.get('risk_assessment', 'Needs More Info'),
-                        'estimated_claim_amount': analysis_result.get('estimated_claim_amount', 'Pending evaluation')
-                    }
-                }
-                logger.info(f"[VAPI] Returning existing analysis for call {call_id}")
-                return JSONResponse({
-                    'status': 'ok',
-                    'call': call_dict,
-                    'analysis': analysis_result
-                })
+                logger.info(f"[VAPI] 📋 Previous analysis details:")
+                logger.info(f"[VAPI]   - Risk Assessment: {analysis_result.get('risk_assessment', 'N/A')}")
+                logger.info(f"[VAPI]   - Case Summary: {analysis_result.get('case_summary', 'N/A')[:100]}...")
             except Exception as e:
                 logger.warning(f"[VAPI] Could not parse existing call_summary: {e}")
         
+        # Always analyze (removed early return for existing analysis)
         # No existing analysis, check for job or create one
         job_queue = get_job_queue()
         
@@ -3043,8 +3065,11 @@ async def get_vapi_call_details(
             }
         )
         
+        logger.info(f"[VAPI] 📝 Created analysis job {job_id} for call {call_id}")
+        logger.info(f"[VAPI] 🚀 Launching background task for job execution...")
+        
         # Execute job in background
-        asyncio.create_task(
+        task = asyncio.create_task(
             job_queue.execute_job(
                 job_id,
                 _execute_vapi_call_analysis,
@@ -3057,7 +3082,13 @@ async def get_vapi_call_details(
             )
         )
         
+        # Log if task creation succeeded
+        logger.info(f"[VAPI] ✅ Background task created successfully for job {job_id}")
+        
         logger.info(f"[VAPI] Created analysis job {job_id} for call {call_id}")
+        logger.info(f"[VAPI] 🔙 RETURNING TO FRONTEND immediately with job_id: {job_id}")
+        logger.info(f"[VAPI] 📢 Frontend should poll /jobs/{job_id} to check completion status")
+        logger.info(f"[VAPI] ⚠️  Data will be saved to DB when background task completes")
         
         return JSONResponse({
             'status': 'analyzing',
@@ -3085,29 +3116,100 @@ async def _execute_vapi_call_analysis(
     from .openai_call_analyzer import analyze_call_conversation_openai
     from .supabase_client import get_user_eligibility, update_case
     
-    logger.info(f"[VAPI] Starting analysis for call {call_id}")
+    logger.info(f"[VAPI] ═══════════════════════════════════════════")
+    logger.info(f"[VAPI] 🚀 Background task started!")
+    logger.info(f"[VAPI] Starting background analysis for call {call_id}")
+    logger.info(f"[VAPI] 📋 Input parameters:")
+    logger.info(f"[VAPI]   - Case ID: {case_id}")
+    logger.info(f"[VAPI]   - User ID: {user_id}")
+    logger.info(f"[VAPI]   - Transcript length: {len(transcript)} chars")
+    logger.info(f"[VAPI]   - Messages count: {len(messages)}")
+    logger.info(f"[VAPI]   - call_dict has 'analysis': {'analysis' in call_dict}")
+    
+    # Check OPENAI_API_KEY
+    if not os.getenv("OPENAI_API_KEY"):
+        logger.error(f"[VAPI] ❌ OPENAI_API_KEY is not set!")
+        raise ValueError("OPENAI_API_KEY not configured")
+    else:
+        logger.info(f"[VAPI] ✅ OPENAI_API_KEY is configured")
+    
+    if 'analysis' in call_dict:
+        analysis = call_dict.get('analysis', {})
+        structured_data = analysis.get('structuredData', {})
+        related_topics = structured_data.get('related_topics', [])
+        logger.info(f"[VAPI] 🏷️  Related topics in call_dict: {related_topics}")
     
     # Fetch user_eligibility data
     eligibility_records = []
     try:
         eligibility_records = get_user_eligibility(user_id=user_id)
-        logger.info(f"[VAPI] Found {len(eligibility_records) if eligibility_records else 0} eligibility records")
+        logger.info(f"[VAPI] 📋 Found {len(eligibility_records) if eligibility_records else 0} eligibility records")
     except Exception as e:
         logger.warning(f"[VAPI] Could not fetch eligibility records: {e}")
     
-    # Analyze conversation
-    analysis_result = await analyze_call_conversation_openai(transcript, messages, eligibility_records)
-    logger.info(f"[VAPI] Analysis complete. Documents requested: {len(analysis_result.get('documents_requested_list', []))}")
+    # Analyze conversation - call_dict is passed as call_details parameter
+    logger.info(f"[VAPI] 🤖 Calling analyze_call_conversation_openai with call_details...")
+    
+    try:
+        analysis_result = await analyze_call_conversation_openai(transcript, messages, eligibility_records, call_dict)
+        logger.info(f"[VAPI] ✅ Analysis complete. Documents requested: {len(analysis_result.get('documents_requested_list', []))}")
+    except Exception as e:
+        logger.exception(f"[VAPI] ❌ Analysis failed with error: {e}")
+        # Create fallback analysis result
+        analysis_result = {
+            "call_summary": f"Call analysis failed: {str(e)}. Manual review required.",
+            "documents_requested_list": [],
+            "case_summary": "Analysis failed",
+            "key_legal_points": ["Manual review required"],
+            "risk_assessment": "Needs More Info",
+            "estimated_claim_amount": 0.0,
+            "degree_funding": 0.0,
+            "monthly_allowance": 0.0,
+            "income_tax_exemption": False,
+            "living_expenses": 0.0,
+            "products": [],
+            "chance_of_approval": 0.0
+        }
     
     # Save to case
-    update_payload = {
-        'call_details': call_dict,
-        'call_summary': json.dumps(analysis_result, ensure_ascii=False),
-        'status': CaseStatusConstants.INITIAL_QUESTIONNAIRE
-    }
+    try:
+        update_payload = {
+            'call_details': call_dict,
+            'call_summary': json.dumps(analysis_result, ensure_ascii=False),
+            'status': CaseStatusConstants.INITIAL_QUESTIONNAIRE
+        }
+        
+        logger.info(f"[VAPI] 💾 Attempting to save analysis to case {case_id}...")
+        logger.info(f"[VAPI] 📦 Update payload keys: {list(update_payload.keys())}")
+        logger.info(f"[VAPI] 📏 call_summary length: {len(update_payload['call_summary'])} chars")
+        
+        update_case(case_id, update_payload)
+        logger.info(f"[VAPI] ✅ Successfully saved analysis to case {case_id}")
+        
+        # Verify the save by reading back
+        try:
+            from .supabase_client import get_case
+            verification = get_case(case_id)
+            if verification and len(verification) > 0:
+                saved_summary = verification[0].get('call_summary')
+                if saved_summary:
+                    logger.info(f"[VAPI] ✅ Verification: call_summary is now saved (length: {len(str(saved_summary))} chars)")
+                else:
+                    logger.error(f"[VAPI] ❌ Verification FAILED: call_summary is still NULL in database!")
+            else:
+                logger.error(f"[VAPI] ❌ Verification FAILED: Could not retrieve case {case_id}")
+        except Exception as ve:
+            logger.warning(f"[VAPI] ⚠️  Could not verify save: {ve}")
+            
+    except Exception as e:
+        logger.exception(f"[VAPI] ❌ Failed to save analysis to database: {e}")
+        raise  # Re-raise to mark job as failed
     
-    update_case(case_id, update_payload)
-    logger.info(f"[VAPI] Saved analysis to case {case_id}")
+    logger.info(f"[VAPI] ═══════════════════════════════════════════")
+    logger.info(f"[VAPI] 🏁 BACKGROUND TASK COMPLETED!")
+    logger.info(f"[VAPI] ✅ All data has been saved to database for case {case_id}")
+    logger.info(f"[VAPI] 📢 Frontend can now fetch updated case data")
+    logger.info(f"[VAPI] ═══════════════════════════════════════════")
     
     # Return result for job queue
     return {
@@ -3165,7 +3267,7 @@ async def save_call_details_and_analyze(
         
         # Analyze conversation using OpenAI
         logger.info(f"[CALL] Analyzing conversation with OpenAI agent...")
-        analysis_result = await analyze_call_conversation_openai(transcript_text, [])
+        analysis_result = await analyze_call_conversation_openai(transcript_text, [], None, None)
         logger.info(f"[CALL] Analysis complete. Documents requested: {len(analysis_result.get('documents_requested_list', []))}")
         
         # Build call_details object
@@ -3304,7 +3406,7 @@ async def _execute_call_analysis(case_id: str, transcript: str, messages: list, 
     logger.info(f"[VAPI] Starting call analysis for case {case_id}")
     
     # Run analysis
-    analysis_result = await analyze_call_conversation_openai(transcript, messages)
+    analysis_result = await analyze_call_conversation_openai(transcript, messages, None, call_details)
     logger.info(f"[VAPI] Analysis completed. Documents: {len(analysis_result.get('documents_requested_list', []))}")
     
     # Update call_details with new analysis
@@ -3615,13 +3717,20 @@ async def analyze_documents_form7801(case_id: str, current_user: dict = Depends(
         if current_user['role'] != 'admin' and case.get('user_id') != current_user['id']:
             raise HTTPException(status_code=403, detail='Access denied')
         
-        # Extract call summary and documents requested list
+        # Extract call summary and call details
         call_summary = case.get('call_summary', {})
         if isinstance(call_summary, str):
             try:
                 call_summary = json.loads(call_summary)
             except:
                 call_summary = {}
+        
+        call_details = case.get('call_details', {})
+        if isinstance(call_details, str):
+            try:
+                call_details = json.loads(call_details)
+            except:
+                call_details = {}
         
         documents_requested = call_summary.get('documents_requested_list', [])
         logger.info(f"📄 Found {len(documents_requested)} documents in call_summary")
@@ -3661,7 +3770,8 @@ async def analyze_documents_form7801(case_id: str, current_user: dict = Depends(
                 _execute_form7801_analysis,
                 case_id,
                 documents_with_metadata,
-                call_summary
+                call_summary,
+                call_details
             )
         )
         
@@ -3682,7 +3792,7 @@ async def analyze_documents_form7801(case_id: str, current_user: dict = Depends(
         raise HTTPException(status_code=500, detail=f'Failed to create analysis job: {str(e)}')
 
 
-async def _execute_form7801_analysis(case_id: str, documents_with_metadata: list, call_summary: dict):
+async def _execute_form7801_analysis(case_id: str, documents_with_metadata: list, call_summary: dict, call_details: dict | None = None):
     """Background task for Form 7801 document analysis"""
     from .supabase_client import update_case
     from .openai_form7801_agent import analyze_documents_with_openai_agent
@@ -3694,7 +3804,8 @@ async def _execute_form7801_analysis(case_id: str, documents_with_metadata: list
     agent_result = await analyze_documents_with_openai_agent(
         case_id=case_id,
         documents_data=documents_with_metadata,
-        call_summary=call_summary
+        call_summary=call_summary,
+        call_details=call_details
     )
     
     logger.info(f"✅ Agent analysis completed. Storing result")
@@ -5614,6 +5725,27 @@ async def user_profile(request: Request):
     return await _inner(request)
 
 
+@app.get('/user-eligibility')
+async def get_user_eligibility_records(request: Request):
+    """Return the authenticated user's eligibility records from user_eligibility table."""
+    async def _inner(request: Request):
+        auth = request.headers.get('authorization')
+        if not auth:
+            raise HTTPException(status_code=401, detail='missing_authorization')
+        try:
+            token = auth.split(' ', 1)[1]
+            user = get_user_from_token(token)
+        except Exception:
+            raise HTTPException(status_code=401, detail='invalid_token')
+        
+        user_id = user.get('id')
+        from .supabase_client import get_user_eligibility
+        eligibility_records = get_user_eligibility(user_id=user_id)
+        
+        return JSONResponse(eligibility_records or [])
+    return await _inner(request)
+
+
 @app.patch('/user/profile')
 async def patch_user_profile(payload: Dict[str, Any] = Body(...), request: Request = None):
     """Allow authenticated user to patch their own profile fields.
@@ -6685,7 +6817,7 @@ async def re_analyze_call(case_id: str, current_user: dict = Depends(get_current
         
         # Analyze conversation using OpenAI agent
         try:
-            analysis_result = await analyze_call_conversation_openai(transcript, messages, eligibility_records)
+            analysis_result = await analyze_call_conversation_openai(transcript, messages, eligibility_records, call_details)
             logger.info(f"[REANALYZE] Successfully re-analyzed conversation. Summary length: {len(analysis_result.get('call_summary', ''))} chars")
         except Exception as e:
             logger.exception(f"[REANALYZE] Failed to analyze conversation: {e}")

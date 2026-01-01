@@ -3,9 +3,81 @@ from pydantic import BaseModel
 from openai.types.shared.reasoning import Reasoning
 import json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------
+# BTL Guidelines Helper
+# ------------------------------------------------------------------
+
+def load_btl_guidelines() -> List[Dict[str, Any]]:
+    """Load BTL guidelines from btl.json"""
+    btl_path = Path(__file__).parent / "btl.json"
+    try:
+        with open(btl_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load BTL guidelines: {e}")
+        return []
+
+def get_btl_content_by_topics(topic_ids: List[str]) -> str:
+    """Extract BTL content for specified topic IDs"""
+    if not topic_ids:
+        return ""
+    
+    btl_data = load_btl_guidelines()
+    relevant_content = []
+    
+    for topic in btl_data:
+        if topic.get("topic_id") in topic_ids:
+            content = f"\n### {topic.get('topic_name', '')} (BTL Section {topic.get('btl_section', '')})\n"
+            content += f"Strategy: {topic.get('vopi_strategy', '')}\n\n"
+            
+            # Add rules
+            if "rules" in topic and topic["rules"]:
+                content += "**Rules and Criteria:**\n"
+                for rule in topic["rules"]:
+                    content += f"- [{rule.get('code', '')}] {rule.get('criteria', '')}\n"
+                    percent = rule.get('percent') or 0
+                    if percent > 0:
+                        content += f"  Percentage: {percent}%\n"
+                content += "\n"
+            
+            # Add required documents
+            if "required_docs" in topic and topic["required_docs"]:
+                content += "**Required Documents:**\n"
+                for doc in topic["required_docs"]:
+                    content += f"- {doc}\n"
+                content += "\n"
+            
+            relevant_content.append(content)
+    
+    if relevant_content:
+        return "\n\n=== RELEVANT BTL GUIDELINES ===\n" + "".join(relevant_content)
+    return ""
+
+def extract_related_topics_from_call_details(call_details: Dict[str, Any]) -> List[str]:
+    """Extract related_topics array from call_details.analysis.structuredData.
+    If the array is empty, return all topic IDs from btl.json.
+    """
+    try:
+        topics = call_details.get("analysis", {}).get("structuredData", {}).get("related_topics", [])
+        logger.info(f"[FORM7801] 🔍 Extracted topics from call_details: {topics}")
+        
+        # If topics array is empty, return ALL topic IDs from btl.json
+        if not topics:
+            logger.info("[FORM7801] 📚 related_topics is empty - loading ALL topics from btl.json")
+            all_guidelines = load_btl_guidelines()
+            all_topic_ids = [topic.get('topic_id') for topic in all_guidelines if topic.get('topic_id')]
+            logger.info(f"[FORM7801] 📚 Returning all {len(all_topic_ids)} topics: {all_topic_ids}")
+            return all_topic_ids
+        
+        return topics
+    except Exception as e:
+        logger.warning(f"[FORM7801] Failed to extract related_topics from call_details: {e}")
+        return []
 
 # Tool definitions
 file_search = FileSearchTool(
@@ -163,13 +235,13 @@ Records:  {workflow_input_as_text}"""
 final_douments_analysis = Agent(
   name="Final douments analysis",
   instructions=final_douments_analysis_instructions,
-  model="gpt-5-mini",
-  tools=[
-    file_search
-  ],
+  model="gpt-5-nano",
+  # tools=[
+  #   file_search
+  # ],
   output_type=FinalDoumentsAnalysisSchema,
   model_settings=ModelSettings(
-    store=True,
+    # store=True,
     reasoning=Reasoning(
       effort="low",
       summary="auto"
@@ -229,6 +301,7 @@ async def analyze_documents_with_openai_agent(
     case_id: str,
     documents_data: list,
     call_summary: Dict[str, Any],
+    call_details: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     Analyze case documents using the OpenAI Form 7801 agent.
@@ -237,6 +310,7 @@ async def analyze_documents_with_openai_agent(
         case_id: The case ID
         documents_data: List of documents with their summaries from case_documents table
         call_summary: Call summary data from cases.call_summary
+        call_details: Optional call details containing related_topics for BTL guidelines
     
     Returns:
         Agent analysis result matching FinalDoumentsAnalysisSchema
@@ -276,15 +350,40 @@ CALL SUMMARY DATA:
 - Documents Requested: {len(call_summary.get('documents_requested_list', []))} items
 """
         
+        # Extract and include BTL guidelines based on related topics
+        btl_guidelines_context = ""
+        if call_details:
+            logger.info("[FORM7801] 🔍 Extracting related topics from call_details...")
+            related_topics = extract_related_topics_from_call_details(call_details)
+            logger.info(f"[FORM7801] Related topics extracted: {related_topics}")
+            if related_topics:
+                logger.info(f"[FORM7801] ✅ Found {len(related_topics)} related BTL topics: {related_topics}")
+                btl_guidelines_context = get_btl_content_by_topics(related_topics)
+                logger.info(f"[FORM7801] 📚 BTL guidelines context length: {len(btl_guidelines_context)} chars")
+            else:
+                logger.info("[FORM7801] ⚠️  No related topics found in call_details")
+        else:
+            logger.info("[FORM7801] ℹ️  No call_details provided - BTL guidelines will not be included")
+        
         # Combine all context
         full_context = f"""{call_context}
 
 UPLOADED MEDICAL DOCUMENTS:
 {concatenated_docs}
+{btl_guidelines_context}
 """
         
         logger.info(f"📄 Concatenated {len(document_summaries)} document summaries for case {case_id}")
         logger.info(f"📝 Context length: {len(full_context)} characters")
+        
+        # Print the BTL guidelines section if included
+        if btl_guidelines_context:
+            logger.info(f"[FORM7801] 📚 BTL Guidelines section being sent to agent:")
+            logger.info(f"[FORM7801] {'='*60}")
+            logger.info(btl_guidelines_context)
+            logger.info(f"[FORM7801] {'='*60}")
+        else:
+            logger.warning(f"[FORM7801] ⚠️  No BTL guidelines context included in prompt")
         
         # Create workflow input
         workflow_input = WorkflowInput(input_as_text=full_context)

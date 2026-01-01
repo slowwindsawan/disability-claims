@@ -941,25 +941,31 @@ def update_case(case_id: str, fields: dict) -> dict:
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         raise RuntimeError('Supabase config missing')
     
+    logger.info(f"[DB] Updating case {case_id} with fields: {list(fields.keys())}")
+    
     # Try using Supabase Python client first (handles JSON better)
     if _has_supabase_py and _supabase_admin is not None:
         try:
-            logger.debug(f"Using Supabase Python client to update case {case_id}")
+            logger.debug(f"[DB] Using Supabase Python client to update case {case_id}")
             res = _supabase_admin.table('cases').update(fields).eq('id', case_id).execute()
+            logger.info(f"[DB] ✅ Update successful via Python client. Response data: {len(res.data) if res.data else 0} records")
             if res.data:
                 return res.data[0] if isinstance(res.data, list) and len(res.data) > 0 else res.data
             return {}
         except Exception as e:
-            logger.warning(f"Supabase Python client failed, falling back to REST API: {e}")
+            logger.error(f"[DB] ❌ Supabase Python client failed: {e}")
+            logger.warning(f"[DB] Falling back to REST API...")
     
     # Fallback to REST API
     url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/cases?id=eq.{case_id}"
     try:
+        logger.debug(f"[DB] Using REST API to update case {case_id}")
         resp = requests.patch(url, headers=_postgrest_headers(), json=fields, timeout=15)
         resp.raise_for_status()
+        logger.info(f"[DB] ✅ Update successful via REST API. Status: {resp.status_code}")
         return resp.json()
-    except Exception:
-        logger.exception('Failed to update case')
+    except Exception as e:
+        logger.exception(f'[DB] ❌ Failed to update case: {e}')
         raise
 
 

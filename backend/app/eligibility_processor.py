@@ -24,7 +24,7 @@ logger = logging.getLogger('eligibility_processor')
 load_dotenv()
 OPENAI_API_KEY: Optional[str] = os.getenv('OPENAI_API_KEY')
 # Default model used here; override via OPENAI_MODEL in .env
-OPENAI_MODEL: str = os.getenv('OPENAI_MODEL', 'gpt-5-mini')
+OPENAI_MODEL: str = os.getenv('OPENAI_MODEL', 'gpt-5-nano')
 
 # Chat completions endpoint
 _OPENAI_BASE = "https://api.openai.com/v1"
@@ -36,13 +36,13 @@ _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1"
 
 def _call_gpt(
     prompt: str,
-    model: Optional[str] = "gpt-5-mini",
+    model: Optional[str] = "gpt-5-nano",
     temperature: float = 0.2,
     max_output_tokens: int = 1024,
     timeout: int = 90,
 ) -> Dict[str, Any]:
     """
-    Internal helper: call OpenAI Responses API using gpt-5-mini
+    Internal helper: call OpenAI Responses API using gpt-5-nano
     and return parsed response JSON.
 
     Uses Authorization: Bearer <OPENAI_API_KEY>

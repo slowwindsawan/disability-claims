@@ -139,17 +139,25 @@ class JobQueue:
         """
         job = self.get_job(job_id)
         if not job:
-            logger.error(f"Job {job_id} not found")
+            logger.error(f"[JOB] ❌ Job {job_id} not found")
             return
+        
+        logger.info(f"[JOB] ▶️  Starting job {job_id} - Type: {job.job_type}")
+        logger.info(f"[JOB] 📋 Task function: {task_func.__name__}")
+        logger.info(f"[JOB] 📊 Args count: {len(args)}, Kwargs count: {len(kwargs)}")
         
         try:
             await self.start_job(job_id)
+            logger.info(f"[JOB] 🔄 Executing task function...")
             result = await task_func(*args, **kwargs)
+            logger.info(f"[JOB] ✅ Task function completed successfully")
             await self.complete_job(job_id, result)
+            logger.info(f"[JOB] ✅ Job {job_id} marked as completed")
         except Exception as e:
             error_msg = f"{str(e)}\n{traceback.format_exc()}"
-            logger.exception(f"Job {job_id} failed: {e}")
+            logger.exception(f"[JOB] ❌ Job {job_id} failed: {e}")
             await self.fail_job(job_id, error_msg)
+            logger.error(f"[JOB] ❌ Job {job_id} marked as failed")
     
     def cleanup_old_jobs(self, max_age_hours: int = 24):
         """

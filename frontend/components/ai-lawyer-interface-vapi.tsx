@@ -45,6 +45,7 @@ export function AILawyerInterface() {
   const [error, setError] = useState<string | null>(null)
   const vapiRef = useRef<Vapi | null>(null)
   const callRef = useRef<any>(null)
+  const callIdRef = useRef<string | null>(null) // Dedicated ref for call ID
   const transcriptEndRef = useRef<HTMLDivElement>(null)
 
   // Initialize Vapi client
@@ -61,13 +62,16 @@ export function AILawyerInterface() {
 
     try {
       // Replace with your actual Vapi API key from dashboard.vapi.ai
-      const vapi = new Vapi("ec4039c4-44ec-4972-b685-9b38ef710b4a")
+      const vapi = new Vapi("9ef7fcb0-5bb8-4c18-8bc4-f242ed6eb0bc")
       vapiRef.current = vapi
 
       // Event listeners
       vapi.on("call-start", () => {
-        console.log("✅ Call started - WebSocket connected")
-        setIsCallActive(true)
+        console.log("✅ Call started - WebSocket connected")        // Store call ID immediately when call starts
+        if (callRef.current?.id) {
+          callIdRef.current = callRef.current.id
+          console.log("💾 Stored call ID in ref:", callIdRef.current)
+        }        setIsCallActive(true)
         setIsConnecting(false)
         setVoiceState("listening")
         setError(null)
@@ -80,13 +84,31 @@ export function AILawyerInterface() {
         setVoiceState("idle")
         setIsMicActive(false)
         
-        // Extract insights from call for routing logic
-        if (callRef.current?.id) {
-          console.log("Call completed, ID:", callRef.current?.id)
-          // Save call ID and navigate to processing
-          localStorage.setItem("vapi_call_id", callRef.current.id)
-          console.log("💾 Saved VAPI call ID to localStorage:", callRef.current.id)
+        // Try to get call ID from multiple sources
+        const callId = callIdRef.current || callRef.current?.id
+        console.log("📞 Call ended. Trying to get call ID...")
+        console.log("  - callIdRef.current:", callIdRef.current)
+        console.log("  - callRef.current?.id:", callRef.current?.id)
+        console.log("  - Final callId:", callId)
+        
+        if (callId) {
+          console.log("💾 Saving VAPI call ID to localStorage:", callId)
+          localStorage.setItem("vapi_call_id", callId)
+          console.log("✅ VAPI call ID saved successfully")
+        } else {
+          console.error("❌ No call ID available from any source")
+          console.error("❌ callRef.current:", callRef.current)
         }
+        
+        // Verify localStorage and token before navigating
+        const savedCallId = localStorage.getItem("vapi_call_id")
+        const token = localStorage.getItem("access_token")
+        const caseId = localStorage.getItem("case_id")
+        
+        console.log("📋 Pre-navigation check:")
+        console.log("  - vapi_call_id:", savedCallId)
+        console.log("  - access_token:", token ? "✅ Present" : "❌ Missing")
+        console.log("  - case_id:", caseId ? "✅ Present" : "❌ Missing")
         
         // Navigate to end-of-call processing after a brief delay to allow state updates
         setTimeout(() => {
@@ -332,6 +354,18 @@ Only speak Hebrew.`,
           },
         },
       })
+
+      // Log the call object immediately after start
+      console.log("📞 Call started, callRef.current:", callRef.current)
+      console.log("📞 Call ID:", callRef.current?.id)
+      
+      // Store call ID in dedicated ref
+      if (callRef.current?.id) {
+        callIdRef.current = callRef.current.id
+        console.log("💾 Stored call ID in callIdRef:", callIdRef.current)
+      } else {
+        console.warn("⚠️ Call started but no ID available yet")
+      }
 
       setIsMicActive(true)
     } catch (error: any) {

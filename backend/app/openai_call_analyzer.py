@@ -5,7 +5,8 @@ Analyzes voice call conversations using OpenAI's advanced agent capabilities.
 import os
 import json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
+from pathlib import Path
 from agents import (
     FileSearchTool,
     RunContextWrapper,
@@ -20,6 +21,97 @@ from pydantic import BaseModel
 from openai.types.shared.reasoning import Reasoning
 
 logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------
+# BTL Guidelines Helper
+# ------------------------------------------------------------------
+
+def load_btl_guidelines() -> List[Dict[str, Any]]:
+    """Load BTL guidelines from btl.json"""
+    btl_path = Path(__file__).parent / "btl.json"
+    try:
+        with open(btl_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            logger.debug(f"[BTL] Loaded {len(data)} BTL guideline topics")
+            return data
+    except Exception as e:
+        logger.error(f"[BTL] Failed to load BTL guidelines: {e}")
+        return []
+
+def get_btl_content_by_topics(topic_ids: List[str]) -> str:
+    """Extract BTL content for specified topic IDs"""
+    logger.debug(f"[BTL] Extracting content for {len(topic_ids)} topic IDs: {topic_ids}")
+    if not topic_ids:
+        logger.debug("[BTL] No topic IDs provided - returning empty content")
+        return ""
+    
+    btl_data = load_btl_guidelines()
+    relevant_content = []
+    topics_found = []
+    
+    for topic in btl_data:
+        if topic.get("topic_id") in topic_ids:
+            topic_name = topic.get('topic_name', '')
+            topics_found.append(topic_name)
+            logger.debug(f"[BTL] ✓ Found matching topic: {topic.get('topic_id')} - {topic_name}")
+            
+            content = f"\n### {topic_name} (BTL Section {topic.get('btl_section', '')})\n"
+            content += f"Strategy: {topic.get('vopi_strategy', '')}\n\n"
+            
+            # Add rules
+            if "rules" in topic and topic["rules"]:
+                rules_count = len(topic["rules"])
+                logger.debug(f"[BTL]   - Adding {rules_count} rules for {topic.get('topic_id')}")
+                content += "**Rules and Criteria:**\n"
+                for rule in topic["rules"]:
+                    content += f"- [{rule.get('code', '')}] {rule.get('criteria', '')}\n"
+                    percent = rule.get('percent') or 0
+                    if percent > 0:
+                        content += f"  Percentage: {percent}%\n"
+                content += "\n"
+            
+            # Add required documents
+            if "required_docs" in topic and topic["required_docs"]:
+                docs_count = len(topic["required_docs"])
+                logger.debug(f"[BTL]   - Adding {docs_count} required documents for {topic.get('topic_id')}")
+                content += "**Required Documents:**\n"
+                for doc in topic["required_docs"]:
+                    content += f"- {doc}\n"
+                content += "\n"
+            
+            relevant_content.append(content)
+    
+    if topics_found:
+        logger.info(f"[BTL] ✅ Successfully extracted {len(topics_found)} topics: {', '.join(topics_found)}")
+    else:
+        logger.warning(f"[BTL] ⚠️  No matching topics found for IDs: {topic_ids}")
+    
+    if relevant_content:
+        full_content = "\n\n=== RELEVANT BTL GUIDELINES ===\n" + "".join(relevant_content)
+        logger.debug(f"[BTL] Generated {len(full_content)} chars of guideline content")
+        return full_content
+    return ""
+
+def extract_related_topics_from_call_details(call_details: Dict[str, Any]) -> List[str]:
+    """Extract related_topics array from call_details.analysis.structuredData.
+    If the array is empty, return all topic IDs from btl.json.
+    """
+    try:
+        topics = call_details.get("analysis", {}).get("structuredData", {}).get("related_topics", [])
+        logger.debug(f"[BTL] Extracted topics from call_details: {topics}")
+        
+        # If topics array is empty, return ALL topic IDs from btl.json
+        if not topics:
+            logger.info("[BTL] 📚 related_topics is empty - loading ALL topics from btl.json")
+            all_guidelines = load_btl_guidelines()
+            all_topic_ids = [topic.get('topic_id') for topic in all_guidelines if topic.get('topic_id')]
+            logger.info(f"[BTL] 📚 Returning all {len(all_topic_ids)} topics: {all_topic_ids}")
+            return all_topic_ids
+        
+        return topics
+    except Exception as e:
+        logger.warning(f"[BTL] Failed to extract related_topics from call_details: {e}")
+        return []
 
 # ------------------------------------------------------------------
 # Tool definitions
@@ -141,17 +233,17 @@ Claimant interview and medical records:
 conversation_summary = Agent(
     name="conversation summary",
     instructions=conversation_summary_instructions,
-    model="gpt-5-mini",
-    tools=[file_search],
+    model="gpt-5-nano",
+    # tools=[file_search],
     output_type=ConversationSummarySchema,
     model_settings=ModelSettings(
-        store=True,
+        # store=True,
         reasoning=Reasoning(
-            effort="high",
+            effort="medium",
             summary="concise"
         )
     )
-)
+)   
 
 # ------------------------------------------------------------------
 # Workflow input
@@ -206,35 +298,119 @@ async def analyze_call_conversation_openai(
     transcript: str,
     messages: list,
     eligibility_records: list | None = None,
+    call_details: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
 
     try:
+        logger.info("[AGENT] ═══════════════════════════════════════════")
+        logger.info("[AGENT] Starting OpenAI Call Analyzer")
+        logger.info(f"[AGENT] Transcript length: {len(transcript) if transcript else 0} chars")
+        logger.info(f"[AGENT] Messages count: {len(messages) if messages else 0}")
+        logger.info(f"[AGENT] Eligibility records: {len(eligibility_records) if eligibility_records else 0}")
+        logger.info(f"[AGENT] Call details provided: {call_details is not None}")
+        
         if not os.getenv("OPENAI_API_KEY"):
             raise ValueError("OPENAI_API_KEY not configured")
 
         eligibility_context = ""
         if eligibility_records:
+            logger.info(f"[AGENT] 📋 Processing {len(eligibility_records)} eligibility records")
             eligibility_context += "\n\nUSER ELIGIBILITY DATA:\n"
             for idx, record in enumerate(eligibility_records, 1):
                 eligibility_context += f"\nRecord {idx}:\n"
                 eligibility_context += f"  - Uploaded file: {record.get('uploaded_file', 'N/A')}\n"
                 eligibility_context += f"  - Eligibility data: {json.dumps(record.get('eligibility_raw', {}), indent=2)}\n"
+        else:
+            logger.info("[AGENT] ℹ️  No eligibility records provided")
+
+        # Extract and include BTL guidelines based on related topics
+        btl_guidelines_context = ""
+        if call_details:
+            logger.info("[AGENT] 🔍 Extracting related topics from call_details...")
+            logger.info(f"[AGENT] 🔍 call_details keys: {list(call_details.keys())}")
+            logger.info(f"[AGENT] 🔍 call_details has 'analysis': {'analysis' in call_details}")
+            
+            if 'analysis' in call_details:
+                analysis = call_details.get('analysis', {})
+                logger.info(f"[AGENT] 🔍 analysis keys: {list(analysis.keys()) if isinstance(analysis, dict) else 'NOT A DICT'}")
+                logger.info(f"[AGENT] 🔍 analysis has 'structuredData': {'structuredData' in analysis if isinstance(analysis, dict) else False}")
+                
+            related_topics = extract_related_topics_from_call_details(call_details)
+            logger.info(f"[AGENT] Related topics extracted: {related_topics}")
+            if related_topics:
+                logger.info(f"[AGENT] ✅ Found {len(related_topics)} related BTL topics: {related_topics}")
+                btl_guidelines_context = get_btl_content_by_topics(related_topics)
+                logger.info(f"[AGENT] 📚 BTL guidelines context length: {len(btl_guidelines_context)} chars")
+            else:
+                logger.warning("[AGENT] ⚠️  No related topics found in call_details - BTL guidelines will NOT be included!")
+        else:
+            logger.warning("[AGENT] ⚠️  call_details is None/False - BTL guidelines will NOT be included!")
 
         workflow_input = WorkflowInput(
             input_as_text=(
                 f"CONVERSATION TRANSCRIPT:\n{transcript}\n\n"
                 f"MESSAGES:\n{json.dumps(messages, indent=2)}"
                 f"{eligibility_context}"
+                f"{btl_guidelines_context}"
             )
         )
 
-        logger.info("[AGENT] Running OpenAI agent workflow...")
+        final_input_length = len(workflow_input.input_as_text)
+        logger.info(f"[AGENT] 📊 Final workflow input size: {final_input_length} chars")
+        logger.info(f"[AGENT] [Components] Transcript: {len(transcript)}c | Messages: {len(json.dumps(messages, indent=2))}c | Eligibility: {len(eligibility_context)}c | BTL: {len(btl_guidelines_context)}c")
+        
+        # Print the BTL guidelines section of the prompt
+        if btl_guidelines_context:
+            logger.info(f"[AGENT] 📚 BTL Guidelines section being sent to agent:")
+            logger.info(f"[AGENT] {'='*60}")
+            logger.info(btl_guidelines_context)
+            logger.info(f"[AGENT] {'='*60}")
+        else:
+            logger.warning(f"[AGENT] ⚠️  No BTL guidelines context included in prompt")
+        
+        logger.info("[AGENT] ▶️  Running OpenAI agent workflow...")
         result_wrapper = await run_workflow(workflow_input)
 
-        return result_wrapper["output_parsed"]
+        logger.info("[AGENT] ✅ Workflow completed successfully")
+        
+        # Print full result_wrapper for debugging
+        logger.info("\033[96m" + "="*80)
+        logger.info("[AGENT] 🔵 FULL RESULT WRAPPER:")
+        logger.info(json.dumps(result_wrapper, indent=2, ensure_ascii=False, default=str))
+        logger.info("="*80 + "\033[0m")
+        
+        # Check for errors in result_wrapper
+        if "error" in result_wrapper:
+            logger.error("\033[91m" + "="*80)
+            logger.error("[AGENT] 🔴 ERROR IN RESULT WRAPPER:")
+            logger.error(json.dumps(result_wrapper["error"], indent=2, ensure_ascii=False, default=str))
+            logger.error("="*80 + "\033[0m")
+        
+        result = result_wrapper["output_parsed"]
+        
+        # Print raw output in green
+        logger.info("\033[92m" + "="*80)
+        logger.info("[AGENT] 🟢 RAW CALL SUMMARY AGENT OUTPUT:")
+        logger.info(json.dumps(result, indent=2, ensure_ascii=False))
+        logger.info("="*80 + "\033[0m")
+        
+        logger.info(f"[AGENT] 📝 Analysis result summary:")
+        logger.info(f"[AGENT]   - Risk Assessment: {result.get('risk_assessment', 'N/A')}")
+        logger.info(f"[AGENT]   - Chance of Approval: {result.get('chance_of_approval', 'N/A')}%")
+        logger.info(f"[AGENT]   - Documents Requested: {len(result.get('documents_requested_list', []))} items")
+        logger.info(f"[AGENT]   - Products: {result.get('products', [])}")
+        logger.info("[AGENT] ═══════════════════════════════════════════")
+
+        return result
 
     except Exception as e:
+        logger.error("\033[91m" + "="*80)
+        print("[AGENT] 🔴 EXCEPTION CAUGHT:", e)
         logger.exception("[AGENT] ❌ AGENT ERROR")
+        logger.error(f"[AGENT] Error type: {type(e).__name__}")
+        logger.error(f"[AGENT] Error details: {str(e)}")
+        logger.error("="*80 + "\033[0m")
+        logger.info("[AGENT] ═══════════════════════════════════════════")
         return {
             "call_summary": "Call analysis failed. Manual review required.",
             "documents_requested_list": [],

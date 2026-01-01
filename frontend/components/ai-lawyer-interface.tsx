@@ -1,235 +1,338 @@
-"use client"
+"use client";
 
-import { useState, useEffect, useRef } from "react"
-import { motion, AnimatePresence } from "framer-motion"
-import { Mic, Phone, Shield, MicOff, Volume2 } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { useRouter } from "next/navigation"
-import { ClaimMaximizationModal } from "@/components/claim-maximization-modal"
-import { useLanguage } from "@/lib/language-context"
-import Vapi from "@vapi-ai/web"
+import { useState, useEffect, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Mic, Phone, Shield, MicOff, Volume2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { useRouter } from "next/navigation";
+import { ClaimMaximizationModal } from "@/components/claim-maximization-modal";
+import { useLanguage } from "@/lib/language-context";
+import Vapi from "@vapi-ai/web";
 
-type VoiceState = "idle" | "listening" | "speaking"
-type ClaimType = "general" | "work-injury" | "unknown"
+type VoiceState = "idle" | "listening" | "speaking";
+type ClaimType = "general" | "work-injury" | "unknown";
 
 interface FloatingTag {
-  id: number
-  text: string
-  timestamp: number
+  id: number;
+  text: string;
+  timestamp: number;
 }
 
 export function AILawyerInterface() {
-  const router = useRouter()
-  const { language } = useLanguage()
-  const isRTL = language === "he"
-  const [mounted, setMounted] = useState(false)
-  const [voiceState, setVoiceState] = useState<VoiceState>("idle")
-  const [floatingTags, setFloatingTags] = useState<FloatingTag[]>([])
-  const [isMicActive, setIsMicActive] = useState(false)
-  const [claimType, setClaimType] = useState<ClaimType>("unknown")
-  const [showMaximizationModal, setShowMaximizationModal] = useState(false)
+  const router = useRouter();
+  const { language } = useLanguage();
+  const isRTL = language === "he";
+  const [mounted, setMounted] = useState(false);
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+  const [floatingTags, setFloatingTags] = useState<FloatingTag[]>([]);
+  const [isMicActive, setIsMicActive] = useState(false);
+  const [claimType, setClaimType] = useState<ClaimType>("unknown");
+  const [showMaximizationModal, setShowMaximizationModal] = useState(false);
   const [eligibleBenefits, setEligibleBenefits] = useState({
     mobility: false,
     specialServices: false,
-  })
+  });
 
   // VAPI Integration States
-  const [isCallActive, setIsCallActive] = useState(false)
-  const [isConnecting, setIsConnecting] = useState(false)
-  const [isMuted, setIsMuted] = useState(false)
-  const [volumeLevel, setVolumeLevel] = useState(0)
-  const [transcript, setTranscript] = useState<string[]>([])
-  const [hasMicPermission, setHasMicPermission] = useState<boolean | null>(null)
-  const [processingStatus, setProcessingStatus] = useState<string>("")
-  const [estimatedClaimValue, setEstimatedClaimValue] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const vapiRef = useRef<Vapi | null>(null)
-  const callRef = useRef<any>(null)
-  const transcriptEndRef = useRef<HTMLDivElement>(null)
-  const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const callStartTimeRef = useRef<number | null>(null)
+  const [isCallActive, setIsCallActive] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [volumeLevel, setVolumeLevel] = useState(0);
+  const [transcript, setTranscript] = useState<string[]>([]);
+  const [hasMicPermission, setHasMicPermission] = useState<boolean | null>(
+    null
+  );
+  const [processingStatus, setProcessingStatus] = useState<string>("");
+  const [estimatedClaimValue, setEstimatedClaimValue] = useState<string | null>(
+    null
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [eligibilityData, setEligibilityData] = useState<any>(null);
+  const vapiRef = useRef<Vapi | null>(null);
+  const callRef = useRef<any>(null);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const callStartTimeRef = useRef<number | null>(null);
 
   // Fix hydration by only rendering language-dependent content after client mount
   useEffect(() => {
     // Reset all state on mount - don't persist anything
-    setTranscript([])
-    setIsCallActive(false)
-    setIsConnecting(false)
-    setIsMuted(false)
-    setVolumeLevel(0)
-    setError(null)
-    setProcessingStatus("")
-    setVoiceState("idle")
-    setIsMicActive(false)
-    setMounted(true)
-  }, [])
+    setTranscript([]);
+    setIsCallActive(false);
+    setIsConnecting(false);
+    setIsMuted(false);
+    setVolumeLevel(0);
+    setError(null);
+    setProcessingStatus("");
+    setVoiceState("idle");
+    setIsMicActive(false);
+    setMounted(true);
+  }, []);
+
+  // Fetch user eligibility data on mount
+  useEffect(() => {
+    const fetchEligibilityData = async () => {
+      try {
+        const token = localStorage.getItem("access_token");
+        if (!token) {
+          console.warn("⚠️ No access token found");
+          return;
+        }
+
+        const response = await fetch("http://localhost:8000/user-eligibility", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          console.log("📥 API Response:", data);
+          
+          if (data && data.length > 0) {
+            // Get the most recent eligibility record
+            const latestRecord = data[0];
+            console.log("📋 Latest record:", latestRecord);
+            
+            // Extract eligibility_raw - it should be a JSON string or object
+            let eligibilityRaw = latestRecord.eligibility_raw;
+            if (typeof eligibilityRaw === "string") {
+              eligibilityRaw = JSON.parse(eligibilityRaw);
+            }
+            
+            console.log("✅ Parsed eligibility_raw:", eligibilityRaw);
+            setEligibilityData(eligibilityRaw);
+          } else {
+            console.warn("⚠️ No eligibility records found");
+          }
+        } else {
+          console.error("❌ API error:", response.status, response.statusText);
+        }
+      } catch (err) {
+        console.error("❌ Failed to fetch eligibility data:", err);
+      }
+    };
+
+    fetchEligibilityData();
+  }, []);
+
+  const topics = [
+    { topic_id: "disab_2", topic_name: "Disability Rating Determination" },
+    { topic_id: "neuro_3", topic_name: "Nervous System" },
+    {
+      topic_id: "psych_4",
+      topic_name: "Psychotic and Psychoneurotic Disorders (Mental Health)",
+    },
+    { topic_id: "upperlimbs_5", topic_name: "Upper Limbs" },
+    { topic_id: "lowerlimbs_6", topic_name: "Lower Limbs" },
+    { topic_id: "ent_7", topic_name: "Nose, Mouth, Ear and Throat" },
+    { topic_id: "oral_8", topic_name: "Oral Cavity, Jaws, and Teeth" },
+    {
+      topic_id: "scars_9",
+      topic_name: "Scars, Skin Diseases, and Skin Impairments",
+    },
+  ];
 
   // Initialize Vapi client
   useEffect(() => {
-    // Clean up any existing instance first
-    if (vapiRef.current) {
-      try {
-        vapiRef.current.stop()
-      } catch (e) {
-        // Silently ignore cleanup errors (Krisp processor may already be unloaded)
-        console.debug("Cleanup during init:", e)
-      }
-      vapiRef.current = null
-    }
-
     try {
-      // Replace with your actual Vapi API key from dashboard.vapi.ai
-      console.log("🔧 Initializing VAPI with API key: ec4039c4-44ec-4972-b685-9b38ef710b4a")
-      const vapi = new Vapi("ec4039c4-44ec-4972-b685-9b38ef710b4a")
-      vapiRef.current = vapi
-      console.log("✅ VAPI instance created successfully")
+      const vapi = new Vapi("9ef7fcb0-5bb8-4c18-8bc4-f242ed6eb0bc");
+      vapiRef.current = vapi;
+      console.log("✅ VAPI instance created successfully");
 
       // Ready event - VAPI is ready to accept calls
       vapi.on("ready", () => {
-        console.log("✅ VAPI is ready to accept calls")
-      })
+        console.log("✅ VAPI is ready to accept calls");
+      });
 
       // Event listeners
       vapi.on("call-start", () => {
-        if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current)
-        console.log("🎉 ==================== CALL-START EVENT FIRED ====================")
-        console.log("✅ WebSocket connected successfully!")
-        console.log("✅ Setting isCallActive = true")
-        callStartTimeRef.current = Date.now()
-        setIsCallActive(true)
-        setIsConnecting(false)
-        setVoiceState("listening")
-        setError(null)
-        setProcessingStatus("")
-        console.log("🎉 ==================== READY TO LISTEN ====================")
-      })
+        if (connectionTimeoutRef.current)
+          clearTimeout(connectionTimeoutRef.current);
+        console.log(
+          "🎉 ==================== CALL-START EVENT FIRED ===================="
+        );
+        console.log("✅ WebSocket connected successfully!");
+        console.log("✅ Setting isCallActive = true");
+        callStartTimeRef.current = Date.now();
+        setIsCallActive(true);
+        setIsConnecting(false);
+        setVoiceState("listening");
+        setError(null);
+        setProcessingStatus("");
+        console.log(
+          "🎉 ==================== READY TO LISTEN ===================="
+        );
+      });
 
       vapi.on("call-end", () => {
-        console.log("❌ Call ended - WebSocket disconnected")
-        setIsCallActive(false)
-        setIsConnecting(false)
-        setVoiceState("idle")
-        setIsMicActive(false)
+        console.log("❌ Call ended - WebSocket disconnected");
+        setIsCallActive(false);
+        setIsConnecting(false);
+        setVoiceState("idle");
+        setIsMicActive(false);
 
         // Extract insights from call for routing logic
         if (callRef.current?.id) {
-          console.log("Call completed, ID:", callRef.current?.id)
+          console.log("Call completed, ID:", callRef.current?.id);
           // Save call ID and navigate to processing
-          localStorage.setItem("vapi_call_id", callRef.current.id)
-          console.log("💾 Saved VAPI call ID to localStorage:", callRef.current.id)
+          localStorage.setItem("vapi_call_id", callRef.current.id);
+          console.log(
+            "💾 Saved VAPI call ID to localStorage:",
+            callRef.current.id
+          );
         }
-        
+
         // Navigate to end-of-call processing after a brief delay to allow state updates
         setTimeout(() => {
-          router.push("/end-of-call")
-        }, 500)
-      })
+          router.push("/end-of-call");
+        }, 500);
+      });
 
       vapi.on("speech-start", () => {
-        console.log("🗣️ AI Speech started")
-        setVoiceState("speaking")
-      })
+        console.log("🗣️ AI Speech started");
+        setVoiceState("speaking");
+      });
 
       vapi.on("speech-end", () => {
-        console.log("🤐 AI Speech ended")
-        setVoiceState("listening")
-      })
+        console.log("🤐 AI Speech ended");
+        setVoiceState("listening");
+      });
 
       vapi.on("volume-level", (level: number) => {
-        const volumePercent = level * 100
-        setVolumeLevel(volumePercent)
-      })
+        const volumePercent = level * 100;
+        setVolumeLevel(volumePercent);
+      });
 
       vapi.on("message", (message: any) => {
-        console.log("Message received:", message)
+        console.log("Message received:", message);
 
         // Handle transcript messages - only show final transcripts
         if (message.type === "transcript") {
           if (message.transcriptType === "final") {
-            const speaker = message.role === "user" ? "אתה" : "עו״ד שרה לוי"
-            const text = message.transcript
+            const speaker = message.role === "user" ? "אתה" : "עו״ד שרה לוי";
+            const text = message.transcript;
             if (text) {
-              setTranscript((prev) => [...prev, `${speaker}: ${text}`])
+              setTranscript((prev) => [...prev, `${speaker}: ${text}`]);
 
-              // Analyze transcript for keywords to determine claim type
-              const keywords = ["עבודה", "עבודתי", "מעסיק", "תאונה", "במקום העבודה"]
+              // Analyze for topic relevance
+              const matchedTopics = topics.filter((topic) => {
+                const name = topic.topic_name.toLowerCase();
+                return text.toLowerCase().includes(" " + name.split(" ")[0]); // crude match on first word
+              });
+
+              if (matchedTopics.length > 0) {
+                console.log("📌 Relevant BTL Topics Detected:");
+                matchedTopics.forEach((t) =>
+                  console.log(`➡️ ${t.topic_name} [${t.topic_id}]`)
+                );
+              }
+
+              // Continue with claim type detection
+              const keywords = [
+                "עבודה",
+                "עבודתי",
+                "מעסיק",
+                "תאונה",
+                "במקום העבודה",
+              ];
               if (keywords.some((keyword) => text.includes(keyword))) {
-                setClaimType("work-injury")
+                setClaimType("work-injury");
               }
 
-              // Check for eligibility benefits mentioned
-              if (text.includes("רגל") || text.includes("הליכה") || text.includes("ניידות")) {
-                setEligibleBenefits((prev) => ({ ...prev, mobility: true }))
+              if (
+                text.includes("רגל") ||
+                text.includes("הליכה") ||
+                text.includes("ניידות")
+              ) {
+                setEligibleBenefits((prev) => ({ ...prev, mobility: true }));
               }
-              if (text.includes("עזרה") || text.includes("טיפול") || text.includes("תלות")) {
-                setEligibleBenefits((prev) => ({ ...prev, specialServices: true }))
+              if (
+                text.includes("עזרה") ||
+                text.includes("טיפול") ||
+                text.includes("תלות")
+              ) {
+                setEligibleBenefits((prev) => ({
+                  ...prev,
+                  specialServices: true,
+                }));
               }
             }
           }
         } else if (message.type === "function-call") {
-          console.log("Function called:", message.functionCall)
+          console.log("Function called:", message.functionCall);
         }
-      })
+      });
 
       vapi.on("error", (error: any) => {
-        console.error("💥 ==================== ERROR EVENT FIRED ====================")
-        console.error("❌ VAPI Error Type:", error?.type)
-        console.error("❌ VAPI Error Message:", error?.message)
-        console.error("❌ Full Error Object:", JSON.stringify(error, null, 2))
+        console.error(
+          "💥 ==================== ERROR EVENT FIRED ===================="
+        );
+        console.error("❌ VAPI Error Type:", error?.type);
+        console.error("❌ VAPI Error Message:", error?.message);
+        console.error("❌ Full Error Object:", JSON.stringify(error, null, 2));
 
-        let errorMessage = "אירעה שגיאה במהלך השיחה"
+        let errorMessage = "אירעה שגיאה במהלך השיחה";
 
-        if (error?.type === "daily-error" || error?.type === "daily-call-join-error") {
-          const errMsg = String(error?.error?.message || error?.error?.msg || "")
-          console.error("📌 Daily.co Error Message:", errMsg)
+        if (
+          error?.type === "daily-error" ||
+          error?.type === "daily-call-join-error"
+        ) {
+          const errMsg = String(
+            error?.error?.message || error?.error?.msg || ""
+          );
+          console.error("📌 Daily.co Error Message:", errMsg);
           if (errMsg.includes("room was deleted") || errMsg.includes("room")) {
-            errorMessage = "❌ שגיאת חיבור לשיחה (room). אנא בדוק את הגדרות VAPI שלך או נסה שוב בעוד כמה רגעים."
+            errorMessage =
+              "❌ שגיאת חיבור לשיחה (room). אנא בדוק את הגדרות VAPI שלך או נסה שוב בעוד כמה רגעים.";
           } else {
             errorMessage = `Connection error: ${
               error?.error?.errorMsg || error?.error?.msg || "Unknown error"
-            }`
+            }`;
           }
         } else if (error?.type === "start-method-error") {
           errorMessage =
-            "❌ Failed to start call. Please check:\n\n1. Assistant ID is correct\n2. Your Vapi account has credits\n3. Assistant is properly configured"
+            "❌ Failed to start call. Please check:\n\n1. Assistant ID is correct\n2. Your Vapi account has credits\n3. Assistant is properly configured";
         } else {
           errorMessage =
-            error?.message || error?.error?.message || JSON.stringify(error)
+            error?.message || error?.error?.message || JSON.stringify(error);
         }
 
-        console.warn(errorMessage)
-        setIsConnecting(false)
-        setIsCallActive(false)
-        setVoiceState("idle")
-        console.error("💥 ==================== ERROR HANDLED ====================")
-      })
+        console.warn(errorMessage);
+        setIsConnecting(false);
+        setIsCallActive(false);
+        setVoiceState("idle");
+        console.error(
+          "💥 ==================== ERROR HANDLED ===================="
+        );
+      });
     } catch (err) {
-      console.error("❌ Failed to initialize VAPI:", err)
-      setError("נכשל בטעינת מערכת השיחה. רענן את הדף.")
+      console.error("❌ Failed to initialize VAPI:", err);
+      setError("נכשל בטעינת מערכת השיחה. רענן את הדף.");
     }
 
     return () => {
       // Cleanup on unmount - use safer approach
       if (connectionTimeoutRef.current) {
-        clearTimeout(connectionTimeoutRef.current)
+        clearTimeout(connectionTimeoutRef.current);
       }
-      
+
       if (vapiRef.current) {
         try {
           // Only stop if there's an active call
           if (callRef.current) {
-            vapiRef.current.stop()
+            vapiRef.current.stop();
           }
         } catch (e) {
           // Ignore Krisp/WASM cleanup errors on unmount
-          console.debug("Cleanup on unmount:", e)
+          console.debug("Cleanup on unmount:", e);
         }
-        vapiRef.current = null
+        vapiRef.current = null;
       }
-      callRef.current = null
-    }
-  }, [])
+      callRef.current = null;
+    };
+  }, []);
 
   // Check microphone permission
   useEffect(() => {
@@ -237,44 +340,44 @@ export function AILawyerInterface() {
       try {
         const result = await navigator.permissions.query({
           name: "microphone" as PermissionName,
-        })
-        setHasMicPermission(result.state === "granted")
+        });
+        setHasMicPermission(result.state === "granted");
 
         // Listen for permission changes
         result.onchange = () => {
-          setHasMicPermission(result.state === "granted")
-        }
+          setHasMicPermission(result.state === "granted");
+        };
       } catch (error) {
         // Fallback: try to access microphone directly
         try {
           const stream = await navigator.mediaDevices.getUserMedia({
             audio: true,
-          })
-          stream.getTracks().forEach((track) => track.stop())
-          setHasMicPermission(true)
+          });
+          stream.getTracks().forEach((track) => track.stop());
+          setHasMicPermission(true);
         } catch (err) {
-          setHasMicPermission(false)
+          setHasMicPermission(false);
         }
       }
-    }
+    };
 
-    checkMicPermission()
-    const interval = setInterval(checkMicPermission, 1000)
+    checkMicPermission();
+    const interval = setInterval(checkMicPermission, 1000);
 
-    return () => clearInterval(interval)
-  }, [])
+    return () => clearInterval(interval);
+  }, []);
 
   // Auto-scroll transcript
   useEffect(() => {
     if (transcriptEndRef.current) {
-      transcriptEndRef.current.scrollIntoView({ behavior: "smooth" })
+      transcriptEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [transcript])
+  }, [transcript]);
 
   // Floating tags effect
   useEffect(() => {
-    const tagTexts = ["אבחנה זוהתה", "סעיף 37", "תביעה רפואית", "זכאות מלאה"]
-    let tagId = 0
+    const tagTexts = ["אבחנה זוהתה", "סעיף 37", "תביעה רפואית", "זכאות מלאה"];
+    let tagId = 0;
 
     const interval = setInterval(() => {
       if (Math.random() > 0.7 && isCallActive) {
@@ -282,73 +385,103 @@ export function AILawyerInterface() {
           id: tagId++,
           text: tagTexts[Math.floor(Math.random() * tagTexts.length)],
           timestamp: Date.now(),
-        }
-        setFloatingTags((prev) => [...prev.slice(-2), newTag])
+        };
+        setFloatingTags((prev) => [...prev.slice(-2), newTag]);
       }
-    }, 4000)
+    }, 4000);
 
-    return () => clearInterval(interval)
-  }, [isCallActive])
+    return () => clearInterval(interval);
+  }, [isCallActive]);
 
   const requestMicPermission = async () => {
     try {
-      console.log("🎤 Requesting microphone permission...")
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      console.log("✅ Microphone permission granted!")
-      stream.getTracks().forEach((track) => track.stop())
-      setHasMicPermission(true)
-      setError(null)
-      return true
+      console.log("🎤 Requesting microphone permission...");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log("✅ Microphone permission granted!");
+      stream.getTracks().forEach((track) => track.stop());
+      setHasMicPermission(true);
+      setError(null);
+      return true;
     } catch (error: any) {
-      console.error("❌ Microphone permission denied:", error)
-      console.error("Error name:", error?.name)
-      console.error("Error message:", error?.message)
-      
+      console.error("❌ Microphone permission denied:", error);
+      console.error("Error name:", error?.name);
+      console.error("Error message:", error?.message);
+
       if (error?.name === "NotAllowedError") {
-        setError("❌ הרשאת המיקרופון נדחתה. אנא עבור להגדרות ה-browser וחזור על ההרשאה.")
+        setError(
+          "❌ הרשאת המיקרופון נדחתה. אנא עבור להגדרות ה-browser וחזור על ההרשאה."
+        );
       } else if (error?.name === "NotFoundError") {
-        setError("❌ לא נמצא מיקרופון במכשיר. בדוק חיבור המיקרופון.")
+        setError("❌ לא נמצא מיקרופון במכשיר. בדוק חיבור המיקרופון.");
       } else if (error?.name === "SecurityError") {
-        setError("❌ בעיית אבטחה. אנא טען את הדף מחדש.")
+        setError("❌ בעיית אבטחה. אנא טען את הדף מחדש.");
       } else {
-        setError(`❌ שגיאה בגישה למיקרופון: ${error?.message}`)
+        setError(`❌ שגיאה בגישה למיקרופון: ${error?.message}`);
       }
-      setHasMicPermission(false)
-      return false
+      setHasMicPermission(false);
+      return false;
     }
-  }
+  };
 
   const startCall = async () => {
-    console.log("🎯 [BUTTON CLICK] toggleMic → startCall() invoked")
-    
+    console.log("🎯 [BUTTON CLICK] toggleMic → startCall() invoked");
+
     if (!vapiRef.current) {
-      console.error("❌ VAPI instance is NULL - not initialized!")
-      setError("מערכת השיחה לא מוכנה. רענן את הדף.")
-      return
+      console.error("❌ VAPI instance is NULL - not initialized!");
+      setError("מערכת השיחה לא מוכנה. רענן את הדף.");
+      return;
     }
 
-    console.log("✅ VAPI instance exists:", vapiRef.current)
+    console.log("✅ VAPI instance exists:", vapiRef.current);
 
     if (hasMicPermission === false) {
-      console.log("⚠️ Mic permission is FALSE - requesting permission...")
-      const granted = await requestMicPermission()
+      console.log("⚠️ Mic permission is FALSE - requesting permission...");
+      const granted = await requestMicPermission();
       if (!granted) {
-        console.log("❌ User denied permission or permission already denied")
-        return
+        console.log("❌ User denied permission or permission already denied");
+        return;
       }
-      return
+      return;
     }
 
     // Clear and reset state
-    setTranscript([])
-    setIsConnecting(true)
-    setProcessingStatus("מתחבר לעורך דין AI...")
-    setError(null)
-    console.log("🔄 State reset: isConnecting=true, transcript=[]")
+    setTranscript([]);
+    setIsConnecting(true);
+    setProcessingStatus("מתחבר לעורך דין AI...");
+    setError(null);
+    console.log("🔄 State reset: isConnecting=true, transcript=[]");
 
     try {
-      console.log("🎤 Creating VAPI call config with gpt-3.5-turbo...")
-      
+      console.log("🎤 Creating VAPI call config with gpt-3.5-turbo...");
+
+      // Build patient medical record context from eligibility data
+      let patientMedicalContext = "";
+      if (eligibilityData) {
+        // Extract from the correct nested structure
+        const scoring = eligibilityData.scoring || {};
+        const docAnalysis = eligibilityData.document_analysis;
+        const strengths = scoring.strengths || [];
+        const weaknesses = scoring.weaknesses || [];
+        
+        console.log("🏥 Using eligibility data:", { scoring, docAnalysis, strengths, weaknesses });
+        
+        const strengthsList = Array.isArray(strengths) && strengths.length > 0
+          ? strengths.map((s: string) => `- ${s}`).join('\n')
+          : 'No documented strengths yet';
+          
+        const weaknessList = Array.isArray(weaknesses) && weaknesses.length > 0
+          ? weaknesses.map((w: string) => `- ${w}`).join('\n')
+          : 'No documented weaknesses yet';
+          
+        const docAnalysisStr = docAnalysis && Object.keys(docAnalysis).length > 0 
+          ? JSON.stringify(docAnalysis, null, 2) 
+          : 'Document analysis pending - user has not yet uploaded medical documentation';
+        
+        patientMedicalContext = `\n\n### PATIENT'S MEDICAL RECORD\n\n**Eligibility Status:** ${scoring.eligibility_status || 'Unknown'}\n**Eligibility Score:** ${scoring.eligibility_score || 'N/A'}\n**Confidence:** ${scoring.confidence || 'N/A'}%\n\n**Summary:** ${scoring.reason_summary || 'No summary available'}\n\n**Document Analysis:**\n${docAnalysisStr}\n\n**Strengths:**\n${strengthsList}\n\n**Weaknesses:**\n${weaknessList}\n\n**Required Next Steps:**\n${scoring.required_next_steps ? scoring.required_next_steps.map((step: string) => `- ${step}`).join('\n') : 'None specified'}\n\nUse this information to guide your interview and identify gaps in the patient's documentation. Focus on addressing the weaknesses and required next steps during this call.`;
+      } else {
+        console.warn("⚠️ No eligibility data available - using generic prompt");
+      }
+
       const callConfig = {
         firstMessageMode: "assistant-speaks-first-with-model-generated-message",
         model: {
@@ -360,7 +493,7 @@ export function AILawyerInterface() {
               content: `### ROLE
 You are "Sarah Levy" (עו״ד שרה לוי), the Senior Intake & Strategy Agent for the "Zero-Touch Claims System."
 Your goal is to replace a traditional attorney by executing the **Maximization Principle**: securing the highest possible financial benefit and maximum Retroactivity (up to 12 months).
-You are interviewing the claimant to prepare their "Statement of Claims" for the Bituach Leumi Medical Committee.
+You are interviewing the claimant to prepare their "Statement of Claims" for the Bituach Leumi Medical Committee.${patientMedicalContext}
 
 ### KNOWLEDGE BASE (BTL REGULATIONS)
 You have access to the following knowledge base regarding Bituach Leumi disability claims:
@@ -443,117 +576,179 @@ Your interview must satisfy these three legal priorities in order:
                   description: "הערכת כושר התביעה",
                   enum: ["High Viability", "Low Viability", "Needs More Info"],
                 },
+                related_topics: {
+                  type: "array",
+                  description: `Which BTL topics are relevant to this case. Allowed topics: [
+  {
+    "topic_id": "disab_2",
+    "description": "General rules and procedures for determining disability percentages, including committee structure and appeals."
+  },
+  {
+    "topic_id": "neuro_3",
+    "description": "Neurological system impairments including brain injuries, paralysis, epilepsy, and motor/sensory dysfunctions."
+  },
+  {
+    "topic_id": "psych_4",
+    "description": "Mental health disorders such as PTSD, depression, anxiety, and cognitive impairments affecting social/work function."
+  },
+  {
+    "topic_id": "upperlimbs_5",
+    "description": "Impairments of the arms, shoulders, elbows, wrists, and hands due to injury, amputation, or functional loss."
+  },
+  {
+    "topic_id": "lowerlimbs_6",
+    "description": "Impairments of hips, knees, ankles, and feet including joint fusion, fractures, and gait disorders."
+  },
+  {
+    "topic_id": "ent_7",
+    "description": "Disorders related to hearing, balance, smell, and speech, including ear and throat impairments."
+  },
+  {
+    "topic_id": "oral_8",
+    "description": "Tooth loss, jaw injuries, and oral cavity impairments including biting, chewing, or speaking difficulties."
+  },
+  {
+    "topic_id": "scars_9",
+    "description": "Scars and skin diseases including disfigurement, ulceration, infections, burns, and chronic dermatologic conditions."
+  } return topic_id only.
+]`,
+                  items: { type: "string" },
+                }
               },
-              required: ["case_summary", "documents_requested_list", "key_legal_points"],
+              required: [
+                "case_summary",
+                "documents_requested_list",
+                "key_legal_points",
+                "related_topics"
+              ],
             },
             timeoutSeconds: 60,
           },
         },
-      }
-      
-      console.log("📞 [CRITICAL] About to call vapiRef.current.start() with model: gpt-3.5-turbo")
-      console.log("🎧 Voice config: 11labs (paula)")
-      
+      };
+
+      console.log(
+        "📞 [CRITICAL] About to call vapiRef.current.start() with model: gpt-3.5-turbo", callConfig
+      );
+      console.log("🎧 Voice config: 11labs (paula)");
+
       // This should immediately return a call object and trigger call-start event when connected
-      const response = await vapiRef.current.start(callConfig)
-      
-      console.log("🎉 [SUCCESS] vapiRef.current.start() returned! Response object:", response)
-      console.log("📞 Call ID from response:", response?.id)
-      
-      callRef.current = response
-      setIsMicActive(true)
-      
-      console.log("⏳ Now waiting for call-start EVENT to fire... (this sets isCallActive=true)")
-      console.log("⏳ If nothing happens for 8 seconds, check console for errors or network issues")
-      
+      const response = await vapiRef.current.start(callConfig);
+
+      console.log(
+        "🎉 [SUCCESS] vapiRef.current.start() returned! Response object:",
+        response
+      );
+      console.log("📞 Call ID from response:", response?.id);
+
+      callRef.current = response;
+      setIsMicActive(true);
+
+      console.log(
+        "⏳ Now waiting for call-start EVENT to fire... (this sets isCallActive=true)"
+      );
+      console.log(
+        "⏳ If nothing happens for 8 seconds, check console for errors or network issues"
+      );
     } catch (error: any) {
-      console.error("💥 [CRITICAL ERROR] vapiRef.current.start() threw an exception!")
-      console.error("❌ Error object:", error)
-      console.error("❌ Error message:", error?.message)
-      console.error("❌ Error type:", error?.type)
-      
-      let errorMsg = "שגיאה לא ידועה"
-      if (error?.message?.includes("microphone") || error?.message?.includes("permission")) {
-        errorMsg = "אנא הענק הרשאה למיקרופון"
-        setHasMicPermission(false)
-        await requestMicPermission()
-      } else if (error?.message?.includes("network") || error?.message?.includes("connection")) {
-        errorMsg = "בעיית חיבור לאינטרנט. בדוק את הגדרות הרשת שלך"
+      console.error(
+        "💥 [CRITICAL ERROR] vapiRef.current.start() threw an exception!"
+      );
+      console.error("❌ Error object:", error);
+      console.error("❌ Error message:", error?.message);
+      console.error("❌ Error type:", error?.type);
+
+      let errorMsg = "שגיאה לא ידועה";
+      if (
+        error?.message?.includes("microphone") ||
+        error?.message?.includes("permission")
+      ) {
+        errorMsg = "אנא הענק הרשאה למיקרופון";
+        setHasMicPermission(false);
+        await requestMicPermission();
+      } else if (
+        error?.message?.includes("network") ||
+        error?.message?.includes("connection")
+      ) {
+        errorMsg = "בעיית חיבור לאינטרנט. בדוק את הגדרות הרשת שלך";
       } else if (error?.type === "start-method-error") {
-        errorMsg = "נכשל בהפעלת השיחה. בדוק את הגדרות VAPI שלך"
+        errorMsg = "נכשל בהפעלת השיחה. בדוק את הגדרות VAPI שלך";
       } else {
-        errorMsg = error?.message || "שגיאה לא ידועה"
+        errorMsg = error?.message || "שגיאה לא ידועה";
       }
-      
-      setError(`❌ ${errorMsg}`)
-      setIsConnecting(false)
-      setProcessingStatus("")
+
+      setError(`❌ ${errorMsg}`);
+      setIsConnecting(false);
+      setProcessingStatus("");
     }
-  }
+  };
 
   const endCall = () => {
     // Save call ID to localStorage BEFORE clearing the ref
-    const vapiCallId = callRef.current?.id || ""
+    const vapiCallId = callRef.current?.id || "";
     if (vapiCallId) {
-      localStorage.setItem("vapi_call_id", vapiCallId)
-      console.log("💾 Saved VAPI call ID to localStorage:", vapiCallId)
+      localStorage.setItem("vapi_call_id", vapiCallId);
+      console.log("💾 Saved VAPI call ID to localStorage:", vapiCallId);
     } else {
-      console.warn("⚠️ No VAPI call ID available to save")
-    }
-    
-    if (vapiRef.current && isCallActive) {
-      try {
-        vapiRef.current.stop()
-      } catch (e) {
-        // Ignore Krisp/WASM cleanup errors
-        console.debug("Call end cleanup:", e)
-      }
-      setIsCallActive(false)
-      setIsMicActive(false)
-      setVoiceState("idle")
+      console.warn("⚠️ No VAPI call ID available to save");
     }
 
-    callRef.current = null
-  }
+    if (vapiRef.current && isCallActive) {
+      try {
+        vapiRef.current.stop();
+      } catch (e) {
+        // Ignore Krisp/WASM cleanup errors
+        console.debug("Call end cleanup:", e);
+      }
+      setIsCallActive(false);
+      setIsMicActive(false);
+      setVoiceState("idle");
+    }
+
+    callRef.current = null;
+  };
 
   const toggleMute = () => {
     if (vapiRef.current && isCallActive) {
       try {
-        vapiRef.current.setMuted(!isMuted)
-        setIsMuted(!isMuted)
+        vapiRef.current.setMuted(!isMuted);
+        setIsMuted(!isMuted);
       } catch (e) {
-        console.warn("Error toggling mute:", e)
+        console.warn("Error toggling mute:", e);
       }
     }
-  }
+  };
 
   const toggleMic = () => {
     if (isCallActive) {
-      toggleMute()
+      toggleMute();
     } else {
-      startCall()
+      startCall();
     }
-  }
+  };
 
   const handleHangup = () => {
     if (isCallActive) {
-      endCall()
+      endCall();
     }
 
     // Always navigate to end-of-call for processing
-    router.push("/end-of-call")
-  }
+    router.push("/end-of-call");
+  };
 
   const handleSaveAndExit = () => {
     if (isCallActive) {
-      endCall()
+      endCall();
     }
-    router.push("/incomplete-intake")
-  }
+    router.push("/incomplete-intake");
+  };
 
   return (
     <>
-      <div className="relative h-screen w-full overflow-hidden bg-slate-950" dir={mounted && isRTL ? "rtl" : "ltr"}>
+      <div
+        className="relative h-screen w-full overflow-hidden bg-slate-950"
+        dir={mounted && isRTL ? "rtl" : "ltr"}
+      >
         <div className="absolute inset-0">
           <img
             src="/professional-female-lawyer.png"
@@ -574,7 +769,9 @@ Your interview must satisfy these three legal priorities in order:
                 <span className="text-lg font-semibold text-blue-400">של</span>
               </div>
               <div>
-                <h2 className="text-xl font-semibold text-white">עו״ד שרה לוי</h2>
+                <h2 className="text-xl font-semibold text-white">
+                  עו״ד שרה לוי
+                </h2>
                 <p className="text-sm text-slate-400">ייעוץ משפטי AI</p>
               </div>
             </div>
@@ -595,7 +792,10 @@ Your interview must satisfy these three legal priorities in order:
           >
             <div className="bg-red-500/90 backdrop-blur-md text-white px-6 py-4 rounded-xl shadow-2xl border border-red-400">
               <p className="text-sm font-medium">{error}</p>
-              <button onClick={() => setError(null)} className="mt-2 text-xs underline hover:no-underline">
+              <button
+                onClick={() => setError(null)}
+                className="mt-2 text-xs underline hover:no-underline"
+              >
                 סגור
               </button>
             </div>
@@ -650,18 +850,26 @@ Your interview must satisfy these three legal priorities in order:
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-3">
                 {transcript.map((line, index) => {
-                  const isUser = line.startsWith("אתה:")
-                  const message = line.replace(/^(אתה:|עו״ד שרה לוי:)\s*/, "")
+                  const isUser = line.startsWith("אתה:");
+                  const message = line.replace(/^(אתה:|עו״ד שרה לוי:)\s*/, "");
                   return (
-                    <div key={index} className={`flex ${isUser ? "justify-start" : "justify-end"}`}>
+                    <div
+                      key={index}
+                      className={`flex ${
+                        isUser ? "justify-start" : "justify-end"
+                      }`}
+                    >
                       <div
                         className={`max-w-[85%] rounded-xl px-3 py-2 ${
-                          isUser ? "bg-blue-600/80 text-white" : "bg-slate-700/80 text-slate-100"
-                        }`}>
+                          isUser
+                            ? "bg-blue-600/80 text-white"
+                            : "bg-slate-700/80 text-slate-100"
+                        }`}
+                      >
                         <p className="text-xs">{message}</p>
                       </div>
                     </div>
-                  )
+                  );
                 })}
                 <div ref={transcriptEndRef} />
               </div>
@@ -738,22 +946,22 @@ Your interview must satisfy these three legal priorities in order:
                   voiceState === "listening"
                     ? "radial-gradient(circle, rgba(34, 197, 94, 0.3) 0%, rgba(34, 197, 94, 0.1) 100%)"
                     : voiceState === "speaking"
-                      ? "radial-gradient(circle, rgba(37, 99, 235, 0.3) 0%, rgba(37, 99, 235, 0.1) 100%)"
-                      : "radial-gradient(circle, rgba(71, 85, 105, 0.3) 0%, rgba(71, 85, 105, 0.1) 100%)",
+                    ? "radial-gradient(circle, rgba(37, 99, 235, 0.3) 0%, rgba(37, 99, 235, 0.1) 100%)"
+                    : "radial-gradient(circle, rgba(71, 85, 105, 0.3) 0%, rgba(71, 85, 105, 0.1) 100%)",
                 backdropFilter: "blur(40px)",
                 border: "2px solid",
                 borderColor:
                   voiceState === "listening"
                     ? "rgba(34, 197, 94, 0.4)"
                     : voiceState === "speaking"
-                      ? "rgba(37, 99, 235, 0.4)"
-                      : "rgba(71, 85, 105, 0.4)",
+                    ? "rgba(37, 99, 235, 0.4)"
+                    : "rgba(71, 85, 105, 0.4)",
                 boxShadow:
                   voiceState === "listening"
                     ? "0 0 60px rgba(34, 197, 94, 0.3)"
                     : voiceState === "speaking"
-                      ? "0 0 60px rgba(37, 99, 235, 0.3)"
-                      : "0 0 30px rgba(71, 85, 105, 0.2)",
+                    ? "0 0 60px rgba(37, 99, 235, 0.3)"
+                    : "0 0 30px rgba(71, 85, 105, 0.2)",
               }}
               animate={{
                 scale: voiceState !== "idle" ? [1, 1.05, 1] : 1,
@@ -771,8 +979,8 @@ Your interview must satisfy these three legal priorities in order:
                     voiceState === "listening"
                       ? "linear-gradient(135deg, #22c55e, #16a34a)"
                       : voiceState === "speaking"
-                        ? "linear-gradient(135deg, #2563eb, #1d4ed8)"
-                        : "linear-gradient(135deg, #475569, #334155)",
+                      ? "linear-gradient(135deg, #2563eb, #1d4ed8)"
+                      : "linear-gradient(135deg, #475569, #334155)",
                 }}
                 animate={{
                   opacity: voiceState !== "idle" ? [0.8, 1, 0.8] : 0.6,
@@ -788,7 +996,12 @@ Your interview must satisfy these three legal priorities in order:
             <motion.p
               className="mt-6 text-center text-lg font-medium"
               style={{
-                color: voiceState === "listening" ? "#22c55e" : voiceState === "speaking" ? "#2563eb" : "#94a3b8",
+                color:
+                  voiceState === "listening"
+                    ? "#22c55e"
+                    : voiceState === "speaking"
+                    ? "#2563eb"
+                    : "#94a3b8",
               }}
               animate={{ opacity: [0.7, 1, 0.7] }}
               transition={{
@@ -802,7 +1015,9 @@ Your interview must satisfy these three legal priorities in order:
                   {voiceState === "listening" && "מקשיב..."}
                   {voiceState === "speaking" && "מדבר..."}
                   {voiceState === "idle" &&
-                    (hasMicPermission === false ? "נדרשת גישה למיקרופון" : "לחץ על המיקרופון להתחלה")}
+                    (hasMicPermission === false
+                      ? "נדרשת גישה למיקרופון"
+                      : "לחץ על המיקרופון להתחלה")}
                 </>
               )}
             </motion.p>
@@ -839,13 +1054,21 @@ Your interview must satisfy these three legal priorities in order:
               onClick={toggleMute}
               className="h-20 w-20 rounded-full border-2 p-0 shadow-2xl transition-all duration-300"
               style={{
-                background: isMuted ? "linear-gradient(135deg, #ef4444, #dc2626)" : "rgba(30, 41, 59, 0.8)",
+                background: isMuted
+                  ? "linear-gradient(135deg, #ef4444, #dc2626)"
+                  : "rgba(30, 41, 59, 0.8)",
                 borderColor: isMuted ? "#ef4444" : "rgba(71, 85, 105, 0.5)",
                 backdropFilter: "blur(20px)",
-                boxShadow: isMuted ? "0 0 40px rgba(239, 68, 68, 0.4)" : "0 10px 30px rgba(0, 0, 0, 0.3)",
+                boxShadow: isMuted
+                  ? "0 0 40px rgba(239, 68, 68, 0.4)"
+                  : "0 10px 30px rgba(0, 0, 0, 0.3)",
               }}
             >
-              {isMuted ? <MicOff className="h-8 w-8 text-white" /> : <Mic className="h-8 w-8 text-white" />}
+              {isMuted ? (
+                <MicOff className="h-8 w-8 text-white" />
+              ) : (
+                <Mic className="h-8 w-8 text-white" />
+              )}
             </Button>
           )}
 
@@ -856,8 +1079,12 @@ Your interview must satisfy these three legal priorities in order:
               onClick={startCall}
               className="h-20 w-20 rounded-full border-2 p-0 shadow-2xl transition-all duration-300 cursor-pointer"
               style={{
-                background: isConnecting ? "rgba(100, 116, 139, 0.8)" : "linear-gradient(135deg, #22c55e, #16a34a)",
-                borderColor: isConnecting ? "rgba(100, 116, 139, 0.5)" : "#22c55e",
+                background: isConnecting
+                  ? "rgba(100, 116, 139, 0.8)"
+                  : "linear-gradient(135deg, #22c55e, #16a34a)",
+                borderColor: isConnecting
+                  ? "rgba(100, 116, 139, 0.5)"
+                  : "#22c55e",
                 backdropFilter: "blur(20px)",
                 boxShadow: "0 0 40px rgba(34, 197, 94, 0.4)",
               }}
@@ -907,9 +1134,11 @@ Your interview must satisfy these three legal priorities in order:
             className="absolute bottom-0 left-0 right-0 z-10 bg-slate-900/80 backdrop-blur-md border-t border-slate-700/50 py-3 px-6"
           >
             <p className="text-center text-xs text-slate-400 leading-relaxed">
-              <span className="font-semibold text-slate-300">הבהרה:</span> ZeroTouch הינה מערכת טכנולוגית לניהול מידע
-              ואינה מספקת ייעוץ משפטי. השירות מהווה כלי עזר להגשת תביעות באופן עצמאי. המידע שניתן באמצעות המערכת אינו
-              מהווה תחליף לייעוץ משפטי מקצועי מעורך דין מוסמך.
+              <span className="font-semibold text-slate-300">הבהרה:</span>{" "}
+              ZeroTouch הינה מערכת טכנולוגית לניהול מידע ואינה מספקת ייעוץ
+              משפטי. השירות מהווה כלי עזר להגשת תביעות באופן עצמאי. המידע שניתן
+              באמצעות המערכת אינו מהווה תחליף לייעוץ משפטי מקצועי מעורך דין
+              מוסמך.
             </p>
           </motion.div>
         )}
@@ -921,5 +1150,5 @@ Your interview must satisfy these three legal priorities in order:
         eligibleBenefits={eligibleBenefits}
       />
     </>
-  )
+  );
 }
