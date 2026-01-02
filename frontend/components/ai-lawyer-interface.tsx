@@ -503,13 +503,15 @@ export function AILawyerInterface() {
       // Build patient medical record context from eligibility data
       let patientMedicalContext = "";
       if (eligibilityData) {
-        // Extract from the correct nested structure
-        const scoring = eligibilityData.scoring || {};
-        const docAnalysis = eligibilityData.document_analysis;
-        const strengths = scoring.strengths || [];
-        const weaknesses = scoring.weaknesses || [];
+        // Extract from the root level structure (not nested under scoring)
+        const docAnalysis = eligibilityData.document_analysis || {};
+        const strengths = eligibilityData.strengths || [];
+        const weaknesses = eligibilityData.weaknesses || [];
+        const requiredSteps = eligibilityData.required_next_steps || [];
+        const missingInfo = eligibilityData.missing_information || [];
+        const ruleReferences = eligibilityData.rule_references || [];
         
-        console.log("🏥 Using eligibility data:", { scoring, docAnalysis, strengths, weaknesses });
+        console.log("🏥 Using eligibility data:", eligibilityData);
         
         const strengthsList = Array.isArray(strengths) && strengths.length > 0
           ? strengths.map((s: string) => `- ${s}`).join('\n')
@@ -519,11 +521,23 @@ export function AILawyerInterface() {
           ? weaknesses.map((w: string) => `- ${w}`).join('\n')
           : 'No documented weaknesses yet';
           
+        const requiredStepsList = Array.isArray(requiredSteps) && requiredSteps.length > 0
+          ? requiredSteps.map((step: string) => `- ${step}`).join('\n')
+          : 'None specified';
+          
+        const missingInfoList = Array.isArray(missingInfo) && missingInfo.length > 0
+          ? missingInfo.map((info: string) => `- ${info}`).join('\n')
+          : 'None identified';
+          
+        const ruleRefsList = Array.isArray(ruleReferences) && ruleReferences.length > 0
+          ? ruleReferences.map((ref: any) => `**${ref.section}:** "${ref.quote}" - ${ref.relevance}`).join('\n\n')
+          : 'No rule references';
+          
         const docAnalysisStr = docAnalysis && Object.keys(docAnalysis).length > 0 
           ? JSON.stringify(docAnalysis, null, 2) 
           : 'Document analysis pending - user has not yet uploaded medical documentation';
         
-        patientMedicalContext = `\n\n### PATIENT'S MEDICAL RECORD\n\n**Eligibility Status:** ${scoring.eligibility_status || 'Unknown'}\n**Eligibility Score:** ${scoring.eligibility_score || 'N/A'}\n**Confidence:** ${scoring.confidence || 'N/A'}%\n\n**Summary:** ${scoring.reason_summary || 'No summary available'}\n\n**Document Analysis:**\n${docAnalysisStr}\n\n**Strengths:**\n${strengthsList}\n\n**Weaknesses:**\n${weaknessList}\n\n**Required Next Steps:**\n${scoring.required_next_steps ? scoring.required_next_steps.map((step: string) => `- ${step}`).join('\n') : 'None specified'}\n\nUse this information to guide your interview and identify gaps in the patient's documentation. Focus on addressing the weaknesses and required next steps during this call.`;
+        patientMedicalContext = `\n\n### PATIENT'S MEDICAL RECORD\n\n**Eligibility Status:** ${eligibilityData.eligibility_status || 'Unknown'}\n**Eligibility Score:** ${eligibilityData.eligibility_score || 'N/A'}\n**Confidence:** ${eligibilityData.confidence || 'N/A'}%\n\n**Document Analysis:**\n${docAnalysisStr}\n\n**Strengths:**\n${strengthsList}\n\n**Weaknesses:**\n${weaknessList}\n\n**Missing Information:**\n${missingInfoList}\n\n**Required Next Steps:**\n${requiredStepsList}\n\n**Legal Rule References:**\n${ruleRefsList}\n\nUse this information to guide your interview and identify gaps in the patient's documentation. Focus on addressing the weaknesses and required next steps during this call.`;
       } else {
         console.warn("⚠️ No eligibility data available - using generic prompt");
       }

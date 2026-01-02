@@ -116,8 +116,11 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         auth_user = get_user_from_token(token)
     except ValueError as ve:
         # propagate specific errors
-        if str(ve) == 'user_not_found':
+        error_msg = str(ve)
+        if error_msg == 'user_not_found':
             raise HTTPException(status_code=401, detail='user_not_found')
+        if error_msg == 'session_expired':
+            raise HTTPException(status_code=401, detail='session_expired')
         raise HTTPException(status_code=401, detail='invalid_token')
     except Exception:
         raise HTTPException(status_code=401, detail='invalid_token')
@@ -2347,6 +2350,7 @@ async def eligibility_check(answers: str = Form(...), file: UploadFile = File(..
     file: uploaded PDF/image
     """
     logger.info(f"Received /eligibility-check request; uploaded_filename={file.filename}")
+    logger.warning(f"[ELIGIBILITY_INPUT] answers={answers}, filename={file.filename}, content_type={file.content_type}")
 
     # parse answers
     try:
@@ -2617,6 +2621,7 @@ async def eligibility_check(answers: str = Form(...), file: UploadFile = File(..
         logger.exception('Failed to persist eligibility audit (non-fatal)')
 
     logger.debug(f"Final shaped result: {result}")
+    logger.warning(f"[ELIGIBILITY_OUTPUT] status=ok, eligibility_score={result.get('eligibility_score')}, eligibility_status={result.get('eligibility_status')}, confidence={result.get('confidence')}")
 
     return JSONResponse({'status': 'ok', 'data': result})
 
@@ -2641,6 +2646,7 @@ async def get_document_summary_for_vapi(
         raise HTTPException(status_code=400, detail='User ID not found')
     
     logger.info(f"[VAPI_DEBUG] Fetching document summary for user_id: {user_id}, force_refresh={force_refresh}")
+    logger.warning(f"[VAPI_INPUT] user_id={user_id}, force_refresh={force_refresh}, auth_email={current_user.get('email')}")
     
     try:
         from .supabase_client import list_cases_for_user, get_user_eligibility
@@ -2827,6 +2833,7 @@ async def get_document_summary_for_vapi(
         combined_summary = '\n\n---\n\n'.join(all_summaries)
         
         logger.info(f"[VAPI_DEBUG] Generated {len(all_summaries)} comprehensive document summaries")
+        logger.warning(f"[VAPI_OUTPUT] status=ok, user_id={user_id}, summaries_count={len(all_summaries)}, summary_length={len(combined_summary)} chars")
         return JSONResponse({
             'status': 'ok',
             'summary': combined_summary,
