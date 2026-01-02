@@ -116,11 +116,8 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         auth_user = get_user_from_token(token)
     except ValueError as ve:
         # propagate specific errors
-        error_msg = str(ve)
-        if error_msg == 'user_not_found':
+        if str(ve) == 'user_not_found':
             raise HTTPException(status_code=401, detail='user_not_found')
-        if error_msg == 'session_expired':
-            raise HTTPException(status_code=401, detail='session_expired')
         raise HTTPException(status_code=401, detail='invalid_token')
     except Exception:
         raise HTTPException(status_code=401, detail='invalid_token')

@@ -305,10 +305,6 @@ def get_user_from_token(access_token: str) -> dict:
             if status in (403, 404) and sb_code == 'user_not_found':
                 # This means the JWT's `sub` user id does not exist in auth.users
                 raise ValueError('user_not_found')
-            if status == 403 and sb_code == 'session_not_found':
-                # This means the session referenced by the JWT no longer exists (expired or revoked)
-                logger.warning('Session not found - token may be expired or invalidated')
-                raise ValueError('session_expired')
         except NameError:
             pass
         logger.exception('Failed to fetch user from token')

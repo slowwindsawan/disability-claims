@@ -2,12 +2,13 @@
 Eligibility Processing Module (OpenAI GPT REST rewrite)
 
 Handles OCR extraction, GPT summarization, key points extraction,
-and scoring based on guidelines.
+and scoring based on BTL guidelines from btl.json.
 
 This version:
 - Loads OPENAI_API_KEY and optional OPENAI_MODEL from a .env file
 - Uses the OpenAI Responses REST endpoint (/v1/responses)
-- Defaults to model "gpt-4o-mini" when OPENAI_MODEL not provided
+- Defaults to model "gpt-5-nano" when OPENAI_MODEL not provided
+- Integrates BTL guidelines from btl.json for enhanced analysis
 """
 import os
 import json
@@ -19,6 +20,81 @@ import requests
 from dotenv import load_dotenv
 
 logger = logging.getLogger('eligibility_processor')
+
+# ------------------------------------------------------------------
+# BTL Guidelines Helper
+# ------------------------------------------------------------------
+
+def load_btl_guidelines() -> List[Dict[str, Any]]:
+    """Load BTL guidelines from btl.json"""
+    btl_path = Path(__file__).parent / "btl.json"
+    try:
+        with open(btl_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return data
+    except Exception as e:
+        logger.error(f"[BTL] Failed to load btl.json: {e}")
+        return []
+
+def get_btl_content_by_topics(topic_ids: List[str] = None) -> str:
+    """Extract BTL content for specified topic IDs.
+    If topic_ids is None or empty, return ALL BTL guidelines.
+    """
+    if topic_ids is None:
+        topic_ids = []
+    
+    btl_data = load_btl_guidelines()
+    
+    # If no specific topics requested, use all
+    if not topic_ids:
+        topic_ids = [topic.get('topic_id') for topic in btl_data if topic.get('topic_id')]
+        logger.warning(f"[BTL_SELECT] No topics specified - using ALL {len(topic_ids)} topics")
+    else:
+        logger.warning(f"[BTL_SELECT] Selecting {len(topic_ids)} specific topics: {topic_ids}")
+    
+    relevant_content = []
+    matched_topics = []
+    
+    for topic in btl_data:
+        if topic.get("topic_id") in topic_ids:
+            topic_name = topic.get('topic_name', '')
+            matched_topics.append(f"{topic.get('topic_id')}:{topic_name}")
+            
+            content = f"\n### {topic_name} (BTL Section {topic.get('btl_section', '')})\n"
+            
+            # Add strategy if available
+            if topic.get('vopi_strategy'):
+                content += f"**Strategy:** {topic.get('vopi_strategy')}\n\n"
+            
+            # Add rules
+            if "rules" in topic and topic["rules"]:
+                content += "**Rules and Criteria:**\n"
+                for rule in topic["rules"]:
+                    content += f"- [{rule.get('code', '')}] {rule.get('criteria', '')}\n"
+                    percent = rule.get('percent') or 0
+                    if percent > 0:
+                        content += f"  → Percentage: {percent}%\n"
+                content += "\n"
+            
+            # Add required documents
+            if "required_docs" in topic and topic["required_docs"]:
+                content += "**Required Documents:**\n"
+                for doc in topic["required_docs"]:
+                    content += f"- {doc}\n"
+                content += "\n"
+            
+            relevant_content.append(content)
+    
+    if matched_topics:
+        logger.warning(f"[BTL_SELECT] Topics matched: {', '.join(matched_topics)}")
+    
+    if relevant_content:
+        full_content = "\n\n=== RELEVANT BTL GUIDELINES ===\n" + "".join(relevant_content)
+        logger.warning(f"[BTL_INJECT] Injecting {len(matched_topics)} BTL topics ({len(full_content)} chars into prompt)")
+        return full_content
+    
+    logger.error("[BTL_SELECT] No matching BTL topics found")
+    return ""
 
 # Load .env (OPENAI_API_KEY, optional OPENAI_MODEL)
 load_dotenv()
@@ -167,6 +243,55 @@ def _strip_markdown_json_block(s: str) -> str:
     return s.strip()
 
 
+def _extract_json_from_text(text: str) -> str:
+    """
+    Robust JSON extraction that handles:
+    - Text before/after JSON
+    - Multiple JSON objects (returns first valid one)
+    - Malformed JSON with trailing commas
+    - Comments in JSON
+    
+    Returns cleaned JSON string ready for parsing.
+    """
+    import re
+    
+    # First strip markdown
+    text = _strip_markdown_json_block(text)
+    
+    # Try to find JSON object boundaries
+    # Look for outermost { ... }
+    start_idx = text.find('{')
+    if start_idx == -1:
+        return text  # No JSON found, return as-is
+    
+    # Find matching closing brace
+    brace_count = 0
+    end_idx = -1
+    for i in range(start_idx, len(text)):
+        if text[i] == '{':
+            brace_count += 1
+        elif text[i] == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_idx = i + 1
+                break
+    
+    if end_idx == -1:
+        # No matching brace found, return original
+        return text
+    
+    json_str = text[start_idx:end_idx]
+    
+    # Remove trailing commas before closing braces/brackets (common LLM error)
+    json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+    
+    # Remove comments (// ... and /* ... */)
+    json_str = re.sub(r'//.*?$', '', json_str, flags=re.MULTILINE)
+    json_str = re.sub(r'/\*.*?\*/', '', json_str, flags=re.DOTALL)
+    
+    return json_str.strip()
+
+
 def _call_gemini(prompt: str,
                  model: Optional[str] = None,
                  temperature: float = 0.2,
@@ -271,14 +396,13 @@ Return ONLY valid JSON matching this schema:
     prompt = prompt_template.replace('{answers}', json.dumps(answers, indent=2)).replace('{ocr_text}', ocr_text[:20000]).replace('{document_text}', ocr_text[:20000])
 
     try:
-        logger.info("Calling OpenAI for document summarization and key points extraction (model=%s)", OPENAI_MODEL)
+        logger.warning(f"[SUMMARY] Extracting document summary and key points")
         raw = _call_gpt(prompt, temperature=0.2, max_output_tokens=1024)
         raw_text = _extract_text_from_gpt_response(raw)
 
-        # Handle code fence wrapping and attempt to parse JSON
-        raw_text = _strip_markdown_json_block(raw_text)
-
-        result = json.loads(raw_text)
+        # Use robust JSON extraction
+        json_text = _extract_json_from_text(raw_text)
+        result = json.loads(json_text)
         # ensure keys exist
         result.setdefault('summary', '')
         result.setdefault('key_points', [])
@@ -286,7 +410,7 @@ Return ONLY valid JSON matching this schema:
         result.setdefault('work_relation_evidence', '')
         result.setdefault('injury_severity', '')
         result.setdefault('treatment_details', '')
-        logger.info("Successfully extracted summary and %d key points", len(result.get('key_points', [])))
+        logger.warning(f"[SUMMARY] Extracted {len(result.get('key_points', []))} key points")
         return result
 
     except json.JSONDecodeError as je:
@@ -348,32 +472,38 @@ def score_eligibility_with_guidelines(
     from .supabase_client import get_agent_prompt
     
     # FALLBACK PROMPT (Original hardcoded version - kept for safety)
-    fallback_prompt = """You are a disability claims eligibility expert. Analyze the following information and determine eligibility based on the official guidelines.
+    fallback_prompt = """You are a disability claims eligibility expert analyzing Bituach Leumi (BTL) disability claims. Analyze the following information and determine eligibility based on BTL regulations.
 
-OFFICIAL GUIDELINES:
+=== BTL REGULATORY FRAMEWORK ===
 {guidelines_text}
 
+=== CLAIMANT INFORMATION ===
 QUESTIONNAIRE ANSWERS:
 {answers}
 
 DOCUMENT ANALYSIS:
 {document_analysis}
 
-TASK:
-Carefully review all information against the official guidelines and provide a comprehensive eligibility assessment.
+=== ANALYSIS TASK ===
+Evaluate the claimant's eligibility based on BTL guidelines above. Consider:
+1. Medical threshold (conditions, severity, alignment with BTL categories)
+2. Documentation quality and completeness per BTL requirements
+3. Work inability and functional limitations (IEL)
+4. Retroactivity eligibility
+5. Any missing documentation per BTL requirements
 
-Return ONLY valid JSON matching this schema:
+Return ONLY valid JSON matching this exact schema:
 {{
   "eligibility_score": integer (0-100, where 100 is highly eligible),
   "eligibility_status": "eligible" | "likely" | "needs_review" | "not_eligible",
   "confidence": integer (0-100, your confidence in this assessment),
   "reason_summary": "string (2-3 sentences explaining the decision)",
   "rule_references": [
-    {{"section": "string", "quote": "string", "relevance": "string"}}
+    {{"section": "string (BTL section/category)", "quote": "specific guideline text", "relevance": "how this applies to claimant"}}
   ],
-  "required_next_steps": ["array of specific actions user needs to take"],
-  "strengths": ["array of points that support eligibility"],
-  "weaknesses": ["array of concerns or missing elements"]
+  "required_next_steps": ["array of specific actions per BTL requirements"],
+  "strengths": ["array of claim strengths per BTL guidelines"],
+  "weaknesses": ["array of gaps or concerns per BTL requirements"]
 }}
 """
     
@@ -387,13 +517,13 @@ Return ONLY valid JSON matching this schema:
     prompt = prompt.replace('{document_analysis}', json.dumps(document_analysis, indent=2))
 
     try:
-        logger.info("Calling OpenAI for eligibility scoring (model=%s)", agent_config['model'])
+        logger.warning(f"[BTL_SCORE] Scoring eligibility using {agent_config['model']}")
         raw = _call_gpt(prompt, model=agent_config['model'], temperature=0.1, max_output_tokens=1024)
         raw_text = _extract_text_from_gpt_response(raw)
-        raw_text = _strip_markdown_json_block(raw_text)
-
-        result = json.loads(raw_text)
-        print("------------>", result, "<------------")
+        
+        # Use robust JSON extraction
+        json_text = _extract_json_from_text(raw_text)
+        result = json.loads(json_text)
         # set defaults to avoid KeyError downstream
         result.setdefault('eligibility_score', 0)
         result.setdefault('eligibility_status', 'needs_review')
@@ -403,7 +533,7 @@ Return ONLY valid JSON matching this schema:
         result.setdefault('required_next_steps', [])
         result.setdefault('strengths', [])
         result.setdefault('weaknesses', [])
-        logger.info("Eligibility scored: %s (%s/100)", result.get('eligibility_status'), result.get('eligibility_score'))
+        logger.warning(f"[BTL_SCORE_RESULT] status={result.get('eligibility_status')}, score={result.get('eligibility_score')}/100, confidence={result.get('confidence')}%")
         return result
 
     except json.JSONDecodeError as je:
@@ -433,18 +563,20 @@ Return ONLY valid JSON matching this schema:
 
 
 def load_eligibility_guidelines() -> str:
-    """Load the eligibility.pdf guidelines text (placeholder behavior)."""
+    """Load eligibility guidelines from BTL regulations (btl.json).
+    Returns formatted guideline text for use in LLM prompts.
+    """
     try:
-        guidelines_path = Path(__file__).parent.parent / 'documents' / 'eligibility.pdf'
-        if not guidelines_path.exists():
-            logger.warning("Guidelines not found at %s", guidelines_path)
-            return ""
-        # If you later add PDF OCR extraction, replace this placeholder
-        logger.info("Skipping eligibility.pdf OCR - using placeholder guidelines")
+        btl_content = get_btl_content_by_topics()  # Load ALL BTL guidelines
+        if btl_content:
+            logger.info("[GUIDELINES] ✅ Loaded BTL guidelines successfully")
+            return btl_content
+        else:
+            logger.warning("[GUIDELINES] ⚠️  No BTL content available, using fallback")
+            return "General disability eligibility guidelines: Work-related injury, medical documentation, unable to work for extended period."
+    except Exception as e:
+        logger.exception(f"[GUIDELINES] ❌ Error loading eligibility guidelines: {e}")
         return "General disability eligibility guidelines: Work-related injury, medical documentation, unable to work for extended period."
-    except Exception:
-        logger.exception("Error loading eligibility guidelines")
-        return ""
 
 
 def analyze_document_with_guidelines(
@@ -519,8 +651,9 @@ SCHEMA:
             raw = _call_gpt(prompt, model=agent_config['model'], temperature=0.2, max_output_tokens=1024)
             raw_text = _extract_text_from_gpt_response(raw)
 
-        raw_text = _strip_markdown_json_block(raw_text)
-        result = json.loads(raw_text)
+        # Use robust JSON extraction
+        json_text = _extract_json_from_text(raw_text)
+        result = json.loads(json_text)
 
         # Validate and fill with heuristic defaults when missing
         required_keys = (
@@ -684,40 +817,39 @@ def check_document_relevance(
     from .supabase_client import get_agent_prompt
     
     # FALLBACK PROMPT (Original hardcoded version - kept for safety)
-    fallback_prompt = """You are a LAWYER specializing in disability claims. You are reviewing a document submitted by your client to determine if it contains VALID MEDICAL EVIDENCE that can support their disability claim case.
+    fallback_prompt = """You are a LAWYER specializing in BTL (Bituach Leumi) disability claims. You are reviewing a document submitted by your client to determine if it contains VALID MEDICAL EVIDENCE that can support their disability claim case under BTL regulations.
 
-YOU MUST BE STRICT. Your client's claim depends on having proper medical documentation that meets legal requirements.
+YOU MUST BE STRICT. Your client's claim depends on having proper medical documentation that meets BTL legal requirements.
 
-DISABILITY CLAIM GUIDELINES CONTEXT:
-- Claims require: written complete documentation, objective medical evidence (imaging, lab tests, pathology)
-- Must have: specialist reports, clinical examination findings, documented functional impairments
-- Must have: physician notes with diagnoses, treatment records, work restrictions
-- Must have: traceable medical records with dates, signatures, and objective test results
+=== BTL DISABILITY CLAIM REQUIREMENTS ===
+{btl_guidelines}
 
-VALID MEDICAL EVIDENCE (Accept these):
+=== MEDICAL EVIDENCE STANDARDS ===
+
+VALID MEDICAL EVIDENCE (Accept for BTL claims):
 ✓ Hospital discharge summaries with diagnosis, treatment, prognosis
-✓ Physician reports with clinical examination findings and medical opinions
-✓ Specialist consultation notes (orthopedic, neurologic, cardiac, psychiatric, etc.)
-✓ Psychological/neuropsychological evaluation reports with test results and diagnoses
-✓ Mental health assessments with clinical findings (depression, anxiety, ADHD, PTSD, etc.)
-✓ Cognitive/learning disability evaluations with standardized test scores
-✓ Imaging reports (MRI, CT, X-ray) with radiologist interpretation and findings
+✓ Physician/specialist reports with clinical examination findings
+✓ Psychiatric/psychological evaluations with test results and diagnoses
+✓ Cognitive/learning disability assessments with standardized scores
+✓ Neuropsychological testing reports
+✓ Imaging reports (MRI, CT, X-ray) with radiologist interpretation
 ✓ Laboratory or pathology results WITH physician interpretation
-✓ Surgical/operative reports with procedure details
-✓ Physical therapy or rehabilitation reports with functional assessments
-✓ EMG/nerve conduction studies, EEG reports with clinical correlation
-✓ Treatment records documenting ongoing care and response
-✓ Psychiatric evaluations with DSM diagnoses and functional assessments
+✓ Surgical/operative reports
+✓ Physical therapy or rehabilitation assessments
+✓ EMG/nerve conduction studies, EEG with clinical correlation
+✓ Treatment records documenting ongoing care and functional impact
+✓ Work restriction letters from treating physicians
+✓ Disability percentages assigned by medical committee (if available)
 
-INVALID DOCUMENTS (Reject these - NOT legal evidence):
-✗ Receipts, invoices, billing statements (even from hospitals/clinics)
-✗ Appointment cards, scheduling notices, reminders
-✗ Insurance authorization forms or correspondence
-✗ Blank or nearly blank pages (< 50 meaningful words)
-✗ Pharmacy prescription labels without clinical context
-✗ Patient education materials or general health information
-✗ Documents without patient name, dates, or provider information
-✗ Illegible or garbled scans that cannot be read
+INVALID DOCUMENTS (Reject - NOT legal evidence for BTL):
+✗ Receipts, invoices, billing statements
+✗ Appointment cards, scheduling notices
+✗ Insurance forms or correspondence
+✗ Blank or nearly blank pages
+✗ Pharmacy labels without clinical context
+✗ Patient education materials
+✗ Documents without patient name, dates, or provider signature
+✗ Illegible or garbled scans
 
 DOCUMENT TO ANALYZE:
 ---
@@ -726,20 +858,21 @@ DOCUMENT TO ANALYZE:
 
 AS THE CLIENT'S LAWYER, evaluate this document:
 
-1. Does it contain objective medical evidence? (diagnoses, test results, clinical findings)
-2. Does it have proper documentation? (provider name, dates, signatures)
-3. Can it support a disability claim legally?
-4. If NOT valid, what specific type of document IS needed?
+1. Does it contain objective medical evidence per BTL requirements?
+2. Does it have proper documentation (provider, dates, signatures)?
+3. Can it support a BTL disability claim legally?
+4. If NOT valid, what specific document IS needed per BTL?
 
 Return ONLY valid JSON:
 {{
-  "is_relevant": boolean (TRUE only if contains valid medical evidence for legal claim),
-  "relevance_score": integer (0-30 for non-medical; 40-69 for administrative/weak; 70-100 for strong medical evidence),
-  "relevance_reason": "ONE clear sentence explaining why rejected/accepted (max 15 words)",
-  "document_summary": "if rejected: 2-4 words; if relevant: COMPREHENSIVE 200-500 words summary with ALL medical details",
+  "is_relevant": boolean (TRUE only if contains valid medical evidence for BTL claim),
+  "relevance_score": integer (0-30 non-medical; 40-69 weak; 70-100 strong),
+  "relevance_reason": "ONE sentence explaining decision (max 15 words)",
+  "document_summary": "if rejected: 2-4 words; if relevant: COMPREHENSIVE 200-500 words with ALL medical details",
   "key_points": [array of specific medical facts],
   "document_type": "string",
-  "relevance_guidance": "specific guidance",
+  "focus_excerpt": "most relevant 300-char excerpt",
+  "btl_relevance": "how this document supports BTL claim",
   "structured_data": {{
     "diagnoses": [],
     "test_results": [],
@@ -750,46 +883,40 @@ Return ONLY valid JSON:
   }}
 }}"""
     
+    # Load BTL guidelines to inject into prompt
+    btl_content = get_btl_content_by_topics()  # Load ALL BTL guidelines
+    
     # Load agent configuration from database    
     agent_config = get_agent_prompt('document_relevance_checker', fallback_prompt)
     prompt_template = agent_config['prompt']
     
     # Replace placeholders in prompt
     prompt = prompt_template.replace('{ocr_text}', ocr_text[:15000]).replace('{document_text}', ocr_text[:15000])
+    prompt = prompt.replace('{btl_guidelines}', btl_content[:10000])
 
     try:
-        logger.info("="*80)
-        logger.info("AI DOCUMENT RELEVANCE CHECK")
-        logger.info(f"Provider: {provider}")
-        logger.info(f"OCR Text Length: {len(ocr_text)} chars")
-        logger.info(f"OCR Text Sample (first 500 chars):\n{ocr_text[:500]}")
-        logger.info("-"*80)
+        logger.warning(f"[RELEVANCE_CHECK] Provider={provider}, OCR={len(ocr_text)} chars")
         
         if provider == 'gemini':
-            logger.info(f"Calling Gemini API (model={GEMINI_MODEL_ID})")
             raw = _call_gemini(prompt, temperature=0.1, max_output_tokens=2000)
             raw_text = _extract_text_from_gemini_response(raw)
         else:
-            logger.info(f"Calling OpenAI API (model={OPENAI_MODEL})")
             raw = _call_gpt(prompt, temperature=0.1, max_output_tokens=2000)
             raw_text = _extract_text_from_gpt_response(raw)
 
-        logger.info("-"*80)
-        logger.info(f"AI Raw Response:\n{raw_text[:1000]}")
-        logger.info("-"*80)
+        # Use robust JSON extraction
+        json_text = _extract_json_from_text(raw_text)
         
-        raw_text = _strip_markdown_json_block(raw_text)
-        result = json.loads(raw_text)
+        # Debug log the raw response if JSON parsing fails
+        try:
+            result = json.loads(json_text)
+        except json.JSONDecodeError as json_err:
+            logger.error(f"JSON parse error: {json_err}")
+            logger.error(f"Raw response (first 1000 chars): {raw_text[:1000]}")
+            logger.error(f"Extracted JSON attempt (first 500 chars): {json_text[:500]}")
+            raise
         
-        logger.info("AI Response Parsed Successfully")
-        logger.info(f"  is_relevant: {result.get('is_relevant')}")
-        logger.info(f"  relevance_score: {result.get('relevance_score')}")
-        logger.info(f"  document_type: {result.get('document_type')}")
-        logger.info(f"  document_summary length: {len(result.get('document_summary', ''))} chars")
-        logger.info(f"  document_summary: {result.get('document_summary', '')[:300]}...")
-        logger.info(f"  key_points count: {len(result.get('key_points', []))}")
-        logger.info(f"  key_points: {result.get('key_points', [])}")
-        logger.info("="*80)
+        logger.warning(f"[RELEVANCE_RESULT] is_relevant={result.get('is_relevant')}, score={result.get('relevance_score')}, type={result.get('document_type')}")
 
         # Normalize fields
         result['is_relevant'] = bool(result.get('is_relevant', False))
@@ -976,8 +1103,9 @@ BE THOROUGH and LEGALLY RIGOROUS. Your client's claim depends on your assessment
             raw = _call_gpt(prompt, model=agent_config['model'], temperature=0.1, max_output_tokens=1200)
             raw_text = _extract_text_from_gpt_response(raw)
 
-        raw_text = _strip_markdown_json_block(raw_text)
-        result = json.loads(raw_text)
+        # Use robust JSON extraction
+        json_text = _extract_json_from_text(raw_text)
+        result = json.loads(json_text)
 
         # Set defaults
         result.setdefault('eligibility_score', 0)
