@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI Interview – Realtime WebRTC</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f8f9fa;
+      padding: 20px;
+    }
+    button {
+      padding: 10px 16px;
+      margin-right: 10px;
+      cursor: pointer;
+    }
+    #status {
+      margin: 10px 0;
+      font-style: italic;
+      color: #6c757d;
+    }
+    #transcript {
+      border: 1px solid #ccc;
+      background: #fff;
+      padding: 10px;
+      height: 300px;
+      overflow-y: auto;
+    }
+    .user { color: #198754; margin-bottom: 6px; }
+    .assistant { color: #0b5ed7; margin-bottom: 6px; }
+    .system { color: #6c757d; font-style: italic; }
+  </style>
+</head>
+
+<body>
+<h2>AI Interview (Realtime – WebRTC)</h2>
+
+<button id="startBtn">Start Interview</button>
+<button id="stopBtn" disabled>Stop</button>
+
+<div id="status">Idle</div>
+
+<h3>Live Transcript</h3>
+<div id="transcript"></div>
+
+<!-- AI audio output -->
+<audio id="aiAudio" autoplay></audio>
+
+<script>
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const statusEl = document.getElementById("status");
+const transcriptEl = document.getElementById("transcript");
+const aiAudio = document.getElementById("aiAudio");
+
+let pc;
+let micStream;
+let dataChannel;
+
+/* ================= UI HELPERS ================= */
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+function addLine(role, text) {
+  const div = document.createElement("div");
+  div.className = role;
+  div.textContent = role.toUpperCase() + ": " + text;
+  transcriptEl.appendChild(div);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+/* ================= START ================= */
+
+startBtn.onclick = async () => {
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+
+  try {
+    setStatus("Requesting microphone…");
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    setStatus("Creating WebRTC connection…");
+    pc = new RTCPeerConnection();
+
+    /* 🔊 AI AUDIO OUTPUT */
+    pc.ontrack = (event) => {
+      aiAudio.srcObject = event.streams[0];
+    };
+
+    /* 🎙 SEND MIC AUDIO (ENABLES NATURAL INTERRUPTION) */
+    micStream.getTracks().forEach(track => pc.addTrack(track, micStream));
+
+    /* 📡 DATA CHANNEL FOR EVENTS */
+    dataChannel = pc.createDataChannel("oai-events");
+
+    dataChannel.onopen = () => {
+      addLine("system", "Connected to AI");
+    };
+
+    dataChannel.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      console.log("EVENT:", "User transcript: ",msg?.transcript, "AI transcript: ", msg?.part?.transcript);
+
+      /* 🧑 USER – FINAL TRANSCRIPTION */
+      if (msg.type === "conversation.item.input_audio_transcription.completed") {
+        addLine("user", msg.text);
+      }
+
+      /* 🤖 AI – FINAL TRANSCRIPTION */
+      if (msg.type === "conversation.item.assistant.transcription.completed") {
+        addLine("assistant", msg.text);
+      }
+
+      if (msg.type === "error") {
+        addLine("system", msg.message || "Unknown error");
+      }
+    };
+
+    setStatus("Requesting session token…");
+    const tokenRes = await fetch("http://localhost:8000/offer", {
+      method: "POST"
+    });
+    const { client_secret } = await tokenRes.json();
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    setStatus("Connecting to OpenAI…");
+
+    const sdpRes = await fetch(
+      "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${client_secret}`,
+          "Content-Type": "application/sdp"
+        },
+        body: offer.sdp
+      }
+    );
+
+    const answerSDP = await sdpRes.text();
+    await pc.setRemoteDescription({ type: "answer", sdp: answerSDP });
+
+    setStatus("Interview running 🎤");
+
+  } catch (err) {
+    console.error(err);
+    addLine("system", err.message);
+    cleanup();
+  }
+};
+
+/* ================= STOP ================= */
+
+stopBtn.onclick = cleanup;
+
+function cleanup() {
+  setStatus("Stopped");
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+
+  if (dataChannel) dataChannel.close();
+  if (pc) pc.close();
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+
+  pc = null;
+  micStream = null;
+  dataChannel = null;
+}
+</script>
+</body>
+</html>

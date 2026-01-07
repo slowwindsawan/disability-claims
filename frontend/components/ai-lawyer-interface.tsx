@@ -2,13 +2,12 @@
 
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Mic, Phone, Shield, MicOff, Volume2 } from "lucide-react";
+import { Mic, Phone, Shield, MicOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useRouter } from "next/navigation";
 import { ClaimMaximizationModal } from "@/components/claim-maximization-modal";
 import { useLanguage } from "@/lib/language-context";
-import Vapi from "@vapi-ai/web";
 import { BACKEND_BASE_URL } from "@/variables";
 
 type VoiceState = "idle" | "listening" | "speaking";
@@ -35,7 +34,7 @@ export function AILawyerInterface() {
     specialServices: false,
   });
 
-  // VAPI Integration States
+  // OpenAI Realtime WebRTC Integration States
   const [isCallActive, setIsCallActive] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -49,17 +48,26 @@ export function AILawyerInterface() {
     null
   );
   const [error, setError] = useState<string | null>(null);
-  const [eligibilityData, setEligibilityData] = useState<any>(null);
+  const [isCallEnding, setIsCallEnding] = useState(false);
   const [agentConfig, setAgentConfig] = useState<{
     prompt: string;
     model: string;
     provider: string;
+    voice: {
+      provider: string;
+      voiceId: string;
+      model: string;
+    };
   } | null>(null);
-  const vapiRef = useRef<Vapi | null>(null);
-  const callRef = useRef<any>(null);
+  
+  // WebRTC refs
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
-  const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const callStartTimeRef = useRef<number | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Fix hydration by only rendering language-dependent content after client mount
   useEffect(() => {
@@ -76,91 +84,88 @@ export function AILawyerInterface() {
     setMounted(true);
   }, []);
 
-  // Fetch agent config from database
+  // Fetch agent config from database with retry logic
   useEffect(() => {
-    const fetchAgentConfig = async () => {
-      try {
-        const response = await fetch(
-          `${BACKEND_BASE_URL}/api/agents/by-name/vapi_main_assistant`
-        );
+    const fetchAgentConfig = async (retries = 3) => {
+      for (let attempt = 0; attempt < retries; attempt++) {
+        try {
+          const response = await fetch(
+            `${BACKEND_BASE_URL}/api/agents/by-name/interview_voice_agent`,
+            { signal: AbortSignal.timeout(10000) } // 10 second timeout
+          );
 
-        if (response.ok) {
-          const data = await response.json();
-          console.log("🤖 Agent config fetched:", data);
-          
-          if (data.agent) {
-            const model = data.agent.model || "gpt-4o";
-            // Determine provider based on model name
-            let provider = "openai"; // default
-            if (model.toLowerCase().includes("gemini")) {
-              provider = "google";
-            } else if (model.toLowerCase().includes("gpt") || model.toLowerCase().includes("o1")) {
-              provider = "openai";
-            }
+          if (response.ok) {
+            const data = await response.json();
             
-            setAgentConfig({
-              prompt: data.agent.prompt,
-              model: model,
-              provider: provider,
-            });
-            console.log("✅ Agent config loaded: model=", model, "provider=", provider);
+            if (data.agent) {
+              const model = data.agent.model || "gpt-4o";
+              // Determine provider based on model name
+              let provider = "openai"; // default
+              if (model.toLowerCase().includes("gemini")) {
+                provider = "google";
+              } else if (model.toLowerCase().includes("gpt") || model.toLowerCase().includes("o1")) {
+                provider = "openai";
+              }
+              
+              // Parse voice config from meta_data with fallback
+              let voiceConfig = {
+                provider: "11labs",
+                voiceId: "burt",
+                model: "eleven_multilingual_v2",
+              };
+              
+              if (data.agent.meta_data) {
+                try {
+                  const metaData = typeof data.agent.meta_data === "string" 
+                    ? JSON.parse(data.agent.meta_data) 
+                    : data.agent.meta_data;
+                  
+                  if (metaData.voice) {
+                    voiceConfig = {
+                      provider: metaData.voice.provider || voiceConfig.provider,
+                      voiceId: metaData.voice.voiceId || voiceConfig.voiceId,
+                      model: metaData.voice.model || voiceConfig.model,
+                    };
+                  }
+                } catch (err) {
+                  console.warn("⚠️ Failed to parse meta_data, using fallback voice config");
+                }
+              }
+              
+              setAgentConfig({
+                prompt: data.agent.prompt,
+                model: model,
+                provider: provider,
+                voice: voiceConfig,
+              });
+              console.log("✅ Agent config loaded successfully");
+              return; // Success - exit the retry loop
+            }
+          } else {
+            throw new Error(`HTTP ${response.status}: Failed to fetch agent config`);
           }
-        } else {
-          console.warn("⚠️ Failed to fetch agent config, will use fallback");
+        } catch (err) {
+          const isLastAttempt = attempt === retries - 1;
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          
+          if (isLastAttempt) {
+            console.error(
+              `❌ Failed to fetch agent config after ${retries} attempts:`,
+              errorMsg
+            );
+            // Still continue - the app can work with fallback config
+          } else {
+            const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
+            console.warn(
+              `⚠️ Attempt ${attempt + 1}/${retries} failed (${errorMsg}). Retrying in ${delay}ms...`
+            );
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
         }
-      } catch (err) {
-        console.error("❌ Failed to fetch agent config:", err);
       }
     };
 
     fetchAgentConfig();
-  }, []);
-
-  // Fetch user eligibility data on mount
-  useEffect(() => {
-    const fetchEligibilityData = async () => {
-      try {
-        const token = localStorage.getItem("access_token");
-        if (!token) {
-          console.warn("⚠️ No access token found");
-          return;
-        }
-
-        const response = await fetch(`${BACKEND_BASE_URL}/user-eligibility`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          console.log("📥 API Response:", data);
-          
-          if (data && data.length > 0) {
-            // Get the most recent eligibility record
-            const latestRecord = data[0];
-            console.log("📋 Latest record:", latestRecord);
-            
-            // Extract eligibility_raw - it should be a JSON string or object
-            let eligibilityRaw = latestRecord.eligibility_raw;
-            if (typeof eligibilityRaw === "string") {
-              eligibilityRaw = JSON.parse(eligibilityRaw);
-            }
-            
-            console.log("✅ Parsed eligibility_raw:", eligibilityRaw);
-            setEligibilityData(eligibilityRaw);
-          } else {
-            console.warn("⚠️ No eligibility records found");
-          }
-        } else {
-          console.error("❌ API error:", response.status, response.statusText);
-        }
-      } catch (err) {
-        console.error("❌ Failed to fetch eligibility data:", err);
-      }
-    };
-
-    fetchEligibilityData();
   }, []);
 
   const topics = [
@@ -180,203 +185,15 @@ export function AILawyerInterface() {
     },
   ];
 
-  // Initialize Vapi client
+  // Initialize audio element
   useEffect(() => {
-    try {
-      const vapi = new Vapi("9ef7fcb0-5bb8-4c18-8bc4-f242ed6eb0bc");
-      vapiRef.current = vapi;
-      console.log("✅ VAPI instance created successfully");
+    audioRef.current = document.getElementById("aiAudio") as HTMLAudioElement;
+  }, []);
 
-      // Ready event - VAPI is ready to accept calls
-      vapi.on("ready", () => {
-        console.log("✅ VAPI is ready to accept calls");
-      });
-
-      // Event listeners
-      vapi.on("call-start", () => {
-        if (connectionTimeoutRef.current)
-          clearTimeout(connectionTimeoutRef.current);
-        console.log(
-          "🎉 ==================== CALL-START EVENT FIRED ===================="
-        );
-        console.log("✅ WebSocket connected successfully!");
-        console.log("✅ Setting isCallActive = true");
-        callStartTimeRef.current = Date.now();
-        setIsCallActive(true);
-        setIsConnecting(false);
-        setVoiceState("listening");
-        setError(null);
-        setProcessingStatus("");
-        console.log(
-          "🎉 ==================== READY TO LISTEN ===================="
-        );
-      });
-
-      vapi.on("call-end", () => {
-        console.log("❌ Call ended - WebSocket disconnected");
-        setIsCallActive(false);
-        setIsConnecting(false);
-        setVoiceState("idle");
-        setIsMicActive(false);
-
-        // Extract insights from call for routing logic
-        if (callRef.current?.id) {
-          console.log("Call completed, ID:", callRef.current?.id);
-          // Save call ID and navigate to processing
-          localStorage.setItem("vapi_call_id", callRef.current.id);
-          console.log(
-            "💾 Saved VAPI call ID to localStorage:",
-            callRef.current.id
-          );
-        }
-
-        // Navigate to end-of-call processing after a brief delay to allow state updates
-        setTimeout(() => {
-          router.push("/end-of-call");
-        }, 500);
-      });
-
-      vapi.on("speech-start", () => {
-        console.log("🗣️ AI Speech started");
-        setVoiceState("speaking");
-      });
-
-      vapi.on("speech-end", () => {
-        console.log("🤐 AI Speech ended");
-        setVoiceState("listening");
-      });
-
-      vapi.on("volume-level", (level: number) => {
-        const volumePercent = level * 100;
-        setVolumeLevel(volumePercent);
-      });
-
-      vapi.on("message", (message: any) => {
-        console.log("Message received:", message);
-
-        // Handle transcript messages - only show final transcripts
-        if (message.type === "transcript") {
-          if (message.transcriptType === "final") {
-            const speaker = message.role === "user" ? "אתה" : "עו״ד שרה לוי";
-            const text = message.transcript;
-            if (text) {
-              setTranscript((prev) => [...prev, `${speaker}: ${text}`]);
-
-              // Analyze for topic relevance
-              const matchedTopics = topics.filter((topic) => {
-                const name = topic.topic_name.toLowerCase();
-                return text.toLowerCase().includes(" " + name.split(" ")[0]); // crude match on first word
-              });
-
-              if (matchedTopics.length > 0) {
-                console.log("📌 Relevant BTL Topics Detected:");
-                matchedTopics.forEach((t) =>
-                  console.log(`➡️ ${t.topic_name} [${t.topic_id}]`)
-                );
-              }
-
-              // Continue with claim type detection
-              const keywords = [
-                "עבודה",
-                "עבודתי",
-                "מעסיק",
-                "תאונה",
-                "במקום העבודה",
-              ];
-              if (keywords.some((keyword) => text.includes(keyword))) {
-                setClaimType("work-injury");
-              }
-
-              if (
-                text.includes("רגל") ||
-                text.includes("הליכה") ||
-                text.includes("ניידות")
-              ) {
-                setEligibleBenefits((prev) => ({ ...prev, mobility: true }));
-              }
-              if (
-                text.includes("עזרה") ||
-                text.includes("טיפול") ||
-                text.includes("תלות")
-              ) {
-                setEligibleBenefits((prev) => ({
-                  ...prev,
-                  specialServices: true,
-                }));
-              }
-            }
-          }
-        } else if (message.type === "function-call") {
-          console.log("Function called:", message.functionCall);
-        }
-      });
-
-      vapi.on("error", (error: any) => {
-        console.error(
-          "💥 ==================== ERROR EVENT FIRED ===================="
-        );
-        console.error("❌ VAPI Error Type:", error?.type);
-        console.error("❌ VAPI Error Message:", error?.message);
-        console.error("❌ Full Error Object:", JSON.stringify(error, null, 2));
-
-        let errorMessage = "אירעה שגיאה במהלך השיחה";
-
-        if (
-          error?.type === "daily-error" ||
-          error?.type === "daily-call-join-error"
-        ) {
-          const errMsg = String(
-            error?.error?.message || error?.error?.msg || ""
-          );
-          console.error("📌 Daily.co Error Message:", errMsg);
-          if (errMsg.includes("room was deleted") || errMsg.includes("room")) {
-            errorMessage =
-              "❌ שגיאת חיבור לשיחה (room). אנא בדוק את הגדרות VAPI שלך או נסה שוב בעוד כמה רגעים.";
-          } else {
-            errorMessage = `Connection error: ${
-              error?.error?.errorMsg || error?.error?.msg || "Unknown error"
-            }`;
-          }
-        } else if (error?.type === "start-method-error") {
-          errorMessage =
-            "❌ Failed to start call. Please check:\n\n1. Assistant ID is correct\n2. Your Vapi account has credits\n3. Assistant is properly configured";
-        } else {
-          errorMessage =
-            error?.message || error?.error?.message || JSON.stringify(error);
-        }
-
-        console.warn(errorMessage);
-        setIsConnecting(false);
-        setIsCallActive(false);
-        setVoiceState("idle");
-        console.error(
-          "💥 ==================== ERROR HANDLED ===================="
-        );
-      });
-    } catch (err) {
-      console.error("❌ Failed to initialize VAPI:", err);
-      setError("נכשל בטעינת מערכת השיחה. רענן את הדף.");
-    }
-
+  // Cleanup on unmount
+  useEffect(() => {
     return () => {
-      // Cleanup on unmount - use safer approach
-      if (connectionTimeoutRef.current) {
-        clearTimeout(connectionTimeoutRef.current);
-      }
-
-      if (vapiRef.current) {
-        try {
-          // Only stop if there's an active call
-          if (callRef.current) {
-            vapiRef.current.stop();
-          }
-        } catch (e) {
-          // Ignore Krisp/WASM cleanup errors on unmount
-          console.debug("Cleanup on unmount:", e);
-        }
-        vapiRef.current = null;
-      }
-      callRef.current = null;
+      cleanup();
     };
   }, []);
 
@@ -441,18 +258,12 @@ export function AILawyerInterface() {
 
   const requestMicPermission = async () => {
     try {
-      console.log("🎤 Requesting microphone permission...");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      console.log("✅ Microphone permission granted!");
       stream.getTracks().forEach((track) => track.stop());
       setHasMicPermission(true);
       setError(null);
       return true;
     } catch (error: any) {
-      console.error("❌ Microphone permission denied:", error);
-      console.error("Error name:", error?.name);
-      console.error("Error message:", error?.message);
-
       if (error?.name === "NotAllowedError") {
         setError(
           "❌ הרשאת המיקרופון נדחתה. אנא עבור להגדרות ה-browser וחזור על ההרשאה."
@@ -469,22 +280,33 @@ export function AILawyerInterface() {
     }
   };
 
-  const startCall = async () => {
-    console.log("🎯 [BUTTON CLICK] toggleMic → startCall() invoked");
-
-    if (!vapiRef.current) {
-      console.error("❌ VAPI instance is NULL - not initialized!");
-      setError("מערכת השיחה לא מוכנה. רענן את הדף.");
-      return;
+  const cleanup = () => {
+    if (dataChannelRef.current) {
+      dataChannelRef.current.close();
+      dataChannelRef.current = null;
     }
+    
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+    
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop());
+      micStreamRef.current = null;
+    }
+    
+    setIsCallActive(false);
+    setIsConnecting(false);
+    setVoiceState("idle");
+    setIsMicActive(false);
+    setProcessingStatus("");
+  };
 
-    console.log("✅ VAPI instance exists:", vapiRef.current);
-
+  const startCall = async () => {
     if (hasMicPermission === false) {
-      console.log("⚠️ Mic permission is FALSE - requesting permission...");
       const granted = await requestMicPermission();
       if (!granted) {
-        console.log("❌ User denied permission or permission already denied");
         return;
       }
       return;
@@ -495,258 +317,172 @@ export function AILawyerInterface() {
     setIsConnecting(true);
     setProcessingStatus("מתחבר לעורך דין AI...");
     setError(null);
-    console.log("🔄 State reset: isConnecting=true, transcript=[]");
 
     try {
-      console.log("🎤 Creating VAPI call config...");
+      // Create RTCPeerConnection FIRST
+      pcRef.current = new RTCPeerConnection();
 
-      // Build patient medical record context from eligibility data
-      let patientMedicalContext = "";
-      if (eligibilityData) {
-        // Extract from the root level structure (not nested under scoring)
-        const docAnalysis = eligibilityData.document_analysis || {};
-        const strengths = eligibilityData.strengths || [];
-        const weaknesses = eligibilityData.weaknesses || [];
-        const requiredSteps = eligibilityData.required_next_steps || [];
-        const missingInfo = eligibilityData.missing_information || [];
-        const ruleReferences = eligibilityData.rule_references || [];
-        
-        console.log("🏥 Using eligibility data:", eligibilityData);
-        
-        const strengthsList = Array.isArray(strengths) && strengths.length > 0
-          ? strengths.map((s: string) => `- ${s}`).join('\n')
-          : 'No documented strengths yet';
-          
-        const weaknessList = Array.isArray(weaknesses) && weaknesses.length > 0
-          ? weaknesses.map((w: string) => `- ${w}`).join('\n')
-          : 'No documented weaknesses yet';
-          
-        const requiredStepsList = Array.isArray(requiredSteps) && requiredSteps.length > 0
-          ? requiredSteps.map((step: string) => `- ${step}`).join('\n')
-          : 'None specified';
-          
-        const missingInfoList = Array.isArray(missingInfo) && missingInfo.length > 0
-          ? missingInfo.map((info: string) => `- ${info}`).join('\n')
-          : 'None identified';
-          
-        const ruleRefsList = Array.isArray(ruleReferences) && ruleReferences.length > 0
-          ? ruleReferences.map((ref: any) => `**${ref.section}:** "${ref.quote}" - ${ref.relevance}`).join('\n\n')
-          : 'No rule references';
-          
-        const docAnalysisStr = docAnalysis && Object.keys(docAnalysis).length > 0 
-          ? JSON.stringify(docAnalysis, null, 2) 
-          : 'Document analysis pending - user has not yet uploaded medical documentation';
-        
-        patientMedicalContext = `\n\n### PATIENT'S MEDICAL RECORD\n\n**Eligibility Status:** ${eligibilityData.eligibility_status || 'Unknown'}\n**Eligibility Score:** ${eligibilityData.eligibility_score || 'N/A'}\n**Confidence:** ${eligibilityData.confidence || 'N/A'}%\n\n**Document Analysis:**\n${docAnalysisStr}\n\n**Strengths:**\n${strengthsList}\n\n**Weaknesses:**\n${weaknessList}\n\n**Missing Information:**\n${missingInfoList}\n\n**Required Next Steps:**\n${requiredStepsList}\n\n**Legal Rule References:**\n${ruleRefsList}\n\nUse this information to guide your interview and identify gaps in the patient's documentation. Focus on addressing the weaknesses and required next steps during this call.`;
-      } else {
-        console.warn("⚠️ No eligibility data available - using generic prompt");
-      }
-
-      // Fallback prompt if database fetch failed
-      const fallbackPrompt = `### ROLE
-You are "Sarah Levy" (עו״ד שרה לוי), the Senior Intake & Strategy Agent for the "Zero-Touch Claims System."
-Your goal is to replace a traditional attorney by executing the **Maximization Principle**: securing the highest possible financial benefit and maximum Retroactivity (up to 12 months).
-You are interviewing the claimant to prepare their "Statement of Claims" for the Bituach Leumi Medical Committee.
-
-### KNOWLEDGE BASE (BTL REGULATIONS)
-You have access to the following knowledge base regarding Bituach Leumi disability claims:
-- **Medical Committee Guidelines:** Understand the criteria for disability percentages, retroactivity rules, and required documentation.
-- **Maximization Principle:** Strategies to maximize claim amounts through stacking disabilities, proving impairment of earning capacity (IEL), and securing retroactivity.
-- **Common Pitfalls:** Awareness of common mistakes claimants make that lead to reduced benefits or claim denials.
-
-### CORE STRATEGY: THE 3 PILLARS OF MAXIMIZATION
-Your interview must satisfy these three legal priorities in order:
-
-**P1: RETROACTIVITY (The "Money Left on the Table")**
-- **Goal:** Secure 12 months of back-pay.
-- **Action:** Ask: "When was the *very first* time a doctor diagnosed this?" and "When did you first start losing income because of it?"
-- **Logic:** We need to push the "Claim Start Date" back as far as legally possible (up to 1 year).
-
-**P2: MEDICAL THRESHOLD (>20% Stacking)**
-- **Goal:** Cross the 20% medical disability threshold to unlock Rehabilitation.
-- **Action - Disability Stacking:** Do not settle for one condition. If they have ADHD, ask about "Anxiety" or "Depression." If they have Back Pain, ask about "Radicular pain in the legs" (Neuropathy).
-- **Why:** We need to "stack" multiple small percentages to cross 20% weighted disability.
-
-**P3: IEL (Impairment of Earning Capacity)**
-- **Goal:** Prove functional inability to work (50%-100% incapacity).
-- **Action:** Shift focus from "pain" to "function."
-- **Key Question:** "Describe a specific instance where your condition caused you to **quit a job, miss a promotion, or fail a project**."
-- **Sheram Check:** Ask: "Do you need physical help from another person for daily tasks like dressing, eating, or bathing?" (Eligibility for Special Services).
-
-### INTERVIEW FLOW
-1. **Anchor Diagnosis:** "What is the main medical condition preventing you from working?"
-2. **The "Functional" Deep Dive (IEL Focus):**
-    - *Wrong Question:* "Does it hurt?"
-    - *Right Question:* "Does the pain stop you from sitting for 8 hours? Did you have to reduce your shift hours?"
-3. **The "Secondary" Hunt (Stacking):**
-    - "Does this physical condition affect your mood, sleep, or concentration?" (Aiming for psychiatric conditions).
-    - "Do your medications cause side effects like stomach issues or fatigue?"
-4. **Vocational Rehab Check:**
-    - If the user is young or a student: "Are you currently studying? Would you be interested in Bituach Leumi paying for your degree?" (Maximize rehabilitation benefits).
-
-### BEHAVIOR & TONE
-- **Tone:** Professional, Empathetic, but "Coaching."
-- **Stress-Test:** If their answer is vague ("I just can't work"), challenge them gently: "To win this claim, the committee needs specifics. Tell me exactly *why* you couldn't finish your last shift."
-- **One Question at a Time:** Keep it conversational.
-
-### RESTRICTIONS
-- Do NOT list documents orally.
-- Do NOT mention "JSON" or technical backend terms.
-- Focus purely on extracting the **Date of Onset**, **Functional Loss**, and **Secondary Conditions**.`;
-
-      // Use DB-fetched prompt or fallback, always append patient medical context
-      const systemPrompt = agentConfig?.prompt || fallbackPrompt;
-      const finalPrompt = `${systemPrompt}\n\nPatient's medical record: ${patientMedicalContext}.`;
-      
-      // Use DB-fetched model and provider or defaults
-      const modelToUse = agentConfig?.model || "gpt-4o";
-      const providerToUse = agentConfig?.provider || "openai";
-      
-      console.log("🤖 Using model:", modelToUse, "provider:", providerToUse);
-      console.log("📝 Prompt source:", agentConfig ? "database" : "fallback");
-
-      const callConfig = {
-        firstMessageMode: "assistant-speaks-first-with-model-generated-message",
-        model: {
-          provider: providerToUse,
-          model: modelToUse,
-          messages: [
-            {
-              role: "system",
-              content: finalPrompt,
-            },
-          ],
-        },
-        voice: {
-          provider: "11labs",
-          voiceId: "paula",
-        },
-        analysisPlan: {
-          structuredDataPlan: {
-            enabled: true,
-            schema: {
-              type: "object",
-              properties: {
-                case_summary: {
-                  type: "string",
-                  description: "סיכום משפטי מקצועי של מצב התובע",
-                },
-                estimated_claim_amount: {
-                  type: "string",
-                  description: "הערכה של סכום התביעה",
-                },
-                documents_requested_list: {
-                  type: "array",
-                  description: "רשימת מסמכים נדרשים ספציפיים",
-                  items: { type: "string" },
-                },
-                key_legal_points: {
-                  type: "array",
-                  description: "עובדות משפטיות קריטיות שנחלצו",
-                  items: { type: "string" },
-                },
-                risk_assessment: {
-                  type: "string",
-                  description: "הערכת כושר התביעה",
-                  enum: ["High Viability", "Low Viability", "Needs More Info"],
-                },
-                related_topics: {
-                  type: "array",
-                  description: `Which BTL topics are relevant to this case. Allowed topics: [
-  {
-    "topic_id": "disab_2",
-    "description": "General rules and procedures for determining disability percentages, including committee structure and appeals."
-  },
-  {
-    "topic_id": "neuro_3",
-    "description": "Neurological system impairments including brain injuries, paralysis, epilepsy, and motor/sensory dysfunctions."
-  },
-  {
-    "topic_id": "psych_4",
-    "description": "Mental health disorders such as PTSD, depression, anxiety, and cognitive impairments affecting social/work function."
-  },
-  {
-    "topic_id": "upperlimbs_5",
-    "description": "Impairments of the arms, shoulders, elbows, wrists, and hands due to injury, amputation, or functional loss."
-  },
-  {
-    "topic_id": "lowerlimbs_6",
-    "description": "Impairments of hips, knees, ankles, and feet including joint fusion, fractures, and gait disorders."
-  },
-  {
-    "topic_id": "ent_7",
-    "description": "Disorders related to hearing, balance, smell, and speech, including ear and throat impairments."
-  },
-  {
-    "topic_id": "oral_8",
-    "description": "Tooth loss, jaw injuries, and oral cavity impairments including biting, chewing, or speaking difficulties."
-  },
-  {
-    "topic_id": "scars_9",
-    "description": "Scars and skin diseases including disfigurement, ulceration, infections, burns, and chronic dermatologic conditions."
-  } return topic_id only.
-]`,
-                  items: { type: "string" },
-                }
-              },
-              required: [
-                "case_summary",
-                "documents_requested_list",
-                "key_legal_points",
-                "related_topics"
-              ],
-            },
-            timeoutSeconds: 60,
-          },
-        },
+      // Handle incoming AI audio stream
+      pcRef.current.ontrack = (event) => {
+        console.log("🔊 Received audio track from OpenAI");
+        if (audioRef.current) {
+          audioRef.current.srcObject = event.streams[0];
+          // Explicitly play the audio (required for some browsers)
+          audioRef.current.play().catch(err => {
+            console.warn("⚠️ Audio autoplay blocked, trying to enable:", err);
+          });
+        }
       };
 
-      console.log(
-        "📞 [CRITICAL] About to call vapiRef.current.start() with model: gpt-3.5-turbo", callConfig
-      );
-      console.log("🎧 Voice config: 11labs (paula)");
+      micStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // This should immediately return a call object and trigger call-start event when connected
-      const response = await vapiRef.current.start(callConfig);
+      // Send microphone audio
+      micStreamRef.current.getTracks().forEach(track => {
+        pcRef.current!.addTrack(track, micStreamRef.current!);
+      });
 
-      console.log(
-        "🎉 [SUCCESS] vapiRef.current.start() returned! Response object:",
-        response
-      );
-      console.log("📞 Call ID from response:", response?.id);
+      // Create data channel for events
+      dataChannelRef.current = pcRef.current.createDataChannel("oai-events");
 
-      callRef.current = response;
-      setIsMicActive(true);
+      dataChannelRef.current.onopen = () => {
+        callStartTimeRef.current = Date.now();
+        setIsCallActive(true);
+        setIsConnecting(false);
+        setVoiceState("listening");
+        setIsMicActive(true);
+        setProcessingStatus("");
+        
+        // Ensure audio element is ready to play
+        if (audioRef.current) {
+          audioRef.current.volume = 1.0;
+        }
+      };
 
-      console.log(
-        "⏳ Now waiting for call-start EVENT to fire... (this sets isCallActive=true)"
+      dataChannelRef.current.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+
+        // User - Final transcription
+        if (msg.type === "conversation.item.input_audio_transcription.completed") {
+          const userText = msg.text || msg.transcript;
+          if (userText) {
+            setTranscript((prev) => [...prev, `אתה: ${userText}`]);
+            setVoiceState("listening");
+          }
+        }
+
+        // AI - Final transcription  
+        if (msg.type === "conversation.item.assistant.transcription.completed") {
+          const aiText = msg.text || msg.transcript || msg?.part?.transcript;
+          if (aiText) {
+            setTranscript((prev) => [...prev, `עו״ד שרה לוי: ${aiText}`]);
+            setVoiceState("speaking");
+          }
+        }
+
+        // AI - Output item done (contains transcript in item.content[0].transcript)
+        if (msg.type === "response.output_item.done") {
+          if (msg.item && msg.item.content && msg.item.content[0]) {
+            const aiText = msg.item.content[0].transcript;
+            if (aiText) {
+              setTranscript((prev) => [...prev, `עו״ד שרה לוי: ${aiText}`]);
+              setVoiceState("speaking");
+            }
+          }
+        }
+
+        // Response audio started - AI is speaking
+        if (msg.type === "response.audio.delta" || msg.type === "response.audio_transcript.delta") {
+          setVoiceState("speaking");
+        }
+
+        // Response completed - AI finished speaking
+        if (msg.type === "response.audio.done" || msg.type === "response.done") {
+          setVoiceState("listening");
+        }
+
+        // Input audio started - User is speaking
+        if (msg.type === "input_audio_buffer.speech_started") {
+          setVoiceState("listening");
+        }
+
+        // Error handling
+        if (msg.type === "error") {
+          console.error("❌ OpenAI Error:", msg.error || msg.message);
+          setError(msg.error?.message || msg.message || "Unknown error");
+        }
+      };
+
+      // Get auth token from localStorage
+      const token = localStorage.getItem("access_token");
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json"
+      };
+      
+      // Only add authorization if we have a token
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+        console.log("📋 Sending auth token to /offer endpoint");
+      } else {
+        console.log("ℹ️ No auth token available, calling /offer without authentication");
+      }
+
+      const tokenRes = await fetch(`${BACKEND_BASE_URL}/offer`, {
+        method: "POST",
+        headers: headers
+      });
+
+      if (!tokenRes.ok) {
+        throw new Error(`Failed to get session token: ${tokenRes.statusText}`);
+      }
+
+      const { client_secret } = await tokenRes.json();
+
+      // Create offer
+      const offer = await pcRef.current.createOffer();
+      await pcRef.current.setLocalDescription(offer);
+
+      setProcessingStatus("מתחבר ל-OpenAI...");
+
+      // Send offer to OpenAI
+      const sdpRes = await fetch(
+        "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${client_secret}`,
+            "Content-Type": "application/sdp"
+          },
+          body: offer.sdp
+        }
       );
-      console.log(
-        "⏳ If nothing happens for 8 seconds, check console for errors or network issues"
-      );
+
+      if (!sdpRes.ok) {
+        throw new Error(`OpenAI connection failed: ${sdpRes.statusText}`);
+      }
+
+      const answerSDP = await sdpRes.text();
+      await pcRef.current.setRemoteDescription({ type: "answer", sdp: answerSDP });
+
+      setProcessingStatus("מתחבר...");
+
     } catch (error: any) {
-      console.error(
-        "💥 [CRITICAL ERROR] vapiRef.current.start() threw an exception!"
-      );
-      console.error("❌ Error object:", error);
-      console.error("❌ Error message:", error?.message);
-      console.error("❌ Error type:", error?.type);
+      console.error("❌ Call failed:", error?.message);
 
       let errorMsg = "שגיאה לא ידועה";
       if (
         error?.message?.includes("microphone") ||
-        error?.message?.includes("permission")
+        error?.message?.includes("permission") ||
+        error?.name === "NotAllowedError"
       ) {
         errorMsg = "אנא הענק הרשאה למיקרופון";
         setHasMicPermission(false);
         await requestMicPermission();
       } else if (
         error?.message?.includes("network") ||
-        error?.message?.includes("connection")
+        error?.message?.includes("connection") ||
+        error?.message?.includes("Failed to fetch")
       ) {
         errorMsg = "בעיית חיבור לאינטרנט. בדוק את הגדרות הרשת שלך";
-      } else if (error?.type === "start-method-error") {
-        errorMsg = "נכשל בהפעלת השיחה. בדוק את הגדרות VAPI שלך";
       } else {
         errorMsg = error?.message || "שגיאה לא ידועה";
       }
@@ -754,42 +490,35 @@ Your interview must satisfy these three legal priorities in order:
       setError(`❌ ${errorMsg}`);
       setIsConnecting(false);
       setProcessingStatus("");
+      cleanup();
     }
   };
 
-  const endCall = () => {
-    // Save call ID to localStorage BEFORE clearing the ref
-    const vapiCallId = callRef.current?.id || "";
-    if (vapiCallId) {
-      localStorage.setItem("vapi_call_id", vapiCallId);
-      console.log("💾 Saved VAPI call ID to localStorage:", vapiCallId);
-    } else {
-      console.warn("⚠️ No VAPI call ID available to save");
-    }
+  const endCall = async () => {
+    // Save call data before cleanup
+    const callData = {
+      transcript: transcript,
+      duration: callStartTimeRef.current ? Math.floor((Date.now() - callStartTimeRef.current) / 1000) : 0,
+      ended_at: new Date().toISOString()
+    };
+    
+    // Store in localStorage for the end-of-call page to process
+    localStorage.setItem('openai_call_data', JSON.stringify(callData));
+    
+    setIsCallActive(false);
+    cleanup();
 
-    if (vapiRef.current && isCallActive) {
-      try {
-        vapiRef.current.stop();
-      } catch (e) {
-        // Ignore Krisp/WASM cleanup errors
-        console.debug("Call end cleanup:", e);
-      }
-      setIsCallActive(false);
-      setIsMicActive(false);
-      setVoiceState("idle");
-    }
-
-    callRef.current = null;
+    // Navigate immediately to end-of-call processing
+    router.push("/end-of-call");
   };
 
   const toggleMute = () => {
-    if (vapiRef.current && isCallActive) {
-      try {
-        vapiRef.current.setMuted(!isMuted);
-        setIsMuted(!isMuted);
-      } catch (e) {
-        console.warn("Error toggling mute:", e);
-      }
+    if (micStreamRef.current && isCallActive) {
+      const audioTracks = micStreamRef.current.getAudioTracks();
+      audioTracks.forEach(track => {
+        track.enabled = isMuted; // Toggle enabled state
+      });
+      setIsMuted(!isMuted);
     }
   };
 
@@ -802,23 +531,42 @@ Your interview must satisfy these three legal priorities in order:
   };
 
   const handleHangup = () => {
+    // Always save call data before navigating
+    const callData = {
+      transcript: transcript,
+      duration: callStartTimeRef.current ? Math.floor((Date.now() - callStartTimeRef.current) / 1000) : 0,
+      ended_at: new Date().toISOString()
+    };
+    
+    // Store in localStorage for the end-of-call page to process
+    localStorage.setItem('openai_call_data', JSON.stringify(callData));
+    
     if (isCallActive) {
-      endCall();
+      // Clean up active call resources
+      cleanup();
     }
-
-    // Always navigate to end-of-call for processing
+    
+    // Navigate immediately to end-of-call for processing
     router.push("/end-of-call");
   };
 
   const handleSaveAndExit = () => {
     if (isCallActive) {
-      endCall();
+      cleanup();
     }
     router.push("/incomplete-intake");
   };
 
   return (
     <>
+      {/* Hidden audio element for AI voice output */}
+      <audio 
+        id="aiAudio" 
+        autoPlay 
+        playsInline
+        style={{ display: 'none' }}
+      />
+      
       <div
         className="relative h-screen w-full overflow-hidden bg-slate-950"
         dir={mounted && isRTL ? "rtl" : "ltr"}
@@ -857,6 +605,22 @@ Your interview must satisfy these three legal priorities in order:
           </motion.header>
         )}
 
+        {/* Toast Notification */}
+        <AnimatePresence>
+          {toastMessage && (
+            <motion.div
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="absolute top-24 left-1/2 z-30 -translate-x-1/2 w-96"
+            >
+              <div className="bg-blue-500/90 backdrop-blur-md text-white px-6 py-4 rounded-xl shadow-2xl border border-blue-400">
+                <p className="text-sm font-medium text-center">{toastMessage}</p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Error Display */}
         {error && (
           <motion.div
@@ -885,28 +649,6 @@ Your interview must satisfy these three legal priorities in order:
           >
             <div className="bg-blue-500/90 backdrop-blur-md text-white px-6 py-3 rounded-xl shadow-2xl">
               <p className="text-sm font-medium">{processingStatus}</p>
-            </div>
-          </motion.div>
-        )}
-
-        {/* Volume Indicator - Only show during active call */}
-        {isCallActive && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="absolute top-32 left-1/2 z-20 -translate-x-1/2 w-64"
-          >
-            <div className="bg-slate-900/60 backdrop-blur-xl px-4 py-3 rounded-lg border border-slate-700/50">
-              <div className="flex items-center justify-between text-sm text-slate-300 mb-2">
-                <Volume2 className="h-4 w-4" />
-                <span className="font-medium">{Math.round(volumeLevel)}%</span>
-              </div>
-              <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-green-400 to-green-600 transition-all duration-150 rounded-full"
-                  style={{ width: `${volumeLevel}%` }}
-                />
-              </div>
             </div>
           </motion.div>
         )}
@@ -950,6 +692,70 @@ Your interview must satisfy these three legal priorities in order:
             </div>
           </motion.div>
         )}
+
+        {/* End-of-Call Loader Overlay */}
+        <AnimatePresence>
+          {isCallEnding && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-slate-950/95 backdrop-blur-xl"
+            >
+              {/* Animated loading spinner */}
+              <motion.div
+                className="relative w-24 h-24 mb-8"
+                animate={{ rotate: 360 }}
+                transition={{
+                  duration: 2,
+                  repeat: Number.POSITIVE_INFINITY,
+                  ease: "linear"
+                }}
+              >
+                <div className="absolute inset-0 rounded-full border-4 border-slate-700/30" />
+                <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-blue-500 border-r-blue-500" />
+              </motion.div>
+
+              {/* Loading text */}
+              <motion.div
+                className="text-center space-y-3"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+              >
+                <h3 className="text-xl font-semibold text-white">
+                  {language === "he" ? "מעבדת את השיחה..." : "Processing your call..."}
+                </h3>
+                <p className="text-sm text-slate-400">
+                  {language === "he" 
+                    ? "שומרת נתונים ובודקת זכאות..." 
+                    : "Saving data and checking eligibility..."}
+                </p>
+              </motion.div>
+
+              {/* Progress indicator dots */}
+              <motion.div
+                className="flex gap-2 mt-8"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.4 }}
+              >
+                {[0, 1, 2].map((i) => (
+                  <motion.div
+                    key={i}
+                    className="w-2 h-2 rounded-full bg-blue-500"
+                    animate={{ scale: [1, 1.2, 1], opacity: [0.6, 1, 0.6] }}
+                    transition={{
+                      duration: 1.2,
+                      repeat: Number.POSITIVE_INFINITY,
+                      delay: i * 0.2
+                    }}
+                  />
+                ))}
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <div className="absolute left-8 top-24 z-20 space-y-3">
           {floatingTags.map((tag) => (

@@ -73,8 +73,8 @@ export function EndOfCallTransition() {
   const fetchAndProcessCallData = async () => {
     try {
       const token = localStorage.getItem("access_token")
-      const callId = localStorage.getItem("vapi_call_id")
       const caseId = localStorage.getItem("case_id")
+      const callData = localStorage.getItem("openai_call_data")
 
       // Check authentication first
       if (!token) {
@@ -82,7 +82,6 @@ export function EndOfCallTransition() {
         const errorMsg = isRTL ? "נדרשת התחברות. מפנה לדף הבית..." : "Authentication required. Redirecting to home..."
         if (isMountedRef.current) {
           setError(errorMsg)
-          // Redirect to home/login instead of ai-lawyer
           setTimeout(() => {
             router.push("/")
           }, 1500)
@@ -90,9 +89,9 @@ export function EndOfCallTransition() {
         return
       }
 
-      if (!callId) {
-        console.error("❌ Missing vapi_call_id")
-        const errorMsg = isRTL ? "לא נמצא מזהה שיחה. נא להתחיל מחדש." : "Call ID not found. Please start over."
+      if (!callData) {
+        console.error("❌ Missing call data from OpenAI session")
+        const errorMsg = isRTL ? "לא נמצא מידע על השיחה. נא להתחיל מחדש." : "Call data not found. Please start over."
         if (isMountedRef.current) {
           setError(errorMsg)
           setTimeout(() => {
@@ -114,7 +113,7 @@ export function EndOfCallTransition() {
         return
       }
 
-      console.log("🔄 Starting to poll for call details, call_id:", callId)
+      console.log("🔄 Sending call data for analysis, case_id:", caseId)
 
       // Show processing messages with intervals
       messageIntervalRef.current = setInterval(() => {
@@ -128,157 +127,64 @@ export function EndOfCallTransition() {
         }
       }, 1500)
 
-      // Poll for call details and analysis
-      let attempts = 0
-      const maxAttempts = 40  // Increased for job queue polling
-      let pollSuccess = false
-      let currentJobId: string | null = null
-
-      while (attempts < maxAttempts && !pollSuccess && isMountedRef.current) {
-        try {
-          console.log(`🔄 Polling call details (attempt ${attempts + 1}/${maxAttempts})...`)
-          
-          const response = await fetch(
-            `${BACKEND_BASE_URL}/vapi/call-details/${callId}?case_id=${caseId}`,
-            {
-              method: "GET",
-              headers: {
-                Authorization: `Bearer ${token}`,
-              },
-            }
-          )
-
-          if (response.ok) {
-            const result = await response.json()
-            console.log("✅ Call details response:", result)
-
-            // Check if analysis is complete (status === 'ok')
-            if (result.status === "ok" && result.call && result.analysis) {
-              console.log("📝 Call transcript ready and analyzed!")
-              
-              const callSummary = result.analysis
-              
-              if (!callSummary) {
-                console.error("❌ NO CALL SUMMARY in analysis result!")
-                throw new Error("No call summary in analysis result")
-              }
-
-              console.log("✅ Call summary extracted successfully")
-              localStorage.setItem("call_summary", JSON.stringify(callSummary))
-              localStorage.removeItem("vapi_call_id")
-
-              pollSuccess = true
-              
-              // Clear interval
-              if (messageIntervalRef.current) {
-                clearInterval(messageIntervalRef.current)
-                messageIntervalRef.current = null
-              }
-              
-              // Wait then mark as complete
-              await new Promise((resolve) => setTimeout(resolve, 2000))
-
-              if (isMountedRef.current) {
-                setIsComplete(true)
-                setShouldNavigate(true)
-              }
-              return
-            }
-            
-            // Check if analysis is in progress (status === 'analyzing')
-            if (result.status === "analyzing" && result.job_id) {
-              console.log(`⏳ Analysis in progress, job_id: ${result.job_id}`)
-              currentJobId = result.job_id
-              
-              // Poll the job status endpoint instead
-              const jobResponse = await fetch(
-                `${BACKEND_BASE_URL}/jobs/${currentJobId}`,
-                {
-                  headers: {
-                    Authorization: `Bearer ${token}`,
-                  },
-                }
-              )
-              
-              if (jobResponse.ok) {
-                const jobStatus = await jobResponse.json()
-                console.log(`📊 Job status: ${jobStatus.status}, progress: ${jobStatus.progress}%`)
-                
-                // Check if job completed
-                if (jobStatus.status === "completed" && jobStatus.result) {
-                  console.log("✅ Job completed! Using result from job...")
-                  
-                  // Use the analysis result directly from the job
-                  const analysisResult = jobStatus.result.analysis || jobStatus.result
-                  
-                  if (analysisResult) {
-                    console.log("✅ Analysis extracted from job result")
-                    localStorage.setItem("call_summary", JSON.stringify(analysisResult))
-                    localStorage.removeItem("vapi_call_id")
-                    pollSuccess = true
-                    
-                    if (messageIntervalRef.current) {
-                      clearInterval(messageIntervalRef.current)
-                      messageIntervalRef.current = null
-                    }
-                    
-                    await new Promise((resolve) => setTimeout(resolve, 2000))
-                    
-                    if (isMountedRef.current) {
-                      setIsComplete(true)
-                      setShouldNavigate(true)
-                    }
-                    return
-                  }
-                } else if (jobStatus.status === "failed") {
-                  console.error("❌ Job failed:", jobStatus.error)
-                  throw new Error(jobStatus.error || "Analysis job failed")
-                }
-                // If still running, continue polling
-              }
-            }
-          } else {
-            // Handle non-OK responses
-            if (response.status === 401) {
-              console.error("❌ Authentication failed")
-              const errorMsg = isRTL ? "נדרשת התחברות מחדש" : "Authentication expired. Please login again."
-              if (isMountedRef.current) {
-                setError(errorMsg)
-                setTimeout(() => {
-                  localStorage.removeItem("access_token")
-                  router.push("/")
-                }, 2000)
-              }
-              return
-            }
-            console.error(`❌ Response not OK: ${response.status}`)
-          }
-
-          attempts++
-          if (attempts < maxAttempts && isMountedRef.current) {
-            // Shorter poll interval for job queue (3 seconds)
-            await new Promise((resolve) => setTimeout(resolve, 3000))
-          }
-        } catch (err: any) {
-          console.error("❌ Error polling call details:", err.message)
-          attempts++
-          if (attempts < maxAttempts && isMountedRef.current) {
-            await new Promise((resolve) => setTimeout(resolve, 3000))
-          }
-        }
-      }
-
-      // Polling failed
-      if (messageIntervalRef.current) {
-        clearInterval(messageIntervalRef.current)
-        messageIntervalRef.current = null
-      }
+      // Parse call data
+      const parsedCallData = JSON.parse(callData)
       
-      if (isMountedRef.current) {
-        const errorMsg = isRTL ? "לא הצלחנו לקבל את פרטי השיחה. נא לנסות שוב." : "Could not retrieve call details. Please try again."
-        setError(errorMsg)
-        setShouldNavigate(true)
+      // Send call data to backend for analysis
+      console.log("📤 Posting call details to backend...")
+      
+      const response = await fetch(
+        `${BACKEND_BASE_URL}/cases/${caseId}/call-details`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            transcript: parsedCallData.transcript,
+            duration: parsedCallData.duration,
+            timestamp: parsedCallData.ended_at,
+            call_id: `openai-${Date.now()}` // Generate unique ID for OpenAI calls
+          })
+        }
+      )
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        console.error("❌ Failed to submit call data:", response.status, errorData)
+        throw new Error(errorData.detail || `Failed to process call: ${response.statusText}`)
       }
+
+      const result = await response.json()
+      console.log("✅ Call analysis complete:", result)
+
+      if (result.status === "ok" && result.analysis) {
+        console.log("📝 Call analyzed successfully!")
+        
+        const callSummary = result.analysis
+        
+        // Save to localStorage for the next page
+        localStorage.setItem("call_summary", JSON.stringify(callSummary))
+        localStorage.removeItem("openai_call_data") // Clean up
+
+        // Clear interval
+        if (messageIntervalRef.current) {
+          clearInterval(messageIntervalRef.current)
+          messageIntervalRef.current = null
+        }
+        
+        // Wait then mark as complete
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+
+        if (isMountedRef.current) {
+          setIsComplete(true)
+          setShouldNavigate(true)
+        }
+      } else {
+        throw new Error("Analysis incomplete or missing from response")
+      }
+
     } catch (err: any) {
       console.error("❌ Error processing call data:", err)
       if (messageIntervalRef.current) {

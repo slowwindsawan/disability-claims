@@ -234,11 +234,11 @@ Provide structured, actionable output.',
     true
 );
 
--- 9. VAPI System Prompt (Main Assistant)
+-- 9. Interview Voice Agent (Main Assistant)
 INSERT INTO public.agents (name, description, prompt, model, is_active) VALUES
 (
-    'vapi_main_assistant',
-    'Main system prompt for VAPI voice assistant conducting intake interviews',
+    'interview_voice_agent',
+    'Main system prompt for Interview Voice Agent conducting intake interviews',
     'You are a compassionate and professional intake specialist for a disability claims law firm in Israel. You are conducting a phone interview with a potential client.
 
 **Your Role:**

@@ -48,6 +48,7 @@ interface Agent {
 const modelOptions = [
   { value: 'gpt-4o', label: 'GPT-4o', description: 'Most capable model' },
   { value: 'gpt-4o-mini', label: 'GPT-4o Mini', description: 'Fast and affordable' },
+  { value: 'gpt-5-nano', label: 'GPT-5 Nano', description: 'Reasoning model with advanced capabilities' },
   { value: 'gpt-4', label: 'GPT-4', description: 'Previous generation' },
   { value: 'gpt-4-turbo', label: 'GPT-4 Turbo', description: 'Faster GPT-4' },
   { value: 'o1-preview', label: 'O1 Preview', description: 'Reasoning model' },

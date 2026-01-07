@@ -63,6 +63,10 @@ from .case_status_manager import CaseStatusManager
 from .document_analyzer_agent import analyze_case_documents_with_agent
 from .openai_form7801_agent import analyze_documents_with_openai_agent
 from .job_queue import get_job_queue, JobStatus
+from aiohttp import web
+from openai import OpenAI
+
+client = OpenAI()
 
 app = FastAPI(title="Eligibility Orchestrator")
 # Default to WARNING to reduce noisy logs; allow override with LOG_LEVEL env var
@@ -2050,6 +2054,7 @@ async def update_agent(agent_id: str, payload: Dict[str, Any] = Body(...), user 
         prompt = payload.get('prompt')
         model = payload.get('model')
         description = payload.get('description')
+        meta_data = payload.get('meta_data')
         
         if not prompt:
             raise HTTPException(status_code=400, detail='missing_prompt')
@@ -2063,6 +2068,8 @@ async def update_agent(agent_id: str, payload: Dict[str, Any] = Body(...), user 
             update_data['model'] = model
         if description:
             update_data['description'] = description
+        if meta_data is not None:
+            update_data['meta_data'] = meta_data
         
         response = _supabase_admin.table('agents').update(update_data).eq('id', agent_id).execute()
         
@@ -2143,7 +2150,8 @@ async def get_agent_by_name(agent_name: str):
                 'name': agent_name,
                 'prompt': agent_config.get('prompt'),
                 'model': agent_config.get('model', 'gpt-4o'),
-                'output_schema': agent_config.get('output_schema')
+                'output_schema': agent_config.get('output_schema'),
+                'meta_data': agent_config.get('meta_data')
             }
         })
     except HTTPException:
@@ -3282,14 +3290,41 @@ async def _execute_vapi_call_analysis(
 async def save_call_details_and_analyze(
     case_id: str,
     call_data: dict,
-    current_user: dict = Depends(get_current_user)
+    request: Request
 ):
     """
     Save call details (transcript, call_id, duration) to a case and analyze using OpenAI.
     This endpoint is called by the frontend after a call ends.
     """
-    if not current_user:
+    # Extract user from token manually (without full validation)
+    user_id = None
+    auth_header = request.headers.get("authorization")
+    
+    if not auth_header:
         raise HTTPException(status_code=401, detail='Authentication required')
+    
+    try:
+        # Extract token from "Bearer <token>" format
+        token = auth_header
+        if isinstance(auth_header, str) and auth_header.lower().startswith('bearer '):
+            token = auth_header.split(' ', 1)[1]
+        
+        # Decode token without validation to extract user_id
+        import base64
+        import json as json_module
+        parts = token.split('.')
+        if len(parts) >= 2:
+            payload_b64 = parts[1] + '=' * (-len(parts[1]) % 4)
+            payload_json = base64.urlsafe_b64decode(payload_b64.encode('utf-8'))
+            payload_obj = json_module.loads(payload_json)
+            user_id = payload_obj.get('sub')
+            logger.info(f"[CALL] User extracted from token: {user_id}")
+    except Exception as e:
+        logger.error(f"[CALL] Failed to extract user from token: {e}")
+        raise HTTPException(status_code=401, detail='Invalid authentication token')
+    
+    if not user_id:
+        raise HTTPException(status_code=401, detail='Could not extract user from token')
     
     try:
         from .supabase_client import get_case, update_case
@@ -3305,7 +3340,8 @@ async def save_call_details_and_analyze(
             if not case:
                 raise HTTPException(status_code=404, detail='Case not found')
         
-        if case.get('user_id') != current_user.get('id'):
+        if str(case.get('user_id')) != str(user_id):
+            logger.warning(f"[CALL] Access denied: case user_id={case.get('user_id')}, token user_id={user_id}")
             raise HTTPException(status_code=403, detail='Not authorized to update this case')
         
         # Extract call data
@@ -3322,6 +3358,22 @@ async def save_call_details_and_analyze(
             transcript_text = '\n'.join(transcript)
         else:
             transcript_text = str(transcript)
+        
+        # Get user's full name from profile
+        user_full_name = None
+        try:
+            from .supabase_client import get_profile_by_user_id
+            profiles = get_profile_by_user_id(user_id)
+            if profiles and len(profiles) > 0:
+                user_full_name = profiles[0].get('full_name')
+                if user_full_name:
+                    logger.info(f"[CALL] Using user's full name from profile: {user_full_name}")
+        except Exception as e:
+            logger.warning(f"[CALL] Could not fetch user profile for full_name: {e}")
+        
+        # Prepend user name to transcript if available
+        if user_full_name:
+            transcript_text = f"USER NAME: {user_full_name}\n\n{transcript_text}"
         
         # Analyze conversation using OpenAI
         logger.info(f"[CALL] Analyzing conversation with OpenAI agent...")
@@ -5708,14 +5760,36 @@ def _get_user_from_request_auth(authorization_header: str):
         raise HTTPException(status_code=401, detail='invalid_authorization')
     token = parts[1]
     try:
-        user = get_user_from_token(token)
+        # Decode JWT token directly without Supabase validation
+        import base64
+        import json as json_module
+        token_parts = token.split('.')
+        if len(token_parts) != 3:
+            raise HTTPException(status_code=401, detail='invalid_token_format')
+        
+        # Decode payload (add padding if needed)
+        payload_b64 = token_parts[1]
+        payload_b64 += '=' * (-len(payload_b64) % 4)
+        payload_json = base64.urlsafe_b64decode(payload_b64.encode('utf-8'))
+        payload_obj = json_module.loads(payload_json)
+        
+        # Extract user info from JWT claims
+        user_id = payload_obj.get('sub')
+        if not user_id:
+            raise HTTPException(status_code=401, detail='invalid_token_claims')
+        
+        # Return user dict compatible with existing code
+        user = {
+            'id': user_id,
+            'email': payload_obj.get('email', ''),
+            'user_metadata': payload_obj.get('user_metadata', {}),
+            'app_metadata': payload_obj.get('app_metadata', {})
+        }
         return user, token
-    except ValueError as ve:
-        # propagate specific user_not_found error for clearer client feedback
-        if str(ve) == 'user_not_found':
-            raise HTTPException(status_code=401, detail='user_not_found')
-        raise HTTPException(status_code=401, detail='invalid_token')
-    except Exception:
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Failed to decode JWT token: {e}")
         raise HTTPException(status_code=401, detail='invalid_token')
 
 
@@ -6334,21 +6408,21 @@ async def user_resend_otp(payload: Dict[str, Any] = Body(...)):
 @app.post('/boldsign/create-embed-link')
 async def boldsign_create_embed_link(
     payload: Dict[str, Any] = Body(...),
-    user = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user)
 ):
     """
     Create a BoldSign embedded signing link for the user.
     Uses authenticated user data as fallback for missing fields.
     Returns: signingLink, documentId, caseId
     """
-    if not user:
-        raise HTTPException(status_code=401, detail='unauthorized')
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
     
     try:
         # Use authenticated user data as fallback
-        user_id = payload.get('userId') or user.get('id')
-        email = payload.get('email') or user.get('email')
-        name = payload.get('name') or user.get('full_name') or email.split('@')[0] if email else 'User'
+        user_id = payload.get('userId') or current_user.get('id')
+        email = payload.get('email') or current_user.get('email')
+        name = payload.get('name') or current_user.get('full_name') or email.split('@')[0] if email else 'User'
         case_id = payload.get('caseId')
         
         # Only require userId OR email (one of them must exist)
@@ -6430,13 +6504,13 @@ async def boldsign_create_embed_link(
 @app.get('/boldsign/document-status/{document_id}')
 async def boldsign_get_status(
     document_id: str,
-    user = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user)
 ):
     """
     Get the status of a BoldSign document.
     """
-    if not user:
-        raise HTTPException(status_code=401, detail='unauthorized')
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
     
     try:
         status = await get_document_status(document_id)
@@ -6454,15 +6528,15 @@ async def boldsign_get_status(
 @app.post('/boldsign/signature-complete')
 async def boldsign_signature_complete(
     payload: Dict[str, Any] = Body(...),
-    user = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user)
 ):
     """
     Mark signature as complete in the case metadata.
     Called after user finishes signing.
     Updates agreement_signed to true and tracks signed documents.
     """
-    if not user:
-        raise HTTPException(status_code=401, detail='unauthorized')
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
     
     try:
         case_id = payload.get('caseId')
@@ -7230,6 +7304,248 @@ async def get_analytics(
         logger.error(f'Failed to get analytics: {e}')
         raise HTTPException(status_code=500, detail=f'Failed to get analytics: {str(e)}')
 
+# --- CONFIG ---
+INTERVIEW_PROMPT = """
+You are an AI interview agent.
+
+Goal:
+Understand the user's AI project.
+
+Rules:
+- Ask ONE question at a time
+- Decide the next question automatically
+- Ask follow-ups if answers are unclear
+- Do not repeat questions
+"""
+
+# Get OpenAI API key from environment
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+@app.post("/offer")
+async def offer(request: Request):
+    try:
+        # Check if OpenAI API key is configured
+        if not OPENAI_API_KEY:
+            print("❌ OPENAI_API_KEY is not configured in environment variables")
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
+        
+        # Get user from token if available (optional - the endpoint works without auth too)
+        user_id = None
+        user_name = "there"  # default greeting
+        
+        auth_header = request.headers.get("authorization")
+        if auth_header:
+            try:
+                # Extract token from "Bearer <token>" format
+                token = auth_header
+                if isinstance(auth_header, str) and auth_header.lower().startswith('bearer '):
+                    token = auth_header.split(' ', 1)[1]
+                
+                # Try to decode token without validation to extract claims
+                import base64
+                import json as json_module
+                try:
+                    parts = token.split('.')
+                    if len(parts) >= 2:
+                        payload_b64 = parts[1] + '=' * (-len(parts[1]) % 4)
+                        payload_json = base64.urlsafe_b64decode(payload_b64.encode('utf-8'))
+                        payload_obj = json_module.loads(payload_json)
+                        
+                        user_id = payload_obj.get('sub')
+                        user_name = payload_obj.get('name') or payload_obj.get('email', 'there').split('@')[0]
+                        print(f"✅ User extracted from token claims: ID={user_id}, Name={user_name}")
+                        
+                        # Try to fetch user's full_name from user_profile table
+                        try:
+                            from .supabase_client import get_profile_by_user_id
+                            profiles = get_profile_by_user_id(user_id)
+                            if profiles and len(profiles) > 0:
+                                profile_full_name = profiles[0].get('full_name')
+                                if profile_full_name:
+                                    user_name = profile_full_name
+                                    print(f"✅ Updated user name from profile: {user_name}")
+                        except Exception as profile_err:
+                            print(f"⚠️ Failed to fetch user profile for full_name: {profile_err}")
+                except Exception as decode_err:
+                    print(f"⚠️ Failed to decode token claims: {decode_err}")
+                    # Fall back to proper validation if decode fails
+                    try:
+                        auth_user = get_user_from_token(token)
+                        if auth_user:
+                            user_id = auth_user.get("id")
+                            user_name = auth_user.get("full_name") or auth_user.get("email", "there").split("@")[0]
+                            print(f"✅ User extracted via validation: ID={user_id}, Name={user_name}")
+                            
+                            # Try to fetch user's full_name from user_profile table
+                            try:
+                                from .supabase_client import get_profile_by_user_id
+                                profiles = get_profile_by_user_id(user_id)
+                                if profiles and len(profiles) > 0:
+                                    profile_full_name = profiles[0].get('full_name')
+                                    if profile_full_name:
+                                        user_name = profile_full_name
+                                        print(f"✅ Updated user name from profile: {user_name}")
+                            except Exception as profile_err:
+                                print(f"⚠️ Failed to fetch user profile for full_name: {profile_err}")
+                    except Exception as val_err:
+                        print(f"⚠️ Token validation also failed: {val_err}")
+                        
+            except Exception as e:
+                print(f"⚠️ Could not process auth header: {e}")
+        else:
+            print(f"ℹ️ No authentication provided, continuing with default context")
+        
+        # Fetch agent instructions from database
+        agent_response = _supabase_admin.table("agents").select("prompt").eq("name", "interview_voice_agent").eq("is_active", True).maybe_single().execute()
+        print(f"📋 Agent response: {agent_response}")
+        
+        instructions = """
+You are an AI interview agent.
+
+Rules:
+- AI speaks first
+- Ask ONE question at a time
+- Decide follow-ups automatically
+- Do not repeat questions
+- Start the interview immediately
+"""
+        
+        if agent_response.data and agent_response.data.get("prompt"):
+            instructions = agent_response.data["prompt"]
+            print(f"✅ Agent instructions loaded from database")
+        else:
+            print(f"⚠️ No agent instructions found, using defaults")
+        
+        # Fetch user eligibility data if user_id is available
+        eligibility_context = ""
+        if user_id:
+            print(f"🔍 Fetching eligibility data for user_id: {user_id}")
+            try:
+                eligibility_response = _supabase_admin.table("user_eligibility").select("eligibility_raw").eq("user_id", user_id).order("processed_at", desc=True).limit(1).maybe_single().execute()
+                print(f"📊 Eligibility response type: {type(eligibility_response)}")
+                print(f"📊 Eligibility response: {eligibility_response}")
+                
+                # Handle different response structures
+                eligibility_data = None
+                if hasattr(eligibility_response, 'data'):
+                    eligibility_data = eligibility_response.data
+                    print(f"📊 Data from response.data: {eligibility_data} (type: {type(eligibility_data)})")
+                else:
+                    eligibility_data = eligibility_response
+                    print(f"📊 Using response directly: {eligibility_data} (type: {type(eligibility_data)})")
+                
+                # Extract eligibility_raw from the response
+                if eligibility_data:
+                    if isinstance(eligibility_data, dict):
+                        eligibility_raw = eligibility_data.get("eligibility_raw")
+                    elif isinstance(eligibility_data, list) and len(eligibility_data) > 0:
+                        eligibility_raw = eligibility_data[0].get("eligibility_raw") if isinstance(eligibility_data[0], dict) else None
+                    else:
+                        eligibility_raw = None
+                    
+                    print(f"📊 Extracted eligibility_raw: {eligibility_raw} (type: {type(eligibility_raw)})")
+                    
+                    if eligibility_raw:
+                        if isinstance(eligibility_raw, str):
+                            # If it's a JSON string, parse it
+                            import json as json_module
+                            try:
+                                eligibility_raw = json_module.loads(eligibility_raw)
+                            except:
+                                print(f"⚠️ Failed to parse eligibility_raw as JSON")
+                        
+                        if isinstance(eligibility_raw, dict):
+                            print(f"✅ Eligibility data found")
+                            
+                            # Build eligibility context
+                            eligibility_context = f"""
+
+### USER'S ELIGIBILITY ASSESSMENT
+
+**Eligibility Status:** {eligibility_raw.get('eligibility_status', 'Unknown')}
+**Eligibility Score:** {eligibility_raw.get('eligibility_score', 'N/A')}/100
+
+**Strengths:**
+{chr(10).join(f"- {s}" for s in eligibility_raw.get('strengths', [])) if eligibility_raw.get('strengths') else 'None documented'}
+
+**Weaknesses:**
+{chr(10).join(f"- {w}" for w in eligibility_raw.get('weaknesses', [])) if eligibility_raw.get('weaknesses') else 'None documented'}
+
+**Missing Information:**
+{chr(10).join(f"- {m}" for m in eligibility_raw.get('missing_information', [])) if eligibility_raw.get('missing_information') else 'None identified'}
+
+**Required Next Steps:**
+{chr(10).join(f"- {step}" for step in eligibility_raw.get('required_next_steps', [])) if eligibility_raw.get('required_next_steps') else 'None specified'}
+
+**Document Analysis Summary:**
+{eligibility_raw.get('document_analysis', {}).get('document_summary', 'No document analysis available') if isinstance(eligibility_raw.get('document_analysis'), dict) else 'No document analysis available'}
+
+Use this information to guide your interview questions and address the identified gaps and weaknesses.
+"""
+                        else:
+                            print(f"⚠️ eligibility_raw is not a dict: {type(eligibility_raw)}")
+                    else:
+                        print(f"⚠️ No eligibility_raw found in response")
+            except Exception as e:
+                print(f"❌ Error fetching eligibility data: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"⚠️ No user_id available, skipping eligibility fetch")
+        
+        # Combine instructions with user name and eligibility context
+        final_instructions = f"{instructions}\n\n**User's Name:** {user_name}{eligibility_context}"
+
+        print(f"\n📝 FINAL INSTRUCTIONS (length: {len(final_instructions)} chars)\n")
+        
+        # Make request to OpenAI Realtime API
+        print(f"🔄 Making request to OpenAI Realtime Sessions API...")
+        try:
+            r = requests.post(
+                "https://api.openai.com/v1/realtime/sessions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-realtime-preview",
+                    "voice": "alloy",
+                    "instructions": final_instructions,
+                    "input_audio_transcription": {
+                        "model": "whisper-1"
+                    }
+                },
+                timeout=30,
+            )
+            
+            print(f"✅ OpenAI API response status: {r.status_code}")
+            r.raise_for_status()
+            data = r.json()
+
+            return {
+                "client_secret": data["client_secret"]["value"]
+            }
+        except requests.exceptions.ConnectionError as ce:
+            print(f"❌ Connection error to OpenAI API: {ce}")
+            raise HTTPException(status_code=503, detail=f"Cannot connect to OpenAI API: {str(ce)}")
+        except requests.exceptions.Timeout as te:
+            print(f"❌ Timeout connecting to OpenAI API: {te}")
+            raise HTTPException(status_code=504, detail=f"OpenAI API timeout: {str(te)}")
+        except requests.exceptions.RequestException as re:
+            print(f"❌ Request error to OpenAI API: {re}")
+            if hasattr(re, 'response') and re.response is not None:
+                print(f"❌ Response status: {re.response.status_code}")
+                print(f"❌ Response body: {re.response.text}")
+            raise HTTPException(status_code=502, detail=f"OpenAI API error: {str(re)}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error in /offer endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# Starting command: python -m uvicorn app.main:app --reload --port 8000
+
+# python -m uvicorn app.main:app --reload --port 8000

@@ -43,10 +43,13 @@ export default function Home() {
   const [eligibilityAnswers, setEligibilityAnswers] = useState<Record<string, string>>({})
   const [userId, setUserId] = useState<string | null>(null)
   const [caseId, setCaseId] = useState<string | null>(null)
-  const [wizardStep, setWizardStep] = useState(1)
+  const [wizardStep, setWizardStep] = useState(0)
   const [isReturningUser, setIsReturningUser] = useState(false)
   const [answers, setAnswers] = useState<boolean[]>([])
   const [currentQuestion, setCurrentQuestion] = useState(0)
+  const [fullName, setFullName] = useState("")
+  const [savingName, setSavingName] = useState(false)
+  const [checkingProfile, setCheckingProfile] = useState(true)
   const router = useRouter()
   const { language, setLanguage, t } = useLanguage()
   const { intakeData, updateIntakeData } = useUserContext()
@@ -62,7 +65,85 @@ export default function Home() {
     return () => window.removeEventListener('storage', check)
   }, [])
 
+  // Check if user already has full_name in profile on wizard state
+  React.useEffect(() => {
+    const checkUserProfile = async () => {
+      if (otpState === "wizard" && isLoggedIn) {
+        setCheckingProfile(true)
+        try {
+          const token = localStorage.getItem('access_token')
+          if (!token) {
+            setCheckingProfile(false)
+            return
+          }
+
+          const response = await fetch(`${BACKEND_BASE_URL}/auth/me`, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            }
+          })
+
+          if (response.ok) {
+            const userData = await response.json()
+            const profileFullName = userData?.user?.profile?.full_name
+            
+            if (profileFullName && profileFullName.trim()) {
+              // User already has a name, skip to step 1
+              setFullName(profileFullName)
+              setWizardStep(1)
+            } else {
+              // No name, stay at step 0
+              setWizardStep(0)
+            }
+          }
+        } catch (error) {
+          console.error('Failed to check user profile:', error)
+        } finally {
+          setCheckingProfile(false)
+        }
+      }
+    }
+
+    checkUserProfile()
+  }, [otpState, isLoggedIn])
+
   const questions = [t("questionnaire.question1"), t("questionnaire.question2"), t("questionnaire.question3")]
+
+  const handleSaveName = async () => {
+    if (!fullName || !fullName.trim()) {
+      return
+    }
+
+    setSavingName(true)
+    try {
+      const token = localStorage.getItem('access_token')
+      if (!token) {
+        throw new Error('No authentication token')
+      }
+
+      const response = await fetch(`${BACKEND_BASE_URL}/user/profile`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ full_name: fullName.trim() })
+      })
+
+      if (response.ok) {
+        // Successfully saved, move to step 1
+        setWizardStep(1)
+      } else {
+        throw new Error('Failed to save name')
+      }
+    } catch (error) {
+      console.error('Error saving name:', error)
+      alert(isRTL ? 'שגיאה בשמירת השם' : 'Error saving name')
+    } finally {
+      setSavingName(false)
+    }
+  }
 
   const handleStartQuiz = async () => {
     setShowQuiz(true)
@@ -386,6 +467,8 @@ export default function Home() {
 
   const canProceed = () => {
     switch (wizardStep) {
+      case 0:
+        return fullName.trim().length > 0
       case 1:
         return intakeData.userStatus !== null
       case 2:
@@ -409,7 +492,7 @@ export default function Home() {
     updateIntakeData({ functionalImpacts: updated })
   }
 
-  const progress = ((wizardStep - 1) / 6) * 100
+  const progress = wizardStep === 0 ? 0 : ((wizardStep) / 6) * 100
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-slate-50" dir={isRTL ? "rtl" : "ltr"}>
@@ -1009,23 +1092,79 @@ export default function Home() {
                   transition={{ duration: 0.4 }}
                   className="space-y-8"
                 >
-                  {/* Progress Bar */}
-                  <div className="space-y-2">
-                    <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                      <motion.div
-                        className="h-full bg-blue-600"
-                        initial={{ width: 0 }}
-                        animate={{ width: `${progress}%` }}
-                        transition={{ duration: 0.3 }}
-                      />
+                  {checkingProfile ? (
+                    // Loading state while checking profile
+                    <div className="flex flex-col items-center justify-center py-12 space-y-4">
+                      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                      <p className="text-slate-600" style={{ direction: isRTL ? "rtl" : "ltr" }}>
+                        {isRTL ? "טוען..." : "Loading..."}
+                      </p>
                     </div>
-                    <p className="text-sm text-slate-600" style={{ direction: isRTL ? "rtl" : "ltr" }}>
-                      {t("wizard.progress").replace("{current}", String(wizardStep)).replace("{total}", "6")}
-                    </p>
-                  </div>
+                  ) : (
+                    <>
+                      {/* Progress Bar */}
+                      <div className="space-y-2">
+                        <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                          <motion.div
+                            className="h-full bg-blue-600"
+                            initial={{ width: 0 }}
+                            animate={{ width: `${progress}%` }}
+                            transition={{ duration: 0.3 }}
+                          />
+                        </div>
+                        <p className="text-sm text-slate-600" style={{ direction: isRTL ? "rtl" : "ltr" }}>
+                          {t("wizard.progress").replace("{current}", String(Math.max(1, wizardStep))).replace("{total}", "6")}
+                        </p>
+                      </div>
 
-                  {/* Step 1: User Status */}
-                  {wizardStep === 1 && (
+                      {/* Step 0: Name Input */}
+                      {wizardStep === 0 && (
+                        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+                          <div className="text-center space-y-2">
+                            <h2 className="text-3xl font-bold text-slate-900" style={{ direction: isRTL ? "rtl" : "ltr" }}>
+                              {isRTL ? "מה שמך המלא?" : "What is your full name?"}
+                            </h2>
+                            <p className="text-slate-600" style={{ direction: isRTL ? "rtl" : "ltr" }}>
+                              {isRTL ? "נשמח להכיר אותך! נא להזין את שמך המלא" : "We'd love to get to know you! Please enter your full name"}
+                            </p>
+                          </div>
+
+                          <div className="space-y-4">
+                            <Input
+                              type="text"
+                              value={fullName}
+                              onChange={(e) => setFullName(e.target.value)}
+                              placeholder={isRTL ? "שם מלא" : "Full Name"}
+                              className="text-lg p-6 text-center"
+                              style={{ direction: isRTL ? "rtl" : "ltr" }}
+                              disabled={savingName}
+                              onKeyPress={(e) => {
+                                if (e.key === 'Enter' && fullName.trim()) {
+                                  handleSaveName()
+                                }
+                              }}
+                            />
+                            
+                            <Button
+                              onClick={handleSaveName}
+                              disabled={!fullName.trim() || savingName}
+                              className="w-full py-6 text-lg bg-blue-600 hover:bg-blue-700"
+                            >
+                              {savingName ? (
+                                <div className="flex items-center justify-center gap-2">
+                                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                                  <span>{isRTL ? "שומר..." : "Saving..."}</span>
+                                </div>
+                              ) : (
+                                isRTL ? "המשך" : "Continue"
+                              )}
+                            </Button>
+                          </div>
+                        </motion.div>
+                      )}
+
+                      {/* Step 1: User Status */}
+                      {wizardStep === 1 && (
                     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
                       <div className="text-center space-y-2">
                         <h2 className="text-3xl font-bold text-slate-900" style={{ direction: isRTL ? "rtl" : "ltr" }}>
@@ -1275,21 +1414,25 @@ export default function Home() {
                   )}
 
                   {/* Navigation Buttons */}
-                  <div className="flex gap-4 pt-4">
-                    {wizardStep > 1 && (
-                      <Button onClick={handleWizardBack} variant="outline" size="lg" className="flex-1 bg-transparent">
-                        {t("wizard.back")}
+                  {wizardStep > 0 && (
+                    <div className="flex gap-4 pt-4">
+                      {wizardStep > 1 && (
+                        <Button onClick={handleWizardBack} variant="outline" size="lg" className="flex-1 bg-transparent">
+                          {t("wizard.back")}
+                        </Button>
+                      )}
+                      <Button
+                        onClick={handleWizardNext}
+                        disabled={!canProceed()}
+                        size="lg"
+                        className="flex-1 bg-blue-600 hover:bg-blue-700"
+                      >
+                        {wizardStep === 6 ? t("wizard.complete") : t("wizard.next")}
                       </Button>
-                    )}
-                    <Button
-                      onClick={handleWizardNext}
-                      disabled={!canProceed()}
-                      size="lg"
-                      className="flex-1 bg-blue-600 hover:bg-blue-700"
-                    >
-                      {wizardStep === 6 ? t("wizard.complete") : t("wizard.next")}
-                    </Button>
-                  </div>
+                    </div>
+                  )}
+                  </>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>

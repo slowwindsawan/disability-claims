@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timedelta
 import json
 import urllib.parse
+import time
+import random
 
 logger = logging.getLogger('supabase_client')
 
@@ -99,6 +101,55 @@ def _normalize_sdk_response(res):
         return str(res)
     except Exception:
         return None
+
+
+def _retry_with_backoff(func, max_retries=3, base_delay=1.0, max_delay=10.0):
+    """
+    Retry a function with exponential backoff.
+    
+    Args:
+        func: The function to retry
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay in seconds
+        max_delay: Maximum delay between retries in seconds
+    
+    Returns:
+        The function result or raises the last exception
+    """
+    last_exception = None
+    
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except (ConnectionError, TimeoutError, OSError, Exception) as e:
+            # Check if it's a network-related error (getaddrinfo failed, connection refused, etc.)
+            error_msg = str(e).lower()
+            is_network_error = any([
+                'getaddrinfo' in error_msg,
+                'connect' in error_msg,
+                'timeout' in error_msg,
+                'reset by peer' in error_msg,
+                'connection refused' in error_msg,
+                'network' in error_msg,
+                'name resolution' in error_msg,
+                'httpcore.connecterror' in str(type(e)).lower()
+            ])
+            
+            if not is_network_error or attempt >= max_retries - 1:
+                # Not a network error or max retries reached - raise immediately
+                raise
+            
+            last_exception = e
+            # Exponential backoff with jitter
+            delay = min(base_delay * (2 ** attempt), max_delay)
+            jitter = random.uniform(0, delay * 0.1)
+            wait_time = delay + jitter
+            
+            logger.warning(f"Network error on attempt {attempt + 1}/{max_retries}: {e}. Retrying in {wait_time:.2f}s...")
+            time.sleep(wait_time)
+    
+    if last_exception:
+        raise last_exception
 
 
 def create_auth_user(email: str, password: str, phone: str = None, email_confirm: bool = True) -> dict:
@@ -1583,7 +1634,13 @@ def get_agent_prompt(agent_name: str, fallback_prompt: str = None) -> dict:
     Returns dict with: prompt, model, output_schema
     Uses in-memory cache to reduce DB calls.
     Falls back to provided fallback_prompt if agent not found or DB unavailable.
+    Implements retry logic for network failures.
     """
+    
+    # Check cache first
+    if agent_name in _agent_cache:
+        logger.debug(f"[DB] ✅ Returning cached agent config for '{agent_name}'")
+        return _agent_cache[agent_name]
     
     try:
         if not _has_supabase_py or not _supabase_admin:
@@ -1594,11 +1651,15 @@ def get_agent_prompt(agent_name: str, fallback_prompt: str = None) -> dict:
                 'output_schema': None
             }
         
-        # Fetch from database
-        logger.info(f"[DB] 🔍 Querying agents table for name='{agent_name}', is_active=True")
-        response = _supabase_admin.table('agents').select('*').eq('name', agent_name).eq('is_active', True).execute()
+        # Define the query function with retry capability
+        def _query_agent():
+            logger.info(f"[DB] 🔍 Querying agents table for name='{agent_name}', is_active=True")
+            response = _supabase_admin.table('agents').select('*').eq('name', agent_name).eq('is_active', True).execute()
+            logger.info(f"[DB] 📊 Query returned {len(response.data) if response.data else 0} results")
+            return response
         
-        logger.info(f"[DB] 📊 Query returned {len(response.data) if response.data else 0} results")
+        # Execute with retry
+        response = _retry_with_backoff(_query_agent, max_retries=3, base_delay=0.5, max_delay=5.0)
         
         if response.data and len(response.data) > 0:
             agent = response.data[0]
@@ -1608,7 +1669,8 @@ def get_agent_prompt(agent_name: str, fallback_prompt: str = None) -> dict:
             result = {
                 'prompt': agent.get('prompt'),
                 'model': agent.get('model', 'gpt-4o'),
-                'output_schema': agent.get('output_schema')
+                'output_schema': agent.get('output_schema'),
+                'meta_data': agent.get('meta_data')
             }
             # Cache the result
             _agent_cache[agent_name] = result
@@ -1617,17 +1679,22 @@ def get_agent_prompt(agent_name: str, fallback_prompt: str = None) -> dict:
         else:
             logger.warning(f"[DB] ⚠️  Agent '{agent_name}' not found in database (check name and is_active=true), using fallback")
             # Try to see if agent exists with different criteria
-            all_agents = _supabase_admin.table('agents').select('name, is_active').execute()
-            if all_agents.data:
-                agent_names = [(a.get('name'), a.get('is_active')) for a in all_agents.data]
-                logger.info(f"[DB] 📋 Available agents in DB: {agent_names}")
+            try:
+                def _list_agents():
+                    return _supabase_admin.table('agents').select('name, is_active').execute()
+                all_agents = _retry_with_backoff(_list_agents, max_retries=2, base_delay=0.5, max_delay=3.0)
+                if all_agents.data:
+                    agent_names = [(a.get('name'), a.get('is_active')) for a in all_agents.data]
+                    logger.info(f"[DB] 📋 Available agents in DB: {agent_names}")
+            except Exception as e:
+                logger.warning(f"[DB] Could not list available agents: {e}")
             return {
                 'prompt': fallback_prompt,
                 'model': 'gpt-4o',
                 'output_schema': None
             }
     except Exception as e:
-        logger.exception(f"[DB] ❌ Failed to fetch agent '{agent_name}' from database: {e}")
+        logger.exception(f"[DB] ❌ Failed to fetch agent '{agent_name}' from database after retries: {e}")
         return {
             'prompt': fallback_prompt,
             'model': 'gpt-4o',

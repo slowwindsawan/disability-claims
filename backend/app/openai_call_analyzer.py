@@ -227,20 +227,36 @@ Claimant interview and medical records:
 # Agent
 # ------------------------------------------------------------------
 
-conversation_summary = Agent(
-    name="conversation summary",
-    instructions=conversation_summary_instructions,
-    model="gpt-5-nano",
-    # tools=[file_search],
-    output_type=ConversationSummarySchema,
-    model_settings=ModelSettings(
-        # store=True,
-        reasoning=Reasoning(
-            effort="medium",
-            summary="concise"
+def create_conversation_summary_agent(model: str = "gpt-4o"):
+    """Create agent with appropriate settings based on model"""
+    
+    # Check if model is gpt-5-nano which requires reasoning
+    if "gpt-5" in model.lower():
+        logger.info(f"[AGENT] Creating agent with model {model} and reasoning enabled")
+        return Agent(
+            name="conversation summary",
+            instructions=conversation_summary_instructions,
+            model=model,
+            output_type=ConversationSummarySchema,
+            model_settings=ModelSettings(
+                reasoning=Reasoning(
+                    effort="medium",
+                    summary="concise"
+                )
+            )
         )
-    )
-)
+    else:
+        logger.info(f"[AGENT] Creating agent with model {model} (no reasoning)")
+        return Agent(
+            name="conversation summary",
+            instructions=conversation_summary_instructions,
+            model=model,
+            output_type=ConversationSummarySchema,
+            model_settings=ModelSettings()
+        )
+
+# Default agent instance (will be recreated dynamically if model changes)
+conversation_summary = create_conversation_summary_agent()
 
 # ------------------------------------------------------------------
 # Workflow input
@@ -255,6 +271,16 @@ class WorkflowInput(BaseModel):
 # ------------------------------------------------------------------
 
 async def run_workflow(workflow_input: WorkflowInput):
+    # Fetch agent configuration from database to get the model
+    from .supabase_client import get_agent_prompt
+    agent_config = get_agent_prompt('call_summary_generator')
+    model = agent_config.get('model', 'gpt-4o')
+    
+    logger.info(f"[AGENT] Using model from database: {model}")
+    
+    # Create agent with the configured model
+    agent_instance = create_conversation_summary_agent(model)
+    
     with trace("conversation agent"):
         state = {}
         workflow = workflow_input.model_dump()
@@ -270,7 +296,7 @@ async def run_workflow(workflow_input: WorkflowInput):
             }
         ]
         conversation_summary_result_temp = await Runner.run(
-            conversation_summary,
+            agent_instance,
             input=[
                 *conversation_history
             ],
