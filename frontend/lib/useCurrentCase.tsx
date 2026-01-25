@@ -31,20 +31,36 @@ function useCurrentCase(): UseCurrentCaseReturn {
         const caseId = localStorage.getItem("case_id")
         const token = localStorage.getItem("access_token")
 
-        if (!caseId || !token) {
-          console.warn("⚠️ Missing case_id or access_token")
+        console.log("[useCurrentCase] Backend URL:", BACKEND_BASE_URL)
+        console.log("[useCurrentCase] Case ID:", caseId)
+        console.log("[useCurrentCase] Token exists:", !!token)
+
+        if (!token) {
+          console.warn("⚠️ Missing access_token - user not authenticated")
+          setCurrentCase(null)
+          setLoadingCase(false)
+          return
+        }
+
+        if (!caseId) {
+          console.warn("⚠️ Missing case_id - user may not have any cases yet")
           setCurrentCase(null)
           setLoadingCase(false)
           return
         }
 
         const apiUrl = `${BACKEND_BASE_URL}/cases/${caseId}`
+        console.log("[useCurrentCase] Fetching from:", apiUrl)
+        
         const response = await fetch(apiUrl, {
+          method: 'GET',
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
         })
+
+        console.log("[useCurrentCase] Response status:", response.status, response.statusText)
 
         if (!response.ok) {
           const errorText = await response.text()
@@ -62,6 +78,8 @@ function useCurrentCase(): UseCurrentCaseReturn {
         setErrorCase(null)
       } catch (error) {
         console.error("❌ Error fetching case:", error)
+        console.error("❌ Error type:", error instanceof Error ? error.name : typeof error)
+        console.error("❌ Error message:", error instanceof Error ? error.message : String(error))
         setErrorCase(error instanceof Error ? error.message : "Unknown error")
         setCurrentCase(null)
       } finally {

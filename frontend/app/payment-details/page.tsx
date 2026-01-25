@@ -11,6 +11,14 @@ import { Building2, CreditCard, Lock, MapPin, Save, ShieldCheck, Stethoscope, Us
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import banksData from "@/lib/banks.json"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 export default function PaymentDetailsPage() {
   const router = useRouter()
@@ -35,17 +43,9 @@ export default function PaymentDetailsPage() {
   const [identityCode, setIdentityCode] = useState("")
 
   const [bankAccountConfirmed, setBankAccountConfirmed] = useState(false)
+  const [selectedBankBranches, setSelectedBankBranches] = useState<string[]>([])
 
-  const banks = [
-    "בנק לאומי",
-    "בנק הפועלים",
-    "בנק דיסקונט",
-    "בנק מזרחי טפחות",
-    "בנק מרכנתיל",
-    "בנק יהב",
-    "בנק ירושלים",
-    "בנק מסד",
-  ]
+  // Banks loaded from banks.json
 
   const hmos = ["כללית", "מכבי", "מאוחדת", "לאומית"]
 
@@ -118,15 +118,24 @@ export default function PaymentDetailsPage() {
         // payments/contact_details may be stored as jsonb
         const payments = p?.payments || {}
         const contact = p?.contact_details || {}
+        const bankName = payments?.bankName || payments?.bank_name
         setFormData((fd) => ({
           ...fd,
-          bankName: payments?.bankName || fd.bankName,
-          branchNumber: payments?.branchNumber || fd.branchNumber,
-          accountNumber: payments?.accountNumber || fd.accountNumber,
+          bankName: bankName || fd.bankName,
+          branchNumber: payments?.branchNumber || payments?.branch_number || fd.branchNumber,
+          accountNumber: payments?.accountNumber || payments?.account_number || fd.accountNumber,
           hmo: contact?.hmo || fd.hmo,
           doctorName: contact?.doctorName || fd.doctorName,
           address: contact?.address || fd.address,
         }))
+        
+        // Set available branches if bank is already selected
+        if (bankName) {
+          const bank = banksData.find(b => b.bank === bankName)
+          if (bank) {
+            setSelectedBankBranches(bank.localBank)
+          }
+        }
       } catch (e) {
         console.warn('Unable to load profile', e)
       }
@@ -205,14 +214,19 @@ export default function PaymentDetailsPage() {
                     </label>
                     <select
                       value={formData.bankName}
-                      onChange={(e) => setFormData({ ...formData, bankName: e.target.value })}
+                      onChange={(e) => {
+                        const selectedBank = e.target.value
+                        setFormData({ ...formData, bankName: selectedBank, branchNumber: "" })
+                        const bank = banksData.find(b => b.bank === selectedBank)
+                        setSelectedBankBranches(bank?.localBank || [])
+                      }}
                       className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
                       required
                     >
                       <option value="">{t("payment_details.select_bank")}</option>
-                      {banks.map((bank) => (
-                        <option key={bank} value={bank}>
-                          {bank}
+                      {banksData.map((bank) => (
+                        <option key={bank.bank} value={bank.bank}>
+                          {bank.bank}
                         </option>
                       ))}
                     </select>
@@ -223,14 +237,22 @@ export default function PaymentDetailsPage() {
                     <label className="block text-sm font-semibold text-slate-700 mb-2">
                       {t("payment_details.branch_number")}
                     </label>
-                    <input
-                      type="text"
+                    <select
                       value={formData.branchNumber}
                       onChange={(e) => setFormData({ ...formData, branchNumber: e.target.value })}
-                      placeholder={t("payment_details.branch_placeholder")}
                       className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
                       required
-                    />
+                      disabled={!formData.bankName}
+                    >
+                      <option value="">
+                        {formData.bankName ? t("payment_details.branch_placeholder") : "בחר בנק תחילה"}
+                      </option>
+                      {selectedBankBranches.map((branch) => (
+                        <option key={branch} value={branch}>
+                          {branch}
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
                   {/* Account Number */}
@@ -239,9 +261,12 @@ export default function PaymentDetailsPage() {
                       {t("payment_details.account_number")}
                     </label>
                     <input
-                      type="text"
+                      type="number"
                       value={formData.accountNumber}
-                      onChange={(e) => setFormData({ ...formData, accountNumber: e.target.value })}
+                      onChange={(e) => {
+                        const value = e.target.value.replace(/\D/g, '')
+                        setFormData({ ...formData, accountNumber: value })
+                      }}
                       placeholder={t("payment_details.account_placeholder")}
                       className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
                       required

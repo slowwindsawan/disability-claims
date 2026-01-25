@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "BTL Auto Flow",
+  "version": "1.1",
+  "description": "Automates the flow on ps.btl.gov.il for demo/testing (triggerable from popup).",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://ps.btl.gov.il/*", 
+    "https://govforms.gov.il/*", 
+    "https://*/*",
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*"
+  ],
+  "externally_connectable": {
+    "matches": [
+      "http://localhost:*/*",
+      "http://127.0.0.1:*/*",
+      "https://*.vercel.app/*",
+      "https://*.netlify.app/*"
+    ]
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "BTL Auto Flow",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://govforms.gov.il/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost:*/*",
+        "http://127.0.0.1:*/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}

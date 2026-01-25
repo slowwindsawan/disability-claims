@@ -125,6 +125,28 @@ export async function apiUploadProfilePhoto(formData: FormData) {
   return json
 }
 
+export async function apiUploadIdCard(file: File, idType: 'driving_license' | 'state_id') {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('id_type', idType)
+  
+  const headers: any = {}
+  const token = localStorage.getItem('access_token')
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  
+  const res = await fetch(`${BACKEND_BASE_URL}/user/profile/id-card/validate`, {
+    method: 'POST',
+    body: formData,
+    headers
+  })
+  
+  const text = await res.text()
+  let json: any = null
+  try { json = text ? JSON.parse(text) : null } catch (e) { json = { text } }
+  if (!res.ok) throw { status: res.status, body: json }
+  return json
+}
+
 export async function apiGetCases() {
   return request('/cases')
 }

@@ -1631,6 +1631,42 @@ async def upload_case_document(
         raise HTTPException(status_code=500, detail='upload_case_document_failed')
 
 
+@app.patch('/cases/{case_id}/form-data')
+async def update_case_form_data(
+    case_id: str,
+    request_data: dict,
+    user = Depends(require_auth)
+):
+    """Update the 7801_form JSON data in a case"""
+    try:
+        from .supabase_client import get_case, update_case
+        
+        # Verify user has access to this case
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        
+        case = case_list[0]
+        if user['role'] != 'admin' and case.get('user_id') != user['id']:
+            raise HTTPException(status_code=403, detail='access_denied')
+        
+        # Extract form data from request
+        form_7801 = request_data.get('form_7801', {})
+        
+        # Update case with new form data
+        result = update_case(case_id, {'7801_form': form_7801})
+        
+        return {
+            'status': 'ok',
+            'case_id': case_id,
+            'updated_form': form_7801
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'update_case_form_data failed for case_id={case_id}')
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get('/cases/{case_id}/recommended-documents')
 async def get_recommended_documents(case_id: str, user = Depends(require_auth)):
@@ -3800,10 +3836,15 @@ async def _execute_agent_analysis(case_id: str, documents_with_summaries: list):
 @app.post('/cases/{case_id}/analyze-documents-form7801')
 async def analyze_documents_form7801(case_id: str, current_user: dict = Depends(get_current_user)):
     """
-    Analyze case documents using OpenAI Form 7801 agent.
+    Generate Form 7801 payload by gathering data from DB and mapping to form structure.
     Returns immediately with a job_id. Frontend should poll /jobs/{job_id} for status.
     
-    This endpoint is called from the "התחל ניתוח AI" button on the dashboard.
+    This endpoint:
+    1. Gathers data from case_documents, user_eligibility, user_profile, and call_details
+    2. Uses OpenAI agent to construct Form 7801 payload structure
+    3. Saves payload to cases.form_7801 column (jsonb)
+    
+    Called from the "התחל ניתוח AI" button on the dashboard.
     
     Returns:
         - job_id: ID to poll for status and results
@@ -3903,37 +3944,103 @@ async def analyze_documents_form7801(case_id: str, current_user: dict = Depends(
 
 
 async def _execute_form7801_analysis(case_id: str, documents_with_metadata: list, call_summary: dict, call_details: dict | None = None):
-    """Background task for Form 7801 document analysis"""
-    from .supabase_client import update_case
-    from .openai_form7801_agent import analyze_documents_with_openai_agent
+    """
+    Background task for Form 7801 payload generation.
     
-    logger.info(f"📊 Processing {len(documents_with_metadata)} documents for Form 7801 analysis")
-    logger.info(f"🤖 Calling OpenAI Form 7801 agent...")
+    Steps:
+    1. Gather data from DB (case_documents, user_eligibility, user_profile, call_details)
+    2. Construct Form 7801 payload structure
+    3. Pass data to OpenAI agent to map and fill payload
+    4. Save to cases.7801_form column
+    """
+    from .supabase_client import update_case, _supabase_admin, SUPABASE_URL
+    from .openai_form7801_agent import generate_form7801_payload
     
-    # Call the OpenAI agent
-    agent_result = await analyze_documents_with_openai_agent(
-        case_id=case_id,
-        documents_data=documents_with_metadata,
-        call_summary=call_summary,
-        call_details=call_details
-    )
+    logger.info(f"📊 [FORM7801] Starting Form 7801 payload generation for case {case_id}")
     
-    logger.info(f"✅ Agent analysis completed. Storing result")
-    
-    # Store result and update status
-    update_case(case_id, {
-        'final_document_analysis': agent_result,
-        'status': 'Submission Pending'
-    })
-    
-    logger.info(f"✅ Form 7801 analysis saved successfully for case {case_id}")
-    
-    return {
-        'case_id': case_id,
-        'analysis': agent_result,
-        'documents_analyzed': len(documents_with_metadata),
-        'timestamp': datetime.utcnow().isoformat()
-    }
+    try:
+        # Step 1: Fetch case data to get user_id
+        case_response = _supabase_admin.table('cases').select('*').eq('id', case_id).execute()
+        if not case_response.data:
+            raise ValueError(f"Case {case_id} not found")
+        
+        case_data = case_response.data[0]
+        user_id = case_data.get('user_id')
+        
+        if not user_id:
+            raise ValueError(f"Case {case_id} has no user_id")
+        
+        logger.info(f"📋 [FORM7801] Case user_id: {user_id}")
+        
+        # Step 2: Fetch documents from case_documents table
+        docs_response = _supabase_admin.table('case_documents').select('*').eq('case_id', case_id).execute()
+        documents = docs_response.data or []
+        
+        # Construct full URLs for document file paths
+        documents_with_urls = []
+        for doc in documents:
+            file_path = doc.get('file_path', '')
+            if file_path:
+                # Construct full Supabase Storage URL
+                # Format: {SUPABASE_URL}/storage/v1/object/public/case-documents/{file_path}
+                full_url = f"{SUPABASE_URL}/storage/v1/object/public/case-documents/{file_path}"
+                doc['file_url'] = full_url
+            documents_with_urls.append(doc)
+        
+        logger.info(f"📄 [FORM7801] Found {len(documents_with_urls)} documents")
+        
+        # Step 3: Fetch eligibility_raw from user_eligibility table
+        eligibility_response = _supabase_admin.table('user_eligibility').select('eligibility_raw').eq('user_id', user_id).execute()
+        eligibility_raw = {}
+        if eligibility_response.data:
+            # Get the first record (or most recent if multiple exist)
+            eligibility_raw = eligibility_response.data[0].get('eligibility_raw', {}) or {}
+        
+        logger.info(f"📊 [FORM7801] Eligibility data fetched")
+        
+        # Step 4: Fetch user profile data
+        profile_response = _supabase_admin.table('user_profile').select('email, phone, full_name, contact_details').eq('user_id', user_id).execute()
+        user_profile = {}
+        if profile_response.data:
+            user_profile = profile_response.data[0]
+        
+        logger.info(f"👤 [FORM7801] User profile fetched: {user_profile.get('email', 'N/A')}")
+        
+        # Step 5: Prepare data package for agent
+        agent_input_data = {
+            'case_id': case_id,
+            'documents': documents_with_urls,  # With file_url, metadata, file_name
+            'eligibility_raw': eligibility_raw,
+            'user_profile': user_profile,
+            'call_details': call_details or {},
+            'call_summary': call_summary or {}
+        }
+        
+        logger.info(f"🤖 [FORM7801] Calling OpenAI agent to generate Form 7801 payload...")
+        
+        # Step 6: Call OpenAI agent to construct Form 7801 payload
+        form7801_payload = await generate_form7801_payload(agent_input_data)
+        
+        logger.info(f"✅ [FORM7801] Payload generation completed")
+        
+        # Step 7: Save to cases.7801_form column
+        update_case(case_id, {
+            '7801_form': form7801_payload,
+            'status': 'Submission Pending'
+        })
+        
+        logger.info(f"✅ [FORM7801] Form 7801 payload saved successfully to cases.7801_form column")
+        
+        return {
+            'case_id': case_id,
+            '7801_form_payload': form7801_payload,
+            'documents_processed': len(documents_with_urls),
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.exception(f"❌ [FORM7801] Error generating Form 7801 payload: {e}")
+        raise
 
 
 @app.post('/cases/{case_id}/process-documents')
@@ -5965,6 +6072,138 @@ async def change_password(payload: Dict[str, Any] = Body(...), authorization: Op
 
 
 
+@app.post('/user/profile/id-card/validate')
+async def upload_id_card(
+    file: UploadFile = File(...),
+    id_type: str = Form(...),
+    user = Depends(require_auth)
+):
+    """Upload and validate an ID card (driving license or state ID) for the authenticated user.
+    
+    Args:
+        file: Image file of the ID card
+        id_type: Type of ID - "driving_license" or "state_id"
+        user: Authenticated user from dependency
+    
+    Process:
+        1. Extract text using Google Vision OCR
+        2. Validate with OpenAI LLM (full name, DOB, 9-digit ID number)
+        3. If valid: Store image in Supabase 'id_cards' bucket and save extracted data to user_profile.id_card
+        4. If invalid: Return error message asking user to reupload clearer image
+    
+    Returns:
+        On success: { status: 'ok', id_card: {...} }
+        On failure: { status: 'error', error_message: '...' }
+    """
+    user_id = user.get('id')
+    
+    # Validate id_type parameter
+    if id_type not in ['driving_license', 'state_id']:
+        raise HTTPException(status_code=400, detail='invalid_id_type_must_be_driving_license_or_state_id')
+    
+    # Validate file is an image
+    from .ocr import is_image
+    if not is_image(file.filename):
+        raise HTTPException(status_code=400, detail='invalid_file_type_only_images_allowed')
+    
+    try:
+        # Read file content
+        content = await file.read()
+        filesize = len(content)
+        
+        # Validate file size (max 10MB)
+        MAX_SIZE = 10 * 1024 * 1024  # 10MB
+        if filesize > MAX_SIZE:
+            raise HTTPException(status_code=400, detail='file_too_large_max_10mb')
+        
+        logger.info(f"📸 Processing ID card upload for user {user_id}, type: {id_type}, size: {filesize} bytes")
+        
+        # Step 1: Extract text using Google Vision OCR
+        from .ocr import extract_text_from_document
+        ocr_text, ocr_success = extract_text_from_document(content, file.filename)
+        
+        logger.info(f"🔍 Google Vision OCR Response:")
+        logger.info(f"   - Success: {ocr_success}")
+        logger.info(f"   - Text Length: {len(ocr_text) if ocr_text else 0} characters")
+        if ocr_text:
+            logger.info(f"   - Extracted Text:\n{ocr_text}")
+        
+        if not ocr_success or not ocr_text:
+            logger.warning(f"⚠️  OCR failed for user {user_id}")
+            return JSONResponse({
+                'status': 'error',
+                'error_message': 'Failed to extract text from the image. Please ensure the image is clear and try again.'
+            }, status_code=400)
+        
+        logger.info(f"✅ OCR successful, extracted {len(ocr_text)} characters")
+        
+        # Step 2: Validate with LLM
+        from .id_card_validator import validate_id_card
+        validation_result = validate_id_card(ocr_text, id_type)
+        
+        if not validation_result['is_valid']:
+            logger.warning(f"❌ ID card validation failed for user {user_id}: {validation_result['error_message']}")
+            return JSONResponse({
+                'status': 'error',
+                'error_message': validation_result['error_message']
+            }, status_code=400)
+        
+        logger.info(f"✅ ID card validation successful for user {user_id}")
+        
+        # Step 3: Upload image to Supabase Storage 'id_cards' bucket
+        from .supabase_client import storage_upload_file
+        from datetime import datetime
+        
+        ext = Path(file.filename).suffix or '.jpg'
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        object_path = f"{user_id}/{timestamp}_{id_type}{ext}"
+        
+        try:
+            storage_result = storage_upload_file(
+                bucket='id_cards',
+                path=object_path,
+                file_bytes=content,
+                content_type=file.content_type or 'image/jpeg',
+                upsert=True
+            )
+            image_url = storage_result.get('public_url') if isinstance(storage_result, dict) else None
+            logger.info(f"✅ ID card image uploaded to storage: {image_url}")
+        except Exception as e:
+            logger.exception(f"❌ Failed to upload ID card image to storage: {e}")
+            # Continue without image URL - we still want to save the extracted data
+            image_url = None
+        
+        # Step 4: Save extracted data to user_profile.id_card
+        id_card_data = {
+            'id_type': id_type,
+            'full_name': validation_result['full_name'],
+            'dob': validation_result['dob'],
+            'id_number': validation_result['id_number'],
+            'image_url': image_url,
+            'validated_at': datetime.utcnow().isoformat()
+        }
+        
+        from .supabase_client import admin_upsert_profile
+        updated_profile = admin_upsert_profile(user_id=str(user_id), fields={'id_card': id_card_data})
+        
+        logger.info(f"✅ ID card data saved to profile for user {user_id}")
+        
+        return JSONResponse({
+            'status': 'ok',
+            'id_card': id_card_data,
+            'profile': updated_profile
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"❌ Error processing ID card upload for user {user_id}: {e}")
+        return JSONResponse({
+            'status': 'error',
+            'error_message': 'An unexpected error occurred. Please try again.'
+        }, status_code=500)
+
+
 @app.post('/user/profile/photo')
 async def upload_profile_photo(file: UploadFile = File(...), authorization: Optional[str] = Header(None)):
     """Upload a profile photo for the authenticated user and update their profile.photo_url.
@@ -6095,6 +6334,73 @@ async def list_cases(request: Request):
     # avoid printing to stdout; use logger.debug if needed
     return res
 
+@app.options('/api/cases/7801-submission')
+async def options_7801_submission():
+    """CORS preflight handler for 7801 submission endpoint"""
+    response = JSONResponse(content={})
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
+@app.post('/api/cases/7801-submission')
+async def save_7801_submission(payload: Dict[str, Any] = Body(...)):
+    """
+    Public endpoint (no authentication required) to save form 7801 submission data.
+    Called by browser extension after successful form submission.
+    
+    Expected payload:
+    {
+        "user_id": "uuid",
+        "case_id": "uuid",
+        "application_number": "458462",
+        "page_content": "<html>...</html>",
+        "submitted_at": "2026-01-25T12:00:00Z"
+    }
+    """
+    try:
+        logger.info('[7801-SUBMISSION] Received submission request')
+        logger.info(f'[7801-SUBMISSION] Case ID: {payload.get("case_id")}')
+        logger.info(f'[7801-SUBMISSION] Application Number: {payload.get("application_number")}')
+        
+        user_id = payload.get('user_id')
+        case_id = payload.get('case_id')
+        application_number = payload.get('application_number')
+        page_content = payload.get('page_content')
+        submitted_at = payload.get('submitted_at')
+        
+        # Validate required fields
+        if not case_id:
+            logger.error('[7801-SUBMISSION] Missing case_id')
+            raise HTTPException(status_code=400, detail='case_id is required')
+        
+        # Prepare update data
+        update_data = {
+            '7801_application': {
+                'application_number': application_number,
+                'page_content': page_content,
+                'submitted_at': submitted_at
+            },
+            'status': 'submitted'
+        }
+        
+        # Update case in database
+        result = update_case(case_id, update_data)
+        logger.info(f'[7801-SUBMISSION] ✓ Case updated successfully: {case_id}')
+        
+        # Return response with CORS headers
+        response = JSONResponse({
+            'status': 'ok',
+            'message': 'Submission saved successfully',
+            'case': result
+        })
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+        
+    except Exception as e:
+        logger.exception('[7801-SUBMISSION] Error saving submission')
+        raise HTTPException(status_code=500, detail=f'Failed to save submission: {str(e)}')
+
 @app.post('/cases')
 async def create_case_endpoint(payload: Dict[str, Any] = Body(...), request: Request = None):
     """Create a new case for the authenticated user. Expects JSON {title, description, metadata}, Authorization header required."""
@@ -6163,6 +6469,21 @@ async def get_case_endpoint(case_id: str, request: Request):
             case = rows[0]
             if case.get('user_id') != user_id:
                 raise HTTPException(status_code=403, detail='forbidden')
+            
+            # Also fetch user_profile to get id_card, phone, and payments data
+            try:
+                user_profile_rows = _supabase_admin.table('user_profile').select('id_card, phone, payments').eq('user_id', user_id).execute().data
+                if user_profile_rows:
+                    user_profile = user_profile_rows[0]
+                    case['user_profile'] = user_profile
+                    if user_profile.get('id_card'):
+                        case['id_card'] = user_profile.get('id_card')
+                    if user_profile.get('phone'):
+                        case['phone'] = user_profile.get('phone')
+            except Exception as e:
+                logger.warning(f'Failed to fetch user_profile data: {str(e)}')
+                # Continue without id_card/phone data
+            
             return JSONResponse({'status': 'ok', 'case': case})
         except HTTPException:
             raise

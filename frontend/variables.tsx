@@ -10,7 +10,7 @@
  * const apiUrl = `${BACKEND_BASE_URL}/admin/profile`
  */
 
-// export const BACKEND_BASE_URL = 'http://localhost:8000'
+export const BACKEND_BASE_URL = 'http://localhost:8000'
 
 // export const BACKEND_BASE_URL = 'http://34.63.14.52'
-export const BACKEND_BASE_URL = "https://lancaster-fresh-democrats-possibilities.trycloudflare.com"
+// export const BACKEND_BASE_URL = "https://claire-camp-nicholas-gently.trycloudflare.com"

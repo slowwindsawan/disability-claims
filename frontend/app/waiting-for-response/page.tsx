@@ -5,10 +5,101 @@ import { Clock, FileText, Scale, Shield, TrendingUp, CheckCircle2, Lightbulb, Bo
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
-import useCurrentCase from "@/lib/useCurrentCase"
+import { useEffect, useRef, useState } from "react"
+import { BACKEND_BASE_URL } from '@/variables'
 
 export default function WaitingForResponsePage({callSummary}: {callSummary?: any}) {
-  const { currentCase, formatCaseNumber, loadingCase } = useCurrentCase()
+  const [currentCase, setCurrentCase] = useState<any>(null)
+  const [loadingCase, setLoadingCase] = useState(true)
+  const [errorCase, setErrorCase] = useState<string | null>(null)
+  const fetchCountRef = useRef(0)
+
+  // Refetch case data when page loads and poll periodically for latest 7801 submission data
+  useEffect(() => {
+    const fetchCaseData = async () => {
+      try {
+        const caseId = localStorage.getItem("case_id")
+        const token = localStorage.getItem("access_token")
+
+        console.log(`[WaitingForResponse] Fetch attempt #${fetchCountRef.current + 1} for case: ${caseId}`)
+
+        if (!token || !caseId) {
+          console.warn("[WaitingForResponse] Missing token or case_id")
+          setCurrentCase(null)
+          if (fetchCountRef.current === 0) setLoadingCase(false)
+          return
+        }
+
+        const apiUrl = `${BACKEND_BASE_URL}/cases/${caseId}`
+        console.log("[WaitingForResponse] Fetching from:", apiUrl)
+
+        const response = await fetch(apiUrl, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        })
+
+        console.log("[WaitingForResponse] Response status:", response.status)
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error("[WaitingForResponse] Failed to fetch:", errorText)
+          setErrorCase(`Failed to fetch case: ${response.statusText}`)
+          if (fetchCountRef.current === 0) {
+            setCurrentCase(null)
+            setLoadingCase(false)
+          }
+          return
+        }
+
+        const caseData = await response.json()
+        console.log("[WaitingForResponse] Case data fetched:", caseData)
+        console.log("[WaitingForResponse] 7801 Application data:", caseData?.['7801_application'])
+        setCurrentCase(caseData)
+        setErrorCase(null)
+        if (fetchCountRef.current === 0) {
+          setLoadingCase(false)
+        }
+        fetchCountRef.current++
+      } catch (error) {
+        console.error("[WaitingForResponse] Error fetching case:", error)
+        setErrorCase(error instanceof Error ? error.message : "Unknown error")
+        if (fetchCountRef.current === 0) {
+          setCurrentCase(null)
+          setLoadingCase(false)
+        }
+      }
+    }
+
+    // Initial fetch
+    fetchCaseData()
+  }, [])
+  
+  // Extract 7801 submission data if available
+  const applicationData = currentCase?.['7801_application'] 
+  console.log("[WaitingForResponse] Extracted applicationData:", applicationData)
+  const applicationNumber = applicationData?.application_number || 'N/A'
+  
+  // Format submitted date with time
+  const formatDateTime = (dateStr: string) => {
+    const date = new Date(dateStr)
+    const formatted = date.toLocaleDateString('he-IL', { 
+      year: 'numeric', 
+      month: '2-digit', 
+      day: '2-digit' 
+    }) + ' ' + date.toLocaleTimeString('he-IL', {
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+    return formatted
+  }
+  
+  const submittedDate = applicationData?.submitted_at 
+    ? formatDateTime(applicationData.submitted_at)
+    : (currentCase?.created_at ? formatDateTime(currentCase.created_at) : formatDateTime(new Date().toISOString()))
+  const caseStatus = currentCase?.status === 'submitted' ? 'בבדיקה' : 'בהמתנה'
 
   if (loadingCase) {
     return (
@@ -56,15 +147,15 @@ export default function WaitingForResponsePage({callSummary}: {callSummary?: any
           <Card className="p-8 bg-white shadow-lg mb-8">
             <div className="flex items-start justify-between mb-6">
               <div>
-                <h2 className="text-2xl font-bold text-slate-900 mb-2">מספר תיק: {currentCase?.id ? currentCase.id.slice(0, 8).toUpperCase() : 'N/A'}</h2>
+                <h2 className="text-2xl font-bold text-slate-900 mb-2">מספר בקשה: {currentCase?.case?.['7801_application']?.application_number}</h2>
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse" />
-                  <span className="text-sm font-semibold text-slate-600">סטטוס: בבדיקה</span>
+                  <span className="text-sm font-semibold text-slate-600">סטטוס: {caseStatus}</span>
                 </div>
               </div>
               <div className="text-left">
                 <p className="text-sm text-slate-500 mb-1">תאריך הגשה</p>
-                <p className="text-lg font-bold text-slate-900">{currentCase?.created_at ? new Date(currentCase.created_at).toLocaleDateString("he-IL") : new Date().toLocaleDateString("he-IL")}</p>
+                <p className="text-lg font-bold text-slate-900">{currentCase?.case?.['7801_application']?.submitted_at}</p>
               </div>
             </div>
 

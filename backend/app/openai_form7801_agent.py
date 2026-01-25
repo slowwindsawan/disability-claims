@@ -282,7 +282,319 @@ async def run_workflow(workflow_input: WorkflowInput):
 
 
 # ------------------------------------------------------------------
-# Public API wrapper for integration with main.py
+# Form 7801 Payload Schema (Based on Israeli Bituach Leumi Form)
+# ------------------------------------------------------------------
+
+class Form7801DiseaseItem(BaseModel):
+    disease: str
+    date: str
+    hospitalized: bool
+    uploadHospitalFile: bool
+    hospitalFileUrl: str = ""
+    sawSpecialist: bool
+    uploadSpecialistFile: bool
+    specialistFileUrl: str = ""
+    otherDescription: str = ""
+
+
+class Form7801OtherDocument(BaseModel):
+    name: str
+    fileType: str
+    fileUrl: str
+
+
+class Form7801PayloadSchema(BaseModel):
+    gender: str
+    dob: str
+    submitFor: str = "1"
+    firstName: str
+    lastName: str
+    idNumber: str
+    maritalStatus: str
+    hasSiyua: str = "2"
+    siyuaBody: list[str] = []
+    siyuaBodyName: str = ""
+    phoneNumber: str
+    repeatMobile: str
+    otherPhoneNumber: str = ""
+    email: str
+    repeatEmail: str
+    smsConfirm: str = "1"
+    differentAddress: bool = False
+    otherCity: str = ""
+    otherStreet: str = ""
+    otherHome: str = ""
+    otherApartment: str = ""
+    mailBox: str = ""
+    accountOwnerName: str
+    accountOwnerIdNum: str
+    isOwner2: bool = False
+    bankName: str
+    localBankName: str
+    accountNumber: str
+    kindComplaint: str
+    notWorkingReason: str = ""
+    workingAs: str = ""
+    gotSickPayYN: str = "1"
+    otherIncome: str = "1"
+    diseases: list[Form7801DiseaseItem]
+    medicalTests: list[str]
+    accident: bool = False
+    accidentDate: str = ""
+    armyInjury: bool = False
+    uploadArmyFile: bool = False
+    armyFileUrl: str = ""
+    statement: bool = True
+    healthFund: str
+    healthDetails: str = ""
+    declaration: bool = True
+    signatureType: str = "חתימה סרוקה"
+    uploadSignatureFile: bool = True
+    signatureFileUrl: str = ""
+    signatureFileType: str = "image"
+    finalDeclaration: bool = True
+    videoMedicalCommittee: bool = True
+    refuseEmployerContact: bool = False
+    otherDocuments: list[Form7801OtherDocument]
+    informationTransfer: bool = True
+    secondSignatureType: str = "חתימה סרוקה"
+    uploadSecondSignature: bool = True
+
+
+class Form7801Context:
+    def __init__(self, input_data_as_text: str):
+        self.input_data_as_text = input_data_as_text
+
+
+def form7801_payload_instructions(run_context: RunContextWrapper[Form7801Context], _agent: Agent[Form7801Context]):
+    input_data = run_context.context.input_data_as_text
+    
+    return f"""You are a Form 7801 payload generation agent for the Israeli Bituach Leumi disability benefits claim system.
+
+Your task is to analyze the provided data and construct a complete Form 7801 payload structure.
+
+DATA PROVIDED:
+{input_data}
+
+INSTRUCTIONS:
+1. Map user_profile fields to personal information:
+   - email: from user_profile.email
+   - phone: from user_profile.phone
+   - full_name: from user_profile.full_name (split into firstName and lastName if needed)
+   - Additional details (dob, gender, idNumber, address, city) should come from:
+     a) eligibility_raw JSONB (contains questionnaire answers)
+     b) contact_details JSONB in user_profile
+     c) call_details or call_summary
+     d) If not found, leave as empty string
+
+2. Extract marital status and employment data from:
+   - eligibility_raw (questionnaire answers)
+   - call_details (from voice interview)
+   - call_summary (summary of call)
+
+3. Map documents from case_documents to appropriate fields:
+   - Hospital reports → hospitalFileUrl in diseases array
+   - Specialist reports → specialistFileUrl in diseases array
+   - Signature files → signatureFileUrl
+   - Army injury docs → armyFileUrl (if applicable)
+   - Other documents → otherDocuments array
+
+4. Extract disease/disability information from:
+   - call_details and call_summary (from voice interview)
+   - eligibility_raw (from questionnaire)
+   - Identify disability types from case summary
+   - Extract disability start date if available
+   - Identify hospitalizations if mentioned
+   - Identify specialist visits if mentioned
+
+5. Bank account information (search in eligibility_raw or call_summary if available)
+
+6. Health fund information:
+   - From eligibility_raw or call_summary
+   - Default to empty if not found
+
+7. Medical tests performed:
+   - From documents metadata
+   - From call_summary
+   - From eligibility_raw
+
+8. For missing information, leave fields empty (empty strings "" for text, false for booleans, empty arrays [])
+
+FIELD CONSTRAINTS:
+- gender: "1" (זכר/male) or "2" (נקבה/female), or "" if unknown
+- dob: DD/MM/YYYY format, or "" if not available
+- idNumber: 9-digit Israeli ID, or "" if not available
+- phoneNumber: Israeli mobile format (05XXXXXXXX), or "" if not available
+- firstName & lastName: Split from full_name or from questionnaire answers
+- maritalStatus: One of ["אלמן/אלמנה", "גרוש/גרושה ללא ילדים", "גרוש/גרושה עם ילדים", "עגון/עגונה", "פרוד/פרודה", "רווק/רווקה"] or ""
+- kindComplaint: "1" (לא עבדתי כלל), "2" (עבדתי והפסקתי לעבוד), or ""
+- diseases: Array of disease objects with allowed disease values or empty array
+- medicalTests: Array from allowed medical test names or empty array
+- healthFund: One of ["כללית", "לאומית", "מאוחדת", "מכבי", "אחר"] or ""
+- File URLs: Use full Supabase Storage URLs from documents data
+
+IMPORTANT:
+- Use Hebrew text for all Hebrew fields
+- Match document types to correct payload fields based on file_name and metadata
+- If data is missing, use empty values (don't make up data)
+- Ensure all dates are in DD/MM/YYYY format
+- Ensure phone numbers are in Israeli format or empty
+- Extract data intelligently from questionnaire answers in eligibility_raw
+- The user_profile available fields are: email, phone, full_name, contact_details (JSONB)
+
+Return a valid Form 7801 payload JSON structure."""
+
+
+form7801_payload_agent = Agent(
+    name="Form 7801 Payload Generator",
+    instructions=form7801_payload_instructions,
+    model="gpt-4o",
+    output_type=Form7801PayloadSchema
+)
+
+
+async def generate_form7801_payload(input_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Generate Form 7801 payload from gathered database data.
+    
+    Args:
+        input_data: Dictionary containing:
+            - case_id: Case ID
+            - documents: List of documents with file_url, metadata, file_name
+            - eligibility_raw: Eligibility data from user_eligibility table
+            - user_profile: User profile data (email, phone, id_card, etc.)
+            - call_details: Call details JSONB data
+            - call_summary: Call summary JSONB data
+    
+    Returns:
+        Form 7801 payload dictionary
+    """
+    try:
+        # Convert input_data to formatted text for agent
+        input_text = f"""
+=== CASE ID ===
+{input_data.get('case_id', 'N/A')}
+
+=== USER PROFILE ===
+{json.dumps(input_data.get('user_profile', {}), indent=2, ensure_ascii=False)}
+
+=== ELIGIBILITY DATA ===
+{json.dumps(input_data.get('eligibility_raw', {}), indent=2, ensure_ascii=False)}
+
+=== CALL SUMMARY ===
+{json.dumps(input_data.get('call_summary', {}), indent=2, ensure_ascii=False)}
+
+=== CALL DETAILS ===
+{json.dumps(input_data.get('call_details', {}), indent=2, ensure_ascii=False)}
+
+=== DOCUMENTS (with file URLs) ===
+{json.dumps(input_data.get('documents', []), indent=2, ensure_ascii=False)}
+"""
+        
+        logger.info("[FORM7801] Preparing to call Form 7801 payload generation agent...")
+        logger.info(f"[FORM7801] Input data keys: {list(input_data.keys())}")
+        logger.info(f"[FORM7801] Documents count: {len(input_data.get('documents', []))}")
+        
+        # Create conversation history
+        conversation_history: list[TResponseInputItem] = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": input_text
+                    }
+                ]
+            }
+        ]
+        
+        # Run agent
+        with trace("Form 7801 Payload Generation"):
+            result = await Runner.run(
+                form7801_payload_agent,
+                input=conversation_history,
+                run_config=RunConfig(trace_metadata={
+                    "__trace_source__": "form7801-generator",
+                    "case_id": input_data.get('case_id')
+                }),
+                context=Form7801Context(input_data_as_text=input_text)
+            )
+        
+        logger.info("[FORM7801] ✅ Agent completed successfully")
+        
+        # Extract payload
+        payload = result.final_output.model_dump()
+        
+        logger.info(f"[FORM7801] Generated payload with {len(payload.get('diseases', []))} diseases")
+        logger.info(f"[FORM7801] Generated payload with {len(payload.get('otherDocuments', []))} other documents")
+        
+        return payload
+        
+    except Exception as e:
+        logger.exception(f"[FORM7801] ❌ Error generating Form 7801 payload: {e}")
+        
+        # Return minimal valid payload structure
+        return {
+            "gender": "",
+            "dob": "",
+            "submitFor": "1",
+            "firstName": "",
+            "lastName": "",
+            "idNumber": "",
+            "maritalStatus": "",
+            "hasSiyua": "2",
+            "siyuaBody": [],
+            "siyuaBodyName": "",
+            "phoneNumber": "",
+            "repeatMobile": "",
+            "otherPhoneNumber": "",
+            "email": "",
+            "repeatEmail": "",
+            "smsConfirm": "1",
+            "differentAddress": False,
+            "otherCity": "",
+            "otherStreet": "",
+            "otherHome": "",
+            "otherApartment": "",
+            "mailBox": "",
+            "accountOwnerName": "",
+            "accountOwnerIdNum": "",
+            "isOwner2": False,
+            "bankName": "",
+            "localBankName": "",
+            "accountNumber": "",
+            "kindComplaint": "",
+            "notWorkingReason": "",
+            "workingAs": "",
+            "gotSickPayYN": "1",
+            "otherIncome": "1",
+            "diseases": [],
+            "medicalTests": [],
+            "accident": False,
+            "accidentDate": "",
+            "armyInjury": False,
+            "uploadArmyFile": False,
+            "armyFileUrl": "",
+            "statement": True,
+            "healthFund": "",
+            "healthDetails": "",
+            "declaration": True,
+            "signatureType": "חתימה סרוקה",
+            "uploadSignatureFile": True,
+            "signatureFileUrl": "",
+            "signatureFileType": "image",
+            "finalDeclaration": True,
+            "videoMedicalCommittee": True,
+            "refuseEmployerContact": False,
+            "otherDocuments": [],
+            "informationTransfer": True,
+            "secondSignatureType": "חתימה סרוקה",
+            "uploadSecondSignature": True
+        }
+
+
+# ------------------------------------------------------------------
+# Public API wrapper for integration with main.py (OLD - keep for backward compatibility)
 # ------------------------------------------------------------------
 
 async def analyze_documents_with_openai_agent(

@@ -21,6 +21,7 @@ import {
   Briefcase,
   Bell,
   Download,
+  Loader2,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,7 @@ import ClaimApprovedPage from "@/new-resources/app/claim-approved/page";
 import ClaimRejectedPage from "@/new-resources/app/claim-rejected/page";
 import NotEligiblePage from "@/new-resources/app/not-eligible/page";
 import useCurrentCase from "@/lib/useCurrentCase";
+import { BACKEND_BASE_URL } from "@/variables";
 
 interface RequiredDocument {
   id: number;
@@ -73,6 +75,7 @@ export default function DashboardPage() {
   const [checkingAuth, setCheckingAuth] = useState(true);
 
   const [paymentDetailsCompleted, setPaymentDetailsCompleted] = useState(false);
+  const [idCardUploaded, setIdCardUploaded] = useState(false);
   // In a real app, this would come from user session/database
 
   // In a real app, this would come from user session/database based on claim maximization modal selections
@@ -83,6 +86,8 @@ export default function DashboardPage() {
   const rejectedDocumentId = 1; // ID card rejected
 
   const [showExtensionModal, setShowExtensionModal] = useState(false);
+  const [showIdCardModal, setShowIdCardModal] = useState(false);
+  const [idCardLoading, setIdCardLoading] = useState(false);
   const [extensionInstalled, setExtensionInstalled] = useState(false);
   const [hasCompletedPayment, setHasCompletedPayment] = useState(true); // Check if user completed payment/checkout
   const [showNotifications, setShowNotifications] = useState(false);
@@ -349,19 +354,14 @@ export default function DashboardPage() {
         // Only show the "Complete details" card if BOTH columns are missing
         setPaymentDetailsCompleted(hasPayments && hasContact);
 
+        // Check if ID card is uploaded
+        const idCard = p?.id_card;
+        setIdCardUploaded(!!idCard);
+
         // Load cases to get the first case
         try {
           const casesRes: any = await legacyApi.apiGetCases();
           console.log("apiGetCases response:", casesRes);
-          console.log("casesRes type:", typeof casesRes);
-          console.log(
-            "casesRes keys:",
-            casesRes && typeof casesRes === "object"
-              ? Object.keys(casesRes)
-              : "not an object"
-          );
-          console.log("casesRes.cases:", casesRes?.cases);
-          console.log("casesRes.data:", casesRes?.data);
 
           // Try multiple possible response shapes
           let cases = casesRes?.cases;
@@ -376,21 +376,23 @@ export default function DashboardPage() {
             cases = [];
           }
 
-          console.log("extracted cases:", cases, "length:", cases?.length);
-
           if (cases && Array.isArray(cases) && cases.length > 0) {
             const firstCase = cases[0];
             const caseId = firstCase.id;
+
+            // Store case_id in localStorage for other components (like useCurrentCase hook)
+            if (caseId) {
+              localStorage.setItem('case_id', caseId);
+              console.log('✅ Set case_id in localStorage:', caseId);
+            }
 
             // Store the first case row in state (quick reference)
             setUserCase(firstCase);
 
             // Extract final_document_analysis if available
-            if (firstCase.final_document_analysis) {
-              setFinalDocumentAnalysis(firstCase.final_document_analysis);
+            if (firstCase["7801_form"]) {
+              setFinalDocumentAnalysis(firstCase["7801_form"]);
             }
-
-            console.log("DEBUG: Set userCase to:", firstCase);
 
             // Prefer call_summary from list item, but if missing fetch full case from backend
             let caseDetails: any = firstCase;
@@ -415,10 +417,6 @@ export default function DashboardPage() {
               callSummary?.documents_requested ||
               callSummary?.documents_requested_list ||
               null;
-
-            console.log("DEBUG: callSummary:", callSummary);
-            console.log("DEBUG: docsKey:", docsKey);
-            console.log("DEBUG: isArray(docsKey):", Array.isArray(docsKey));
 
             if (
               callSummary &&
@@ -486,6 +484,48 @@ export default function DashboardPage() {
 
               // Use documents_requested_list directly from call_summary
               setRequiredDocuments(dbDocs);
+            }
+          } else {
+            // No cases found - user logged in but doesn't have a case yet
+            console.warn('⚠️ User has no cases. Creating a new case automatically...');
+            
+            // Create a new case for the user
+            try {
+              const token = localStorage.getItem('access_token');
+              if (token) {
+                const createCaseRes = await fetch(`${BACKEND_BASE_URL}/cases`, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    title: 'תיק נכות חדש',
+                    description: 'תיק נוצר אוטומטית',
+                    metadata: { auto_created: true, created_from: 'dashboard' }
+                  }),
+                });
+                
+                if (createCaseRes.ok) {
+                  const newCaseData = await createCaseRes.json();
+                  const newCaseId = newCaseData?.case?.id;
+                  
+                  if (newCaseId) {
+                    localStorage.setItem('case_id', newCaseId);
+                    setUserCase(newCaseData.case);
+                    console.log('✅ Created new case:', newCaseId);
+                  }
+                } else {
+                  console.error('Failed to create case:', await createCaseRes.text());
+                }
+              }
+            } catch (createError) {
+              console.error('Error creating case:', createError);
+            }
+            
+            // Clear case_id from localStorage if creation failed
+            if (!localStorage.getItem('case_id')) {
+              localStorage.removeItem('case_id');
             }
           }
         } catch (e: any) {
@@ -589,15 +629,12 @@ export default function DashboardPage() {
       console.log("📋 Case ID:", caseId);
       console.log("📤 Calling Form 7801 OpenAI agent analysis endpoint...");
 
-      const response = await fetch("/api/analyze-documents-form7801", {
+      const response = await fetch(`${BACKEND_BASE_URL}/cases/${caseId}/analyze-documents-form7801`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${localStorage.getItem("access_token") || ""}`,
         },
-        body: JSON.stringify({
-          caseId: caseId,
-        }),
       });
 
       console.log("📨 Response status:", response.status);
@@ -633,14 +670,31 @@ export default function DashboardPage() {
   const handleSubmitForm7801 = () => {
     if (!finalDocumentAnalysis) return;
 
+    // Check if ID card is confirmed
+    if (!profile?.id_card) {
+      alert('נא להעלות ולאמת את תעודת הזהות שלך לפני הגשת הטופס.');
+      return;
+    }
+
+    // Get caseId from userCase
+    const caseId = userCase?.id;
+    if (!caseId) {
+      alert('שגיאה: לא נמצא מזהה תיק. אנא נסה שוב.');
+      return;
+    }
+
     // Store the analysis data in session storage for prefilling
     sessionStorage.setItem(
       "form7801_prefill_data",
       JSON.stringify(finalDocumentAnalysis)
     );
 
-    // Navigate to legal-review page
-    router.push("/legal-review");
+    // Store current_case_id in localStorage
+    localStorage.setItem('current_case_id', caseId);
+    console.log('📋 Navigating to legal-review with case_id:', caseId);
+
+    // Navigate to legal-review page with case ID as URL parameter
+    router.push(`/legal-review/?case_id=${caseId}`);
   };
 
   const renderDocumentList = (documents: RequiredDocument[]) => (
@@ -1011,6 +1065,38 @@ export default function DashboardPage() {
           <span className="text-slate-900 font-medium">התיק שלי</span>
         </div>
 
+        {!loadingProfile && !idCardUploaded && (
+          <motion.div
+            initial={{ y: -20, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            transition={{ duration: 0.5 }}
+            className="mb-6"
+          >
+            <Card className="p-6 bg-gradient-to-l from-blue-50 to-indigo-50 border-blue-200">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 bg-blue-500 rounded-full flex items-center justify-center flex-shrink-0">
+                  <AlertCircle className="w-6 h-6 text-white" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-lg font-bold text-slate-900 mb-1">
+                    פעולה נדרשת: העלאת תעודת זהות
+                  </h3>
+                  <p className="text-sm text-slate-700 mb-4 leading-relaxed">
+                    כדי לאמת את זהותך ולהמשיך בתהליך, נדרש להעלות תמונה של תעודת זהות או רישיון נהיגה. התמונה תעבור אימות אוטומטי.
+                  </p>
+                  <Button 
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-semibold"
+                    onClick={() => setShowIdCardModal(true)}
+                  >
+                    <Upload className="w-4 h-4 ml-2" />
+                    העלה תעודת זהות
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          </motion.div>
+        )}
+
         {!loadingProfile && !paymentDetailsCompleted && (
           <motion.div
             initial={{ y: -20, opacity: 0 }}
@@ -1154,6 +1240,156 @@ export default function DashboardPage() {
                 >
                   {isRTL ? "אולי אחר כך" : "Maybe Later"}
                 </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {showIdCardModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            onClick={() => setShowIdCardModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ type: "spring", duration: 0.5 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-8"
+              dir={isRTL ? "rtl" : "ltr"}
+            >
+              <h2 className="text-2xl font-bold text-slate-900 mb-4">
+                העלאת תעודת זהות
+              </h2>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    סוג התעודה
+                  </label>
+                  <select
+                    id="id-type"
+                    className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    defaultValue=""
+                  >
+                    <option value="" disabled>בחר סוג תעודה</option>
+                    <option value="driving_license">רישיון נהיגה</option>
+                    <option value="state_id">תעודת זהות</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    תמונת התעודה
+                  </label>
+                  <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center hover:border-blue-500 transition-colors">
+                    <input
+                      type="file"
+                      id="id-card-file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const preview = document.getElementById('id-preview-container');
+                          if (preview) {
+                            const reader = new FileReader();
+                            reader.onload = (e) => {
+                              preview.innerHTML = `<img src="${e.target?.result}" class="max-h-48 mx-auto rounded-lg" />`;
+                            };
+                            reader.readAsDataURL(file);
+                          }
+                        }
+                      }}
+                    />
+                    <div id="id-preview-container" className="mb-4"></div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => document.getElementById('id-card-file')?.click()}
+                    >
+                      <Upload className="w-4 h-4 ml-2" />
+                      בחר תמונה
+                    </Button>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">
+                    נא להעלות תמונה ברורה של התעודה. התמונה תעבור אימות אוטומטי.
+                  </p>
+                </div>
+
+                <div className="flex gap-3 pt-4">
+                  <Button
+                    disabled={idCardLoading}
+                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={async () => {
+                      const fileInput = document.getElementById('id-card-file') as HTMLInputElement;
+                      const idTypeSelect = document.getElementById('id-type') as HTMLSelectElement;
+                      const file = fileInput?.files?.[0];
+                      const idType = idTypeSelect?.value;
+
+                      if (!file) {
+                        alert('נא לבחור תמונה');
+                        return;
+                      }
+                      if (!idType) {
+                        alert('נא לבחור סוג תעודה');
+                        return;
+                      }
+
+                      setIdCardLoading(true);
+                      try {
+                        const token = localStorage.getItem('access_token');
+                        if (!token) {
+                          alert('שגיאה: לא קיים טוקן אימות. נא להתחבר מחדש.');
+                          return;
+                        }
+                        
+                        const result = await legacyApi.apiUploadIdCard(file, idType as 'driving_license' | 'state_id');
+
+                        if (result.status === 'ok') {
+                          alert('תעודת הזהות אומתה בהצלחה!');
+                          setIdCardUploaded(true);
+                          setShowIdCardModal(false);
+                          
+                          // Reload profile to get updated data
+                          const profileRes: any = await legacyApi.apiGetProfile();
+                          const p = profileRes?.profile || profileRes?.data || profileRes;
+                          setProfile(p);
+                        } else {
+                          alert(`שגיאה באימות התעודה: ${result.error_message || 'נא לנסות שוב עם תמונה ברורה יותר'}`);
+                        }
+                      } catch (error: any) {
+                        console.error('ID card upload error:', error);
+                        const errorMessage = error?.body?.error_message || error?.body?.detail || error.message || 'נא לנסות שוב';
+                        alert(`שגיאה בהעלאת התעודה: ${errorMessage}`);
+                      } finally {
+                        setIdCardLoading(false);
+                      }
+                    }}
+                  >
+                    {idCardLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 ml-2 animate-spin" />
+                        מעבד...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-4 h-4 ml-2" />
+                        העלה ואמת
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    disabled={idCardLoading}
+                    variant="outline"
+                    onClick={() => setShowIdCardModal(false)}
+                    className="disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    ביטול
+                  </Button>
+                </div>
               </div>
             </motion.div>
           </motion.div>
@@ -1349,9 +1585,16 @@ export default function DashboardPage() {
                           מערכת ה-AI ניתחה את המסמכים והכינה טופס 7801 מוגדר
                           מראש. לחץ להמשך לעמוד הביקורת המשפטית להגשת הטופס.
                         </p>
+                        {!profile?.id_card && (
+                          <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-lg text-sm text-orange-800">
+                            ⚠️ נא להעלות ולאמת את תעודת הזהות שלך תחילה לפני הגשת הטופס.
+                          </div>
+                        )}
                         <Button
                           onClick={handleSubmitForm7801}
-                          className="w-full bg-gradient-to-l from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-semibold"
+                          disabled={!profile?.id_card}
+                          className="w-full bg-gradient-to-l from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={!profile?.id_card ? "נא להעלות ולאמת את תעודת הזהות שלך תחילה" : ""}
                         >
                           <CheckCircle2 className="w-5 h-5 ml-2" />
                           הגש את הטופס 7801
@@ -1541,9 +1784,16 @@ export default function DashboardPage() {
                           מערכת ה-AI ניתחה את המסמכים והכינה טופס 7801 מוגדר
                           מראש. לחץ להמשך לעמוד הביקורת המשפטית להגשת הטופס.
                         </p>
+                        {!profile?.id_card && (
+                          <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-lg text-sm text-orange-800">
+                            ⚠️ נא להעלות ולאמת את תעודת הזהות שלך תחילה לפני הגשת הטופס.
+                          </div>
+                        )}
                         <Button
                           onClick={handleSubmitForm7801}
-                          className="w-full bg-gradient-to-l from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-semibold"
+                          disabled={!profile?.id_card}
+                          className="w-full bg-gradient-to-l from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={!profile?.id_card ? "נא להעלות ולאמת את תעודת הזהות שלך תחילה" : ""}
                         >
                           <CheckCircle2 className="w-5 h-5 ml-2" />
                           הגש את הטופס 7801
