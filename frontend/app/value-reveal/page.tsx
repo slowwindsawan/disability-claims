@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { CheckCircle2, Wallet, GraduationCap, Home, Shield } from "lucide-react"
+import { CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card" 
 import { useRouter } from "next/navigation"
@@ -21,6 +21,7 @@ interface CaseSummary {
   income_tax_exemption?: boolean
   living_expenses?: string | number
   chance_of_approval?: number
+  strength_score?: number
 }
 
 export default function ValueRevealPage() {
@@ -29,7 +30,6 @@ export default function ValueRevealPage() {
   const dir = language === "he" ? "rtl" : "ltr"
   const [caseSummary, setCaseSummary] = useState<CaseSummary | null>(null)
   const [loading, setLoading] = useState(true)
-  const [reanalyzingLoading, setReanalyzingLoading] = useState(false)
 
   useEffect(() => {
     const fetchCaseSummary = async () => {
@@ -160,65 +160,23 @@ export default function ValueRevealPage() {
     fetchCaseSummary()
   }, [])
 
-  const handleReanalyze = async () => {
+  const handleProceedToPayment = () => {
     try {
       const caseId = localStorage.getItem("case_id")
-      const token = localStorage.getItem("access_token")
-
-      if (!token) {
-        console.error("❌ Missing access_token")
-        router.push('/')
-        return
-      }
-
+      
       if (!caseId) {
-        console.warn("⚠️ No case_id available for reanalysis")
+        console.warn("⚠️ No case_id available")
         return
       }
 
-      setReanalyzingLoading(true)
-      console.log("🔄 Starting re-analysis for case:", caseId)
-
-      const response = await fetch(
-        `${BACKEND_BASE_URL}/vapi/re-analyze-call/${caseId}`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-        }
-      )
-
-      if (!response.ok) {
-        console.error("❌ Re-analysis failed:", response.statusText)
-        return
-      }
-
-      const result = await response.json()
-      console.log("✅ Re-analysis completed:", result)
-
-      // Update the case summary with the new analysis
-      if (result.analysis) {
-        setCaseSummary(result.analysis)
-        console.log("✅ Case summary updated with new analysis")
-      }
+      console.log("💳 Proceeding to checkout for case:", caseId)
+      
+      // Navigate to checkout page with case_id
+      router.push(`/checkout?case_id=${caseId}`)
     } catch (error) {
-      console.error("❌ Error during re-analysis:", error)
-    } finally {
-      setReanalyzingLoading(false)
+      console.error("❌ Error proceeding to checkout:", error)
     }
   }
-
-  // Extract estimated amount, fallback to "N/A"
-  const getEstimatedAmount = () => {
-    const amount = caseSummary?.estimated_claim_amount
-    if (amount === undefined || amount === null) return "N/A"
-    if (typeof amount === "number") return `₪${amount.toLocaleString()}`
-    if (typeof amount === "string" && amount !== "N/A" && amount !== "Unknown") return `₪${amount}`
-    return amount
-  }
-  const estimatedAmount = getEstimatedAmount()
 
   // Check if approval chance is less than 20%
   const isLowApprovalChance = caseSummary?.chance_of_approval !== undefined && caseSummary.chance_of_approval < 20
@@ -263,25 +221,33 @@ export default function ValueRevealPage() {
                 <span className="text-3xl">❌</span>
               </div>
               <h2 className="text-3xl font-bold text-slate-900 mb-4">
-                {language === "he" ? "לא ניתן להמשיך בתביעה" : "Unable to Proceed with Claim"}
+                {language === "he" ? "ניתוח התיק הושלם" : "Case Analysis Complete"}
               </h2>
-              <p className="text-lg text-slate-600 mb-6">
-                {language === "he" 
-                  ? `סיכוי ההסכמה לתביעה הוא ${caseSummary?.chance_of_approval}%. בשלב זה, אין בסיס רפואי מספיק להמשך בתהליך.`
-                  : `The approval chance for your claim is ${caseSummary?.chance_of_approval}%. At this stage, there is insufficient medical basis to proceed with the claim.`}
-              </p>
+              {caseSummary?.case_summary && (
+                <p className="text-lg text-slate-600 mb-6">
+                  {caseSummary.case_summary}
+                </p>
+              )}
               <p className="text-base text-slate-700">
                 {language === "he" 
                   ? "תודה על השיתוף פעולה והבנתכם."
                   : "Thank you for your cooperation and understanding."}
               </p>
             </div>
-            <div className="border-t pt-6">
-              <h3 className="font-semibold text-slate-900 mb-3">
-                {language === "he" ? "הערות משפטיות:" : "Legal Notes:"}
-              </h3>
-              {caseSummary?.key_legal_points && caseSummary.key_legal_points.length > 0 && (
-                <ul className="space-y-2 mb-4">
+            {caseSummary?.risk_assessment && (
+              <div className="border-t pt-6 mb-6">
+                <h3 className="font-semibold text-slate-900 mb-3">
+                  {language === "he" ? "הערכת סיכון" : "Risk Assessment"}
+                </h3>
+                <p className="text-slate-700">{caseSummary.risk_assessment}</p>
+              </div>
+            )}
+            {caseSummary?.key_legal_points && caseSummary.key_legal_points.length > 0 && (
+              <div className="border-t pt-6">
+                <h3 className="font-semibold text-slate-900 mb-3">
+                  {language === "he" ? "נקודות חשובות" : "Key Points"}
+                </h3>
+                <ul className="space-y-2">
                   {caseSummary.key_legal_points.map((point, index) => (
                     <li key={index} className="text-sm text-slate-700 flex gap-2">
                       <span className="text-slate-400 flex-shrink-0">•</span>
@@ -289,66 +255,128 @@ export default function ValueRevealPage() {
                     </li>
                   ))}
                 </ul>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </motion.div>
       ) : (
         <>
-          {/* Hero Section - Big Number */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.6, delay: 0.2 }}
-            className="text-center py-12 px-4"
-          >
-            <div className="relative inline-block">
-              {/* Glow effect behind the number */}
-              <div className="absolute inset-0 bg-gradient-to-r from-emerald-400 to-teal-400 blur-3xl opacity-30 rounded-full"></div>
-
-              <div className="relative">
-                <motion.h1
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.7, delay: 0.4 }}
-                  className="text-6xl md:text-8xl font-bold bg-gradient-to-l from-emerald-600 via-teal-600 to-cyan-600 bg-clip-text text-transparent mb-4"
-                >
-                  {estimatedAmount}
-                </motion.h1>
-                <motion.p
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ duration: 0.5, delay: 0.6 }}
-                  className="text-xl md:text-2xl font-medium text-slate-700"
-                >
-                  {t("value_reveal.retroactive_payment")}
-                </motion.p>
-              </div>
-            </div>
-          </motion.div>
-
-          {/* Analysis Details Section */}
+          {/* Analysis Summary Section with Grid */}
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.8 }}
-            className="max-w-5xl mx-auto px-4 pb-32"
+            className="max-w-6xl mx-auto px-4 pb-32"
           >
-            <div className="space-y-6">
-              {/* Chance of Approval Card */}
-              {caseSummary?.chance_of_approval !== undefined && (
+            {/* Scores Grid - Top Section */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+              {/* Strength Score Card */}
+              {caseSummary?.strength_score !== undefined && (
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.4, delay: 0.9 }}
                 >
-                  <Card className="p-6 bg-white/70 backdrop-blur-sm border-white/50 shadow-xl">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-lg font-semibold text-slate-800">
-                        {language === "he" ? "סיכוי ההסכמה" : "Chance of Approval"}
-                      </h3>
-                      <div className="text-3xl font-bold text-emerald-600">{caseSummary.chance_of_approval}%</div>
+                  <Card className="p-8 bg-gradient-to-br from-blue-50 to-blue-100/50 backdrop-blur-sm border border-blue-200 shadow-xl h-full flex flex-col items-center justify-center">
+                    <h3 className="text-lg font-semibold text-blue-900 mb-4">
+                      {language === "he" ? "דירוג חוזק התביעה" : "Claim Strength"}
+                    </h3>
+                    <div className="relative w-32 h-32 flex items-center justify-center mb-4">
+                      <svg className="w-full h-full transform -rotate-90" viewBox="0 0 120 120">
+                        <circle
+                          cx="60"
+                          cy="60"
+                          r="54"
+                          stroke="#e5e7eb"
+                          strokeWidth="8"
+                          fill="none"
+                        />
+                        <circle
+                          cx="60"
+                          cy="60"
+                          r="54"
+                          stroke="#3b82f6"
+                          strokeWidth="8"
+                          fill="none"
+                          strokeDasharray={`${(caseSummary.strength_score / 100) * 339.3} 339.3`}
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                      <div className="absolute text-center">
+                        <div className="text-4xl font-bold text-blue-600">{caseSummary.strength_score}</div>
+                        <div className="text-sm text-blue-600">/100</div>
+                      </div>
                     </div>
+                    <p className="text-sm text-blue-700 text-center">
+                      {language === "he" 
+                        ? "איכות ומלאות הנתונים שנאספו"
+                        : "Quality & completeness of data"}
+                    </p>
+                  </Card>
+                </motion.div>
+              )}
+
+              {/* Approval Chance Card */}
+              {caseSummary?.chance_of_approval !== undefined && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.4, delay: 1.0 }}
+                >
+                  <Card className="p-8 bg-gradient-to-br from-emerald-50 to-emerald-100/50 backdrop-blur-sm border border-emerald-200 shadow-xl h-full flex flex-col items-center justify-center">
+                    <h3 className="text-lg font-semibold text-emerald-900 mb-4">
+                      {language === "he" ? "סיכוי להסכמה" : "Approval Chance"}
+                    </h3>
+                    <div className="relative w-32 h-32 flex items-center justify-center mb-4">
+                      <svg className="w-full h-full transform -rotate-90" viewBox="0 0 120 120">
+                        <circle
+                          cx="60"
+                          cy="60"
+                          r="54"
+                          stroke="#e5e7eb"
+                          strokeWidth="8"
+                          fill="none"
+                        />
+                        <circle
+                          cx="60"
+                          cy="60"
+                          r="54"
+                          stroke="#10b981"
+                          strokeWidth="8"
+                          fill="none"
+                          strokeDasharray={`${(caseSummary.chance_of_approval / 100) * 339.3} 339.3`}
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                      <div className="absolute text-center">
+                        <div className="text-4xl font-bold text-emerald-600">{caseSummary.chance_of_approval}</div>
+                        <div className="text-sm text-emerald-600">%</div>
+                      </div>
+                    </div>
+                    <p className="text-sm text-emerald-700 text-center">
+                      {language === "he" 
+                        ? "הסתברות להסכמת התביעה"
+                        : "Probability of claim approval"}
+                    </p>
+                  </Card>
+                </motion.div>
+              )}
+            </div>
+
+            {/* Details Grid - Bottom Section */}
+            <div className="grid grid-cols-1 gap-6">
+              {/* Case Summary Card */}
+              {caseSummary?.case_summary && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.4, delay: 1.1 }}
+                >
+                  <Card className="p-6 bg-white/70 backdrop-blur-sm border-white/50 shadow-xl">
+                    <h3 className="text-lg font-semibold text-slate-800 mb-3">
+                      {language === "he" ? "סיכום התיק" : "Case Summary"}
+                    </h3>
+                    <p className="text-slate-700 leading-relaxed">{caseSummary.case_summary}</p>
                   </Card>
                 </motion.div>
               )}
@@ -403,33 +431,12 @@ export default function ValueRevealPage() {
           >
             <div className="max-w-5xl mx-auto px-4 py-6">
               <Button
-                onClick={() => {
-                  const caseId = localStorage.getItem("case_id")
-                  if (caseId) {
-                    router.push(`/checkout?case_id=${caseId}`)
-                  } else {
-                    router.push("/checkout")
-                  }
-                }}
+                onClick={handleProceedToPayment}
                 size="lg"
-                className="w-full bg-gradient-to-l from-slate-900 via-blue-900 to-slate-900 hover:from-slate-800 hover:via-blue-800 hover:to-slate-800 text-white py-8 text-xl font-bold rounded-xl shadow-2xl transition-all hover:shadow-3xl"
+                className="w-full bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-700 hover:via-teal-700 hover:to-cyan-700 text-white py-6 text-lg font-bold rounded-xl shadow-2xl transition-all hover:shadow-3xl"
               >
-                {t("value_reveal.cta_button")}
+                {language === "he" ? "💳 עבור לתשלום" : "💳 Proceed to Payment"}
               </Button>
-              <p className="text-center text-slate-600 text-sm mt-3">{t("value_reveal.cta_subtitle")}</p>
-            </div>
-          </motion.div>
-
-          {/* Trust Footer */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.5, delay: 1.5 }}
-            className="fixed bottom-32 left-0 right-0 text-center"
-          >
-            <div className="inline-flex items-center gap-2 bg-slate-100/80 backdrop-blur-sm rounded-full px-6 py-2">
-              <span className="text-sm font-medium text-slate-600">{t("value_reveal.disability_sections")}</span>
-              <Shield className="w-4 h-4 text-blue-600" />
             </div>
           </motion.div>
         </>

@@ -24,6 +24,31 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { useState, useEffect } from "react"
 import Link from "next/link"
 
+// Israeli mobile phone number validation - only accepts 05XXXXXXXX format
+const validateIsraeliPhone = (phone: string): boolean => {
+  if (!phone) return false;
+  
+  // Remove common formatting characters (spaces, hyphens, parentheses)
+  const cleaned = phone.replace(/[\s\-()]/g, '');
+  
+  // Must be exactly 10 digits starting with 05
+  // Format: 05X where X is 0-9, followed by 7 more digits
+  return /^05[0-9]\d{7}$/.test(cleaned);
+};
+
+const formatIsraeliPhone = (phone: string): string => {
+  if (!phone) return '';
+  
+  const cleaned = phone.replace(/[\s\-()]/g, '');
+  
+  // Only format if it matches the pattern
+  if (/^05[0-9]\d{7}$/.test(cleaned)) {
+    return `${cleaned.substring(0, 3)}-${cleaned.substring(3)}`;
+  }
+  
+  return phone;
+};
+
 interface SectionState {
   isExpanded: boolean
   isEditing: boolean
@@ -48,6 +73,7 @@ export default function LegalReviewPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analysisComplete, setAnalysisComplete] = useState(false)
   const [form7801Analysis, setForm7801Analysis] = useState<Form7801Analysis | null>(null)
+  const [phoneErrors, setPhoneErrors] = useState<Record<string, string>>({});
 
   const [formData, setFormData] = useState({
     // Personal Info - Section 1
@@ -596,13 +622,33 @@ export default function LegalReviewPage() {
                         />
                       </div>
                       <div>
-                        <label className="text-sm font-medium text-slate-700 mb-2">טלפון נייד</label>
+                        <label className="text-sm font-medium text-slate-700 mb-2">מספר טלפון נייד</label>
                         <Input
                           value={formData.phone}
-                          onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                          onChange={(e) => {
+                            const newPhone = e.target.value;
+                            setFormData({ ...formData, phone: newPhone });
+                            // Validate as user types
+                            if (newPhone && !validateIsraeliPhone(newPhone)) {
+                              setPhoneErrors(prev => ({ ...prev, phone: 'טלפון נייד ישראלי בפורמט 05XXXXXXXX בלבד (10 ספרות)' }));
+                            } else {
+                              setPhoneErrors(prev => ({ ...prev, phone: '' }));
+                            }
+                          }}
+                          onBlur={(e) => {
+                            // Auto-format on blur if valid
+                            if (validateIsraeliPhone(e.target.value)) {
+                              const formatted = formatIsraeliPhone(e.target.value);
+                              setFormData({ ...formData, phone: formatted });
+                            }
+                          }}
                           disabled={!sections.personal.isEditing}
-                          className={!sections.personal.isEditing ? "bg-slate-100" : ""}
+                          className={`${!sections.personal.isEditing ? "bg-slate-100" : ""} ${phoneErrors.phone ? "border-red-500" : ""}`}
+                          placeholder="050-1234567"
                         />
+                        {phoneErrors.phone && (
+                          <p className="text-sm text-red-600 mt-1">{phoneErrors.phone}</p>
+                        )}
                       </div>
                       <div>
                         <label className="text-sm font-medium text-slate-700 mb-2">דוא״ל</label>
@@ -1136,12 +1182,31 @@ export default function LegalReviewPage() {
                                 value={physician.phone}
                                 onChange={(e) => {
                                   const newPhysicians = [...formData.physicians]
-                                  newPhysicians[index] = { ...newPhysicians[index], phone: e.target.value }
+                                  const newPhone = e.target.value;
+                                  newPhysicians[index] = { ...newPhysicians[index], phone: newPhone }
                                   setFormData({ ...formData, physicians: newPhysicians })
+                                  // Validate
+                                  const phoneKey = `physician_${index}`;
+                                  if (newPhone && !validateIsraeliPhone(newPhone)) {
+                                    setPhoneErrors(prev => ({ ...prev, [phoneKey]: 'טלפון ישראלי לא תקין' }));
+                                  } else {
+                                    setPhoneErrors(prev => ({ ...prev, [phoneKey]: '' }));
+                                  }
+                                }}
+                                onBlur={(e) => {
+                                  if (validateIsraeliPhone(e.target.value)) {
+                                    const newPhysicians = [...formData.physicians];
+                                    newPhysicians[index] = { ...newPhysicians[index], phone: formatIsraeliPhone(e.target.value) };
+                                    setFormData({ ...formData, physicians: newPhysicians });
+                                  }
                                 }}
                                 disabled={!sections.disability.isEditing}
-                                className={!sections.disability.isEditing ? "bg-slate-100" : ""}
+                                className={`${!sections.disability.isEditing ? "bg-slate-100" : ""} ${phoneErrors[`physician_${index}`] ? "border-red-500" : ""}`}
+                                placeholder="050-1234567"
                               />
+                              {phoneErrors[`physician_${index}`] && (
+                                <p className="text-sm text-red-600 mt-1">{phoneErrors[`physician_${index}`]}</p>
+                              )}
                             </div>
                           </div>
                         </div>

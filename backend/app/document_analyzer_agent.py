@@ -11,13 +11,20 @@ import sys
 logger = logging.getLogger('document_analyzer_agent')
 
 
-async def analyze_case_documents_with_agent(case_id: str, documents_data: list) -> Dict[str, Any]:
+async def analyze_case_documents_with_agent(
+    case_id: str, 
+    documents_data: list,
+    chat_history: list = None,
+    use_rag: bool = True
+) -> Dict[str, Any]:
     """
-    Analyze case documents using the OpenAI agent.
+    Analyze case documents using the OpenAI agent with Pinecone RAG.
     
     Args:
         case_id: The case ID
         documents_data: List of documents with their summaries from case_documents table
+        chat_history: Optional chat history for context-aware retrieval
+        use_rag: Whether to use Pinecone RAG for enhanced context
     
     Returns:
         Agent analysis result
@@ -36,12 +43,14 @@ async def analyze_case_documents_with_agent(case_id: str, documents_data: list) 
         logger.info(f"📄 Concatenated {len(document_summaries)} document summaries for case {case_id}")
         logger.info(f"📝 Context length: {len(concatenated_context)} characters")
         
-        # Call the Anthropic agent with the concatenated context
+        # Call the Anthropic agent with the concatenated context and RAG
         from .anthropic_agent import run_document_analysis_agent
         
         result = await run_document_analysis_agent(
             case_id=case_id,
-            context_text=concatenated_context
+            context_text=concatenated_context,
+            chat_history=chat_history,
+            use_rag=use_rag
         )
         
         logger.info(f"✅ Agent analysis completed for case {case_id}")

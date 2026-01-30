@@ -38,6 +38,7 @@ import ClaimRejectedPage from "@/new-resources/app/claim-rejected/page";
 import NotEligiblePage from "@/new-resources/app/not-eligible/page";
 import useCurrentCase from "@/lib/useCurrentCase";
 import { BACKEND_BASE_URL } from "@/variables";
+import { DocumentRelevanceDialog } from "@/components/DocumentRelevanceDialog";
 
 interface RequiredDocument {
   id: number;
@@ -114,6 +115,20 @@ export default function DashboardPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedDocId, setSelectedDocId] = useState<number | null>(null);
 
+  // Relevance check state
+  const [showRelevanceDialog, setShowRelevanceDialog] = useState(false);
+  const [relevanceCheckData, setRelevanceCheckData] = useState<any>(null);
+  const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
+  const [pendingUploadDocId, setPendingUploadDocId] = useState<number | null>(null);
+  const [isConfirmingUpload, setIsConfirmingUpload] = useState(false);
+
+  // Validation modal state
+  const [showValidationModal, setShowValidationModal] = useState(false);
+  const [validationResults, setValidationResults] = useState<any>(null);
+  const [validationLoading, setValidationLoading] = useState(false);
+  const [uploadMoreLoading, setUploadMoreLoading] = useState(false);
+  const [proceedLoading, setProceedLoading] = useState(false);
+
   // Check authentication on mount
   useEffect(() => {
     const checkAuth = async () => {
@@ -164,13 +179,18 @@ export default function DashboardPage() {
       return;
     }
 
+    await performUpload(file, selectedDocId, false);
+  };
+
+  // Perform the actual upload (with optional confirmation)
+  const performUpload = async (file: File, docId: number, confirmed: boolean = false) => {
     try {
-      setUploadingDoc(selectedDocId);
+      setUploadingDoc(docId);
       const caseId = userCase.id;
 
       // Find the document from the documents list to get the backend ID and name
       const selectedDoc = requiredDocuments.find(
-        (doc) => doc.id === selectedDocId
+        (doc) => doc.id === docId
       );
       const documentBackendId = selectedDoc?.backendId;
       const documentName = selectedDoc?.name;
@@ -180,9 +200,25 @@ export default function DashboardPage() {
         file,
         "general",
         documentBackendId,
-        documentName
+        documentName,
+        confirmed
       );
-      console.log("Document uploaded:", result);
+      
+      console.log("Document upload result:", result);
+
+      // Check if relevance confirmation is needed
+      if (result.status === 'needs_confirmation' && !confirmed) {
+        console.log('Relevance check requires confirmation');
+        setRelevanceCheckData(result);
+        setPendingUploadFile(file);
+        setPendingUploadDocId(docId);
+        setShowRelevanceDialog(true);
+        setUploadingDoc(null); // Stop loading spinner
+        return;
+      }
+
+      // Success - document uploaded
+      console.log("Document uploaded successfully:", result);
 
       // After successful upload, re-fetch the case to get updated call_summary
       try {
@@ -302,6 +338,53 @@ export default function DashboardPage() {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+    }
+  };
+
+  // Handle user confirming to upload anyway (low confidence document)
+  const handleConfirmUpload = async () => {
+    if (!pendingUploadFile || !pendingUploadDocId) return;
+    
+    setIsConfirmingUpload(true);
+    try {
+      // Re-upload with confirmed=true
+      await performUpload(pendingUploadFile, pendingUploadDocId, true);
+      
+      // Close dialog and clear pending state
+      setShowRelevanceDialog(false);
+      setRelevanceCheckData(null);
+      setPendingUploadFile(null);
+      setPendingUploadDocId(null);
+    } catch (error) {
+      console.error('Confirm upload error:', error);
+    } finally {
+      setIsConfirmingUpload(false);
+    }
+  };
+
+  // Handle user rejecting upload (delete temp file)
+  const handleRejectUpload = async () => {
+    if (!relevanceCheckData?.temp_storage_info?.storage_path || !userCase?.id) return;
+    
+    setIsConfirmingUpload(true);
+    try {
+      // Delete the temporary file from storage
+      await legacyApi.apiDeleteTempDocument(
+        userCase.id,
+        relevanceCheckData.temp_storage_info.storage_path
+      );
+      
+      alert('המסמך נמחק. אנא העלה מסמך אחר.');
+    } catch (error) {
+      console.error('Reject upload error:', error);
+      alert('שגיאה במחיקת המסמך');
+    } finally {
+      // Close dialog and clear pending state
+      setShowRelevanceDialog(false);
+      setRelevanceCheckData(null);
+      setPendingUploadFile(null);
+      setPendingUploadDocId(null);
+      setIsConfirmingUpload(false);
     }
   };
 
@@ -618,6 +701,7 @@ export default function DashboardPage() {
   const handleStartAnalysis = async () => {
     console.log("🔵 Dashboard: Start Form 7801 AI Analysis button clicked");
     setOcrAnalyzing(true);
+    setValidationLoading(true);
     try {
       // Get caseId from the userCase state
       const caseId = userCase?.id;
@@ -627,8 +711,57 @@ export default function DashboardPage() {
       }
 
       console.log("📋 Case ID:", caseId);
-      console.log("📤 Calling Form 7801 OpenAI agent analysis endpoint...");
+      console.log("📤 Step 1: Running case validation...");
 
+      // Step 1: Validate case readiness
+      const validationResponse = await fetch(`${BACKEND_BASE_URL}/cases/${caseId}/validate-case-readiness`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("access_token") || ""}`,
+        },
+      });
+
+      console.log("📨 Validation response status:", validationResponse.status);
+
+      if (!validationResponse.ok) {
+        const errorText = await validationResponse.text();
+        console.error("❌ Validation API Error:", errorText);
+        throw new Error("Failed to validate case");
+      }
+
+      const validationResult = await validationResponse.json();
+      console.log("✅ Validation completed:", validationResult);
+
+      // Store validation results and show modal
+      setValidationResults(validationResult);
+      setValidationLoading(false);
+      setOcrAnalyzing(false);
+      setShowValidationModal(true);
+
+    } catch (error) {
+      console.error("❌ Error in validation:", error);
+      alert(
+        `אירעה שגיאה בעת ניתוח התיק: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      setOcrAnalyzing(false);
+      setValidationLoading(false);
+    }
+  };
+
+  const handleProceedToForm7801 = async () => {
+    console.log("✅ User chose to proceed to Form 7801 generation");
+    setProceedLoading(true);
+    setShowValidationModal(false);
+    setOcrAnalyzing(true);
+    
+    try {
+      const caseId = userCase?.id;
+      
+      console.log("📤 Step 2: Generating Form 7801 payload...");
+      
       const response = await fetch(`${BACKEND_BASE_URL}/cases/${caseId}/analyze-documents-form7801`, {
         method: "POST",
         headers: {
@@ -637,34 +770,71 @@ export default function DashboardPage() {
         },
       });
 
-      console.log("📨 Response status:", response.status);
-
       if (!response.ok) {
         const errorText = await response.text();
-        console.error("❌ API Error:", errorText);
-        try {
-          const errorData = JSON.parse(errorText);
-          throw new Error(errorData.error || "Failed to analyze documents");
-        } catch {
-          throw new Error("Failed to analyze documents");
-        }
+        console.error("❌ Form 7801 API Error:", errorText);
+        throw new Error("Failed to generate Form 7801");
       }
 
       const result = await response.json();
-      console.log("✅ Analysis completed:", result);
+      console.log("✅ Form 7801 generated:", result);
 
+      // Set completion and refresh page
       setOcrComplete(true);
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+
     } catch (error) {
-      console.error("❌ Error in analysis:", error);
+      console.error("❌ Error generating Form 7801:", error);
       alert(
-        `אירעה שגיאה בעת ניתוח המסמכים: ${
+        `אירעה שגיאה בעת יצירת טופס 7801: ${
           error instanceof Error ? error.message : String(error)
         }`
       );
       setOcrAnalyzing(false);
-    } finally {
-      setOcrAnalyzing(false);
+      setProceedLoading(false);
     }
+  };
+
+  const handleUploadMoreDocuments = async () => {
+    console.log("📁 User chose to upload more documents");
+    setUploadMoreLoading(true);
+    
+    const caseId = userCase?.id;
+    
+    // Update call_summary with recommended documents
+    if (caseId && validationResults && validationResults.recommended_documents && validationResults.recommended_documents.length > 0) {
+      try {
+        console.log("📝 Updating call_summary with new document requirements");
+        
+        const response = await fetch(`${BACKEND_BASE_URL}/cases/${caseId}/update-documents-requested`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${localStorage.getItem("access_token") || ""}`,
+          },
+          body: JSON.stringify({
+            recommended_documents: validationResults.recommended_documents
+          })
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          console.log(`✅ Updated documents list - added ${result.documents_added} new documents`);
+        } else {
+          console.error("❌ Failed to update documents list");
+        }
+      } catch (error) {
+        console.error("❌ Error updating document requirements:", error);
+      }
+    }
+    
+    // Close modal and refresh page so user can see updated document list
+    setShowValidationModal(false);
+    setTimeout(() => {
+      window.location.reload();
+    }, 500);
   };
 
   const handleSubmitForm7801 = () => {
@@ -1627,10 +1797,11 @@ export default function DashboardPage() {
                           className="w-full bg-gradient-to-l from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-semibold"
                         >
                           {ocrAnalyzing ? (
-                            <>
-                              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full ml-2 animate-spin" />
-                              מנתח מסמכים...
-                            </>
+                            <div className="flex items-center gap-2">
+  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+  <span>מנתח מסמכים...</span>
+</div>
+
                           ) : (
                             <>
                               <Sparkles className="w-5 h-5 ml-2" />
@@ -1827,7 +1998,7 @@ export default function DashboardPage() {
                         >
                           {ocrAnalyzing ? (
                             <>
-                              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full ml-2 animate-spin" />
+                              <span className="inline-block w-5 h-5 border-2 border-white border-t-transparent rounded-full ml-2 animate-spin" />
                               מנתח מסמכים...
                             </>
                           ) : (
@@ -2104,6 +2275,231 @@ export default function DashboardPage() {
           </div>
         </div>
       </main>
+
+      {/* Document Relevance Dialog */}
+      {relevanceCheckData?.relevance_check && (
+        <DocumentRelevanceDialog
+          isOpen={showRelevanceDialog}
+          onOpenChange={setShowRelevanceDialog}
+          relevanceCheck={relevanceCheckData.relevance_check}
+          documentName={requiredDocuments.find(doc => doc.id === pendingUploadDocId)?.name}
+          onConfirm={handleConfirmUpload}
+          onReject={handleRejectUpload}
+          isConfirming={isConfirmingUpload}
+          isRejecting={isConfirmingUpload}
+        />
+      )}
+
+      {/* Case Validation Modal */}
+      <AnimatePresence>
+        {showValidationModal && validationResults && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            onClick={() => setShowValidationModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+            >
+              {/* Header */}
+              <div className="sticky top-0 bg-gradient-to-r from-blue-600 to-purple-600 text-white p-6 rounded-t-2xl">
+                <h2 className="text-2xl font-bold mb-2">ניתוח מצב התיק</h2>
+                <p className="text-blue-100">סקירה מקיפה לפני הגשת טופס 7801</p>
+              </div>
+
+              <div className="p-6 space-y-6">
+                {/* Case Strength */}
+                <div className="bg-gradient-to-br from-blue-50 to-purple-50 rounded-xl p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xl font-bold text-slate-900">חוזק התיק</h3>
+                    <div className="flex items-center gap-3">
+                      <span className={`text-3xl font-bold ${
+                        validationResults.case_strength.category === 'strong' ? 'text-green-600' :
+                        validationResults.case_strength.category === 'moderate' ? 'text-yellow-600' :
+                        'text-red-600'
+                      }`}>
+                        {validationResults.case_strength.overall_score}%
+                      </span>
+                      <span className={`px-4 py-2 rounded-full text-sm font-semibold ${
+                        validationResults.case_strength.category === 'strong' ? 'bg-green-100 text-green-700' :
+                        validationResults.case_strength.category === 'moderate' ? 'bg-yellow-100 text-yellow-700' :
+                        'bg-red-100 text-red-700'
+                      }`}>
+                        {validationResults.case_strength.category === 'strong' ? 'חזק' :
+                         validationResults.case_strength.category === 'moderate' ? 'בינוני' : 'חלש'}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-slate-700 leading-relaxed">
+                    {validationResults.case_strength.explanation}
+                  </p>
+                  <div className="mt-4 flex items-center gap-2 text-blue-600">
+                    <Info className="w-5 h-5" />
+                    <span className="font-semibold">
+                      סיכוי לאישור: {validationResults.approval_probability}%
+                    </span>
+                  </div>
+                </div>
+
+                {/* Strengths */}
+                {validationResults.strengths && validationResults.strengths.length > 0 && (
+                  <div className="bg-green-50 rounded-xl p-6">
+                    <h3 className="text-lg font-bold text-green-900 mb-4 flex items-center gap-2">
+                      <CheckCircle2 className="w-6 h-6" />
+                      נקודות חוזק
+                    </h3>
+                    <ul className="space-y-2">
+                      {validationResults.strengths.map((strength: string, idx: number) => (
+                        <li key={idx} className="flex items-start gap-2 text-slate-700">
+                          <span className="text-green-600 mt-1">✓</span>
+                          <span>{strength}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Uploaded File Issues */}
+                {validationResults.uploaded_file_issues && validationResults.uploaded_file_issues.length > 0 && (
+                  <div className="bg-yellow-50 rounded-xl p-6 border-2 border-yellow-200">
+                    <h3 className="text-lg font-bold text-yellow-900 mb-4 flex items-center gap-2">
+                      <AlertCircle className="w-6 h-6" />
+                      בעיות במסמכים שהועלו
+                    </h3>
+                    <div className="space-y-4">
+                      {validationResults.uploaded_file_issues.map((issue: any, idx: number) => (
+                        <div key={idx} className="bg-white rounded-lg p-4 border border-yellow-200">
+                          <div className="flex items-start justify-between mb-2">
+                            <h4 className="font-bold text-slate-900">{issue.document_name}</h4>
+                            <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                              issue.severity === 'critical' ? 'bg-red-100 text-red-700' :
+                              issue.severity === 'important' ? 'bg-orange-100 text-orange-700' :
+                              'bg-yellow-100 text-yellow-700'
+                            }`}>
+                              {issue.severity === 'critical' ? 'קריטי' :
+                               issue.severity === 'important' ? 'חשוב' : 'מינורי'}
+                            </span>
+                          </div>
+                          <p className="text-slate-700 mb-2">{issue.issue_description}</p>
+                          {issue.missing_elements && issue.missing_elements.length > 0 && (
+                            <div className="mt-2">
+                              <p className="text-sm font-semibold text-slate-600 mb-1">חסר:</p>
+                              <ul className="text-sm text-slate-600 space-y-1">
+                                {issue.missing_elements.map((element: string, i: number) => (
+                                  <li key={i} className="flex items-center gap-1">
+                                    <span className="text-red-500">•</span> {element}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Recommended Documents */}
+                {validationResults.recommended_documents && validationResults.recommended_documents.length > 0 && (
+                  <div className="bg-blue-50 rounded-xl p-6 border-2 border-blue-200">
+                    <h3 className="text-lg font-bold text-blue-900 mb-4 flex items-center gap-2">
+                      <Upload className="w-6 h-6" />
+                      מסמכים מומלצים להעלאה
+                    </h3>
+                    <div className="space-y-3">
+                      {validationResults.recommended_documents.map((doc: any, idx: number) => (
+                        <div key={idx} className="bg-white rounded-lg p-4 border border-blue-200">
+                          <div className="flex items-start justify-between mb-2">
+                            <h4 className="font-bold text-slate-900">{doc.document_name}</h4>
+                            <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                              doc.priority === 'required' ? 'bg-red-100 text-red-700' :
+                              doc.priority === 'strongly_recommended' ? 'bg-orange-100 text-orange-700' :
+                              'bg-blue-100 text-blue-700'
+                            }`}>
+                              {doc.priority === 'required' ? 'חובה' :
+                               doc.priority === 'strongly_recommended' ? 'מומלץ מאוד' : 'אופציונלי'}
+                            </span>
+                          </div>
+                          <p className="text-slate-700 mb-1">{doc.reason}</p>
+                          <p className="text-sm text-slate-500">
+                            <span className="font-semibold">מקור:</span> {doc.source}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Risk Factors */}
+                {validationResults.risk_factors && validationResults.risk_factors.length > 0 && (
+                  <div className="bg-red-50 rounded-xl p-6 border-2 border-red-200">
+                    <h3 className="text-lg font-bold text-red-900 mb-4 flex items-center gap-2">
+                      <AlertCircle className="w-6 h-6" />
+                      סיכונים אם תמשיך כרגע
+                    </h3>
+                    <ul className="space-y-2">
+                      {validationResults.risk_factors.map((risk: string, idx: number) => (
+                        <li key={idx} className="flex items-start gap-2 text-slate-700">
+                          <span className="text-red-600 mt-1">⚠</span>
+                          <span>{risk}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Action Buttons */}
+                <div className="flex gap-4 pt-4 border-t">
+                  <Button
+                    onClick={handleUploadMoreDocuments}
+                    disabled={uploadMoreLoading || proceedLoading}
+                    className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white py-6 text-lg font-semibold"
+                  >
+                    {uploadMoreLoading ? (
+                      <>
+                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin ml-2" />
+                        עדכון...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-5 h-5 ml-2" />
+                        אעלה מסמכים נוספים
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    onClick={handleProceedToForm7801}
+                    disabled={uploadMoreLoading || proceedLoading}
+                    className="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:from-purple-400 disabled:to-blue-400 text-white py-6 text-lg font-semibold"
+                  >
+                    {proceedLoading ? (
+                      <>
+                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin ml-2" />
+                        יוצר...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-5 h-5 ml-2" />
+                        המשך בכל זאת
+                      </>
+                    )}
+                  </Button>
+                </div>
+
+                <p className="text-center text-sm text-slate-500">
+                  ניתן להמשיך בהגשה גם ללא המסמכים הנוספים, אך זה עלול להקטין את סיכויי האישור
+                </p>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

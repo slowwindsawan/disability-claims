@@ -42,7 +42,7 @@ export function DocumentSigningIframe({
     try {
       onSigningStart?.()
 
-      const token = localStorage.getItem("access_token")
+      let token = localStorage.getItem("access_token")
 
       // Get user data from /me endpoint
       let userId = localStorage.getItem("user_id") || ""
@@ -57,6 +57,26 @@ export function DocumentSigningIframe({
             Authorization: `Bearer ${token}`,
           },
         })
+        
+        // If token is expired (401), try to refresh it
+        if (meResponse.status === 401) {
+          console.warn("⚠️ Token expired, attempting refresh...")
+          const refreshResponse = await fetch(`${apiBase}/refresh-token`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          })
+          
+          if (refreshResponse.ok) {
+            const refreshData = await refreshResponse.json()
+            token = refreshData.access_token || token
+            localStorage.setItem("access_token", token)
+            console.log("✅ Token refreshed successfully")
+          }
+        }
+        
         if (meResponse.ok) {
           const userData = await meResponse.json()
           console.log("User data from /me:", userData)
@@ -88,7 +108,7 @@ export function DocumentSigningIframe({
       }
 
       console.log("Calling BoldSign API...")
-      const response = await fetch(`${apiBase}/boldsign/create-embed-link`, {
+      let boldSignResponse = await fetch(`${apiBase}/boldsign/create-embed-link`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -103,11 +123,48 @@ export function DocumentSigningIframe({
         }),
       })
 
-      if (!response.ok) {
-        const errorData = await response.json()
+      // If token is expired (401), try to refresh and retry
+      if (boldSignResponse.status === 401) {
+        console.warn("⚠️ Token expired on BoldSign call, attempting refresh and retry...")
+        const refreshResponse = await fetch(`${apiBase}/refresh-token`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        })
+        
+        if (refreshResponse.ok) {
+          const refreshData = await refreshResponse.json()
+          token = refreshData.access_token || token
+          localStorage.setItem("access_token", token)
+          console.log("✅ Token refreshed, retrying BoldSign...")
+          
+          // Retry the BoldSign call with new token
+          boldSignResponse = await fetch(`${apiBase}/boldsign/create-embed-link`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              userId,
+              name,
+              email,
+              documentType,
+              caseId,
+            }),
+          })
+        }
+      }
+
+      if (!boldSignResponse.ok) {
+        const errorData = await boldSignResponse.json()
         console.error("BoldSign API error:", errorData)
         throw new Error(errorData.detail || "Failed to create signing link")
       }
+
+      const response = boldSignResponse
 
       const data = await response.json()
       console.log("BoldSign response:", data)

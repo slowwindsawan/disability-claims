@@ -1,9 +1,12 @@
 /**
  * Background Script - Handles file fetching from URLs to avoid CORS restrictions
  * This script runs in the extension's background context with elevated permissions
+ * 
+ * Configuration is loaded from config.js (imported in manifest as service worker dependency)
  */
 
 console.log('[BACKGROUND.JS] Service worker loaded');
+console.log('[BACKGROUND.JS] Backend URL:', typeof BACKEND_BASE_URL !== 'undefined' ? BACKEND_BASE_URL : 'NOT LOADED');
 
 // Store the payload from the frontend
 let storedPayload = null;
@@ -266,7 +269,7 @@ async function saveWithRetry(data, maxRetries = 5) {
       }
       
       // Make the request
-      const response = await fetch('http://localhost:8000/api/cases/7801-submission', {
+      const response = await fetch(`${BACKEND_BASE_URL}/api/cases/7801-submission`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

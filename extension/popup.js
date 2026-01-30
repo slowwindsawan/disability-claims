@@ -1,4 +1,5 @@
 // popup.js
+// Configuration is loaded from config.js (loaded by popup.html before this script)
 
 // Example payload (same as T7801_DATA in content.js)
 const EXAMPLE_PAYLOAD = {
@@ -30,16 +31,16 @@ const EXAMPLE_PAYLOAD = {
   militaryOnset: "1",
   militaryMedicalRecord: "2",
   otherReports: "1",
-  armyFileUrl: "http://localhost:8000/demo.pdf",
+  armyFileUrl: DEMO_PDF_URL,
   hasOtherService: "2",
   hasOtherBenefits: "2",
   declarationAgree: true,
   rightsAgree: true,
-  signatureFileUrl: "http://localhost:8000/demo.jpeg",
+  signatureFileUrl: DEMO_IMAGE_URL,
   attachments: [
-    { name: 'passport-page', fileType: 'image', fileUrl: 'http://localhost:8000/demo.jpeg' },
-    { name: 'medical-report', fileType: 'image', fileUrl: 'http://localhost:8000/demo.jpeg' },
-    { name: 'consent-form', fileType: 'pdf', fileUrl: 'http://localhost:8000/demo.pdf' }
+    { name: 'passport-page', fileType: 'image', fileUrl: DEMO_IMAGE_URL },
+    { name: 'medical-report', fileType: 'image', fileUrl: DEMO_IMAGE_URL },
+    { name: 'consent-form', fileType: 'pdf', fileUrl: DEMO_PDF_URL }
   ]
 };
 

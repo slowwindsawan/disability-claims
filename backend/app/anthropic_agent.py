@@ -1,15 +1,28 @@
 """
 OpenAI-based agent for analyzing disability claim documents.
-Uses GPT-4 with structured output.
+Uses GPT-4 with structured output and Pinecone RAG for enhanced context.
 """
 import os
 import logging
 import json
-from typing import Dict, Any
+from typing import Dict, Any, List
 from openai import AsyncOpenAI
 
 logger = logging.getLogger('openai_agent')
 client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+# Import Pinecone retriever for RAG
+try:
+    import sys
+    pinecone_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'pinecone_integration')
+    if pinecone_path not in sys.path:
+        sys.path.append(pinecone_path)
+    from pinecone_retriever import get_retriever
+    PINECONE_ENABLED = True
+    logger.info("✅ Pinecone RAG enabled")
+except ImportError as e:
+    logger.warning(f"⚠️ Pinecone integration not available: {e}")
+    PINECONE_ENABLED = False
 
 # Define the output schema for Form 7801 analysis
 FORM_7801_SCHEMA = {
@@ -46,13 +59,21 @@ FORM_7801_SCHEMA = {
 }
 
 
-async def run_document_analysis_agent(case_id: str, context_text: str) -> Dict[str, Any]:
+async def run_document_analysis_agent(
+    case_id: str, 
+    context_text: str, 
+    chat_history: List[Dict[str, str]] = None,
+    use_rag: bool = True
+) -> Dict[str, Any]:
     """
     Run the OpenAI agent to analyze documents and generate Form 7801 strategy.
+    Now enhanced with Pinecone RAG for retrieving relevant legal context.
     
     Args:
         case_id: The case ID for reference
         context_text: Concatenated summaries of all uploaded documents
+        chat_history: Optional chat history for context-aware RAG retrieval
+        use_rag: Whether to use Pinecone RAG for enhanced context
     
     Returns:
         Structured analysis result from the agent
@@ -63,6 +84,37 @@ async def run_document_analysis_agent(case_id: str, context_text: str) -> Dict[s
             raise ValueError("OPENAI_API_KEY not set")
         
         logger.info(f"🔵 Starting OpenAI agent analysis for case {case_id}")
+        
+        # Retrieve relevant context from Pinecone if enabled
+        rag_context = ""
+        if use_rag and PINECONE_ENABLED:
+            try:
+                retriever = get_retriever()
+                
+                # Create a query from the context summary for RAG retrieval
+                query = context_text[:1000] if len(context_text) > 1000 else context_text
+                
+                # Retrieve with chat history if available
+                if chat_history:
+                    rag_context = retriever.retrieve_with_chat_history(
+                        current_query=query,
+                        chat_history=chat_history,
+                        top_k=5
+                    )
+                else:
+                    rag_context = retriever.retrieve_context(
+                        query=query,
+                        top_k=5
+                    )
+                
+                if rag_context:
+                    logger.info(f"✅ Retrieved RAG context: {len(rag_context)} characters")
+                else:
+                    logger.warning("⚠️ No RAG context retrieved from Pinecone")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ RAG retrieval failed: {e}. Continuing without RAG context.")
+                rag_context = ""
         
         # Fetch agent configuration from database
         from .supabase_client import get_agent_prompt
@@ -75,9 +127,12 @@ Your task is to analyze the provided medical documents and generate a comprehens
 **MEDICAL DOCUMENTS SUMMARY:**
 {context_text}
 
+**RELEVANT LEGAL PRECEDENTS AND GUIDELINES (from knowledge base):**
+{rag_context}
+
 **YOUR ANALYSIS TASK:**
 
-Based on the medical documents provided, please:
+Based on the medical documents provided and the legal precedents/guidelines, please:
 
 1. **Assess Eligibility**: Determine if the claimant meets the minimum disability threshold (66.7% functional impairment) according to BTL guidelines.
 
@@ -119,10 +174,23 @@ Return your response as a JSON object with these fields:
         prompt_template = agent_config['prompt']
         model = agent_config['model']
         
-        # Replace context placeholder in prompt
+        # Replace context placeholders in prompt
         prompt = prompt_template.replace('{context_text}', context_text)
         
+        # Add RAG context if available
+        if rag_context:
+            # Check if the prompt template has a rag_context placeholder
+            if '{rag_context}' in prompt:
+                prompt = prompt.replace('{rag_context}', rag_context)
+            else:
+                # If not, append it to the prompt
+                prompt = prompt + f"\n\n**RELEVANT LEGAL PRECEDENTS AND GUIDELINES:**\n{rag_context}"
+        else:
+            # Remove the placeholder if no RAG context
+            prompt = prompt.replace('{rag_context}', 'No additional legal precedents available.')
+        
         logger.info(f"Using agent model: {model}")
+        logger.info(f"Prompt length: {len(prompt)} characters (including RAG: {len(rag_context) if rag_context else 0})")
 
         # Call OpenAI API with dynamic model from database
         response = await client.chat.completions.create(

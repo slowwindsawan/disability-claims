@@ -34,6 +34,31 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 
+// Israeli mobile phone number validation - only accepts 05XXXXXXXX format
+const validateIsraeliPhone = (phone: string): boolean => {
+  if (!phone) return false;
+  
+  // Remove common formatting characters (spaces, hyphens, parentheses)
+  const cleaned = phone.replace(/[\s\-()]/g, '');
+  
+  // Must be exactly 10 digits starting with 05
+  // Format: 05X where X is 0-9, followed by 7 more digits
+  return /^05[0-9]\d{7}$/.test(cleaned);
+};
+
+const formatIsraeliPhone = (phone: string): string => {
+  if (!phone) return '';
+  
+  const cleaned = phone.replace(/[\s\-()]/g, '');
+  
+  // Only format if it matches the pattern
+  if (/^05[0-9]\d{7}$/.test(cleaned)) {
+    return `${cleaned.substring(0, 3)}-${cleaned.substring(3)}`;
+  }
+  
+  return phone;
+};
+
 interface SectionState {
   isExpanded: boolean
   isEditing: boolean
@@ -192,7 +217,8 @@ export default function LegalReviewPage() {
         file,
         documentType,
         undefined, // no document_id from backend
-        documentName
+        documentName,
+        true // Case already confirmed during validation phase, skip confirmation gate
       )
       console.log('[UPLOAD] Upload result:', result)
 
@@ -294,6 +320,7 @@ export default function LegalReviewPage() {
   const [form7801Analysis, setForm7801Analysis] = useState<Form7801Analysis | null>(null)
   const [selectedBankBranches, setSelectedBankBranches] = useState<string[]>([])
   const [uploadingFile, setUploadingFile] = useState<string | null>(null) // Track which file is being uploaded
+  const [phoneErrors, setPhoneErrors] = useState<Record<string, string>>({}) // Track phone validation errors
   const { toast } = useToast()
   const [caseId, setCaseId] = useState<string | null>(null)
 
@@ -431,7 +458,7 @@ export default function LegalReviewPage() {
     if (formData.accident && !formData.statement) return false
     if (!formData.healthFund) return false
     if (!formData.declaration) return false
-    if (!formData.signatureFileUrl) return false
+    // Signature is optional - do not validate
     if (!formData.finalDeclaration) return false
     if (!formData.informationTransfer) return false
     if (!formData.waiverAccepted) return false
@@ -1050,11 +1077,25 @@ export default function LegalReviewPage() {
                         {validationErrors.maritalStatus && <p className="text-xs text-red-600 mt-1">{validationErrors.maritalStatus}</p>}
                       </div>
                       <div>
-                        <label className="text-sm font-medium text-slate-700 mb-2">מספר טלפון נייד (05XXXXXXXX)</label>
+                        <label className="text-sm font-medium text-slate-700 mb-2">מספר טלפון נייד</label>
                         <Input
                           value={formData.phoneNumber}
                           onChange={(e) => {
-                            setFormData({ ...formData, phoneNumber: e.target.value })
+                            const newValue = e.target.value
+                            setFormData({ ...formData, phoneNumber: newValue })
+                            // Validate on change
+                            if (newValue && !validateIsraeliPhone(newValue)) {
+                              setPhoneErrors((prev) => ({
+                                ...prev,
+                                phoneNumber: "מספר טלפון חייב להיות בפורמט: 05XXXXXXXX (10 ספרות)"
+                              }))
+                            } else {
+                              setPhoneErrors((prev) => {
+                                const updated = { ...prev }
+                                delete updated.phoneNumber
+                                return updated
+                              })
+                            }
                             // Clear validation error when user changes phone number
                             setValidationErrors((prev) => {
                               const updated = { ...prev }
@@ -1062,9 +1103,17 @@ export default function LegalReviewPage() {
                               return updated
                             })
                           }}
-                          placeholder="0501234567"
-                          className={`${!sections.personal.isEditing ? "bg-slate-100" : ""} ${getEmptyFieldClass(formData.phoneNumber)} ${validationErrors.phoneNumber ? "border-red-500" : ""}`}
+                          onBlur={(e) => {
+                            // Auto-format on blur
+                            const formatted = formatIsraeliPhone(e.target.value)
+                            if (formatted !== e.target.value) {
+                              setFormData({ ...formData, phoneNumber: formatted })
+                            }
+                          }}
+                          placeholder="050-1234567"
+                          className={`${!sections.personal.isEditing ? "bg-slate-100" : ""} ${phoneErrors.phoneNumber ? "border-red-500" : ""} ${validationErrors.phoneNumber ? "border-red-500" : ""}`}
                         />
+                        {phoneErrors.phoneNumber && <p className="text-xs text-red-600 mt-1">{phoneErrors.phoneNumber}</p>}
                         {validationErrors.phoneNumber && <p className="text-xs text-red-600 mt-1">{validationErrors.phoneNumber}</p>}
                       </div>
 
@@ -1825,77 +1874,7 @@ export default function LegalReviewPage() {
                       return null
                     })()} 
 
-                    <div className="mb-4">
-                      <label className="text-sm font-medium text-slate-700 mb-2">צרף חתימה</label>
-                      {formData.signatureFileUrl ? (
-                        <div className="p-3 bg-blue-50 border border-blue-200 rounded flex items-center justify-between">
-                          <a
-                            href={formData.signatureFileUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:text-blue-800 underline text-sm truncate flex-1"
-                          >
-                            📄 {formData.signatureFileUrl.split('/').pop()}
-                          </a>
-                          <button
-                            onClick={() => window.open(formData.signatureFileUrl, '_blank')}
-                            className="ml-2 px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded"
-                          >
-                            פתח
-                          </button>
-                        </div>
-                      ) : (
-                        <Input
-                          type="file"
-                          accept=".pdf,.jpg,.jpeg,.png"
-                          onChange={async (e) => {
-                            const file = e.target.files?.[0]
-                            if (file && caseId) {
-                              try {
-                                setUploadingFile('signature')
-                                const documentType = 'signature'
-                                const documentName = file.name
-                                
-                                const result = await legacyApi.apiUploadCaseDocument(
-                                  caseId,
-                                  file,
-                                  documentType,
-                                  undefined,
-                                  documentName
-                                )
-                                
-                                const fileUrl = result?.storage_url || result?.public_url || result?.url
-                                
-                                setFormData({ ...formData, signatureFileUrl: fileUrl })
-                                
-                                // Save to backend
-                                await saveCaseFormData(caseId, { ...formData, signatureFileUrl: fileUrl })
-                                
-                                toast({
-                                  title: "החתימה הועלתה בהצלחה",
-                                  description: "החתימה נשמרה במערכת",
-                                })
-                                
-                                e.target.value = ''
-                              } catch (error) {
-                                console.error('[UPLOAD] Error uploading signature:', error)
-                                toast({
-                                  title: "שגיאה בהעלאת חתימה",
-                                  description: "לא הצלחנו להעלות את החתימה. נסה שוב.",
-                                  variant: "destructive"
-                                })
-                              } finally {
-                                setUploadingFile(null)
-                              }
-                            }
-                          }}
-                          disabled={uploadingFile === 'signature'}
-                          className="cursor-pointer"
-                        />
-                      )}
-                      {uploadingFile === 'signature' && <p className="text-sm text-slate-600 mt-2">מעלה חתימה...</p>}
-                      {validationErrors.signatureFileUrl && <p className="text-xs text-red-600 mt-1">{validationErrors.signatureFileUrl}</p>}
-                    </div>
+                    {/* Signature input is hidden and non-mandatory */}
 
                     <div className="flex items-center gap-3">
                       {!sections.healthfund?.isConfirmed && (
@@ -2053,7 +2032,8 @@ export default function LegalReviewPage() {
                                 file,
                                 documentType,
                                 undefined,
-                                documentName
+                                documentName,
+                                true // Case already confirmed during validation phase
                               )
                               
                               const fileUrl = result?.storage_url || result?.public_url || result?.url

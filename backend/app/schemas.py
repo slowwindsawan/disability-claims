@@ -88,3 +88,28 @@ class FilteredCaseResponse(BaseModel):
     updated_at: datetime
     products: List[str] = []
     risk_assessment: Optional[str] = None
+
+
+# Interview Chat Schemas
+class ChatMessageSchema(BaseModel):
+    """Schema for a single chat message"""
+    role: str = Field(..., description="'user' or 'assistant'")
+    content: str
+
+
+class InterviewChatRequest(BaseModel):
+    """Schema for interview chat request"""
+    case_id: str
+    message: str
+    chat_history: List[ChatMessageSchema] = Field(default_factory=list)
+    language: Optional[str] = Field("en", description="'en' or 'he'")
+    agentPrompt: Optional[str] = Field(None, description="Cached agent prompt from frontend (optional, backend fetches if not provided)")
+    eligibility_raw: Optional[Dict[str, Any]] = Field(None, description="Cached eligibility data from frontend (only on first message, backend fetches if not provided)")
+
+
+class InterviewChatResponse(BaseModel):
+    """Schema for interview chat response"""
+    message: str
+    is_complete: bool = False
+    confidence_score: Optional[float] = None
+    eligibility_raw: Optional[Dict[str, Any]] = None  # Include in response so frontend can cache it

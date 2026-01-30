@@ -1,1034 +1,691 @@
-"use client";
+"use client"
 
-import { useState, useEffect, useRef } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Mic, Phone, Shield, MicOff } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { useRouter } from "next/navigation";
-import { ClaimMaximizationModal } from "@/components/claim-maximization-modal";
-import { useLanguage } from "@/lib/language-context";
-import { BACKEND_BASE_URL } from "@/variables";
+import * as React from "react"
+import { Send, Mic, MicOff, User, Bot, StopCircle, Loader2, ArrowRight } from "lucide-react"
+import { motion, AnimatePresence } from "framer-motion"
+import { useRouter } from "next/navigation"
 
-type VoiceState = "idle" | "listening" | "speaking";
-type ClaimType = "general" | "work-injury" | "unknown";
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useLanguage } from "@/lib/language-context"
+import { cn } from "@/lib/utils"
+import { BACKEND_BASE_URL } from "@/variables"
 
-interface FloatingTag {
-  id: number;
-  text: string;
-  timestamp: number;
+interface Message {
+  id: string
+  role: "user" | "assistant"
+  content: string
+  timestamp: Date
 }
 
 export function AILawyerInterface() {
-  const router = useRouter();
-  const { language } = useLanguage();
-  const isRTL = language === "he";
-  const [mounted, setMounted] = useState(false);
-  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
-  const [floatingTags, setFloatingTags] = useState<FloatingTag[]>([]);
-  const [isMicActive, setIsMicActive] = useState(false);
-  const [claimType, setClaimType] = useState<ClaimType>("unknown");
-  const [showMaximizationModal, setShowMaximizationModal] = useState(false);
-  const [eligibleBenefits, setEligibleBenefits] = useState({
-    mobility: false,
-    specialServices: false,
-  });
-
-  // OpenAI Realtime WebRTC Integration States
-  const [isCallActive, setIsCallActive] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [volumeLevel, setVolumeLevel] = useState(0);
-  const [transcript, setTranscript] = useState<string[]>([]);
-  const [hasMicPermission, setHasMicPermission] = useState<boolean | null>(
-    null
-  );
-  const [processingStatus, setProcessingStatus] = useState<string>("");
-  const [estimatedClaimValue, setEstimatedClaimValue] = useState<string | null>(
-    null
-  );
-  const [error, setError] = useState<string | null>(null);
-  const [isCallEnding, setIsCallEnding] = useState(false);
-  const [agentConfig, setAgentConfig] = useState<{
-    prompt: string;
-    model: string;
-    provider: string;
-    voice: {
-      provider: string;
-      voiceId: string;
-      model: string;
-    };
-  } | null>(null);
+  const router = useRouter()
+  const { language } = useLanguage()
+  const isRTL = language === "he"
   
-  // WebRTC refs
-  const pcRef = useRef<RTCPeerConnection | null>(null);
-  const micStreamRef = useRef<MediaStream | null>(null);
-  const dataChannelRef = useRef<RTCDataChannel | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const transcriptEndRef = useRef<HTMLDivElement>(null);
-  const callStartTimeRef = useRef<number | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [messages, setMessages] = React.useState<Message[]>([])
+  const [inputValue, setInputValue] = React.useState("")
+  const [isRecording, setIsRecording] = React.useState(false)
+  const [isProcessing, setIsProcessing] = React.useState(false)
+  const [isComplete, setIsComplete] = React.useState(false)
+  const [confidenceScore, setConfidenceScore] = React.useState<number | null>(null)
+  const [caseId, setCaseId] = React.useState<string | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+  const [agentPrompt, setAgentPrompt] = React.useState<string | null>(null)
+  const [eligibilityRaw, setEligibilityRaw] = React.useState<any | null>(null)
+  const [isFirstMessage, setIsFirstMessage] = React.useState(true)
+  const [isAnalyzing, setIsAnalyzing] = React.useState(false)
+  const [analysisError, setAnalysisError] = React.useState<string | null>(null)
+  
+  const scrollAreaRef = React.useRef<HTMLDivElement>(null)
+  const messagesEndRef = React.useRef<HTMLDivElement>(null)
+  const mediaRecorderRef = React.useRef<MediaRecorder | null>(null)
+  const audioChunksRef = React.useRef<Blob[]>([])
 
-  // Fix hydration by only rendering language-dependent content after client mount
-  useEffect(() => {
-    // Reset all state on mount - don't persist anything
-    setTranscript([]);
-    setIsCallActive(false);
-    setIsConnecting(false);
-    setIsMuted(false);
-    setVolumeLevel(0);
-    setError(null);
-    setProcessingStatus("");
-    setVoiceState("idle");
-    setIsMicActive(false);
-    setMounted(true);
-  }, []);
-
-  // Fetch agent config from database with retry logic
-  useEffect(() => {
-    const fetchAgentConfig = async (retries = 3) => {
-      for (let attempt = 0; attempt < retries; attempt++) {
-        try {
-          const response = await fetch(
-            `${BACKEND_BASE_URL}/api/agents/by-name/interview_voice_agent`,
-            { signal: AbortSignal.timeout(10000) } // 10 second timeout
-          );
-
-          if (response.ok) {
-            const data = await response.json();
-            
-            if (data.agent) {
-              const model = data.agent.model || "gpt-4o";
-              // Determine provider based on model name
-              let provider = "openai"; // default
-              if (model.toLowerCase().includes("gemini")) {
-                provider = "google";
-              } else if (model.toLowerCase().includes("gpt") || model.toLowerCase().includes("o1")) {
-                provider = "openai";
-              }
-              
-              // Parse voice config from meta_data with fallback
-              let voiceConfig = {
-                provider: "11labs",
-                voiceId: "burt",
-                model: "eleven_multilingual_v2",
-              };
-              
-              if (data.agent.meta_data) {
-                try {
-                  const metaData = typeof data.agent.meta_data === "string" 
-                    ? JSON.parse(data.agent.meta_data) 
-                    : data.agent.meta_data;
-                  
-                  if (metaData.voice) {
-                    voiceConfig = {
-                      provider: metaData.voice.provider || voiceConfig.provider,
-                      voiceId: metaData.voice.voiceId || voiceConfig.voiceId,
-                      model: metaData.voice.model || voiceConfig.model,
-                    };
-                  }
-                } catch (err) {
-                  console.warn("⚠️ Failed to parse meta_data, using fallback voice config");
-                }
-              }
-              
-              setAgentConfig({
-                prompt: data.agent.prompt,
-                model: model,
-                provider: provider,
-                voice: voiceConfig,
-              });
-              console.log("✅ Agent config loaded successfully");
-              return; // Success - exit the retry loop
-            }
-          } else {
-            throw new Error(`HTTP ${response.status}: Failed to fetch agent config`);
-          }
-        } catch (err) {
-          const isLastAttempt = attempt === retries - 1;
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          
-          if (isLastAttempt) {
-            console.error(
-              `❌ Failed to fetch agent config after ${retries} attempts:`,
-              errorMsg
-            );
-            // Still continue - the app can work with fallback config
-          } else {
-            const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
-            console.warn(
-              `⚠️ Attempt ${attempt + 1}/${retries} failed (${errorMsg}). Retrying in ${delay}ms...`
-            );
-            await new Promise(resolve => setTimeout(resolve, delay));
-          }
-        }
-      }
-    };
-
-    fetchAgentConfig();
-  }, []);
-
-  const topics = [
-    { topic_id: "disab_2", topic_name: "Disability Rating Determination" },
-    { topic_id: "neuro_3", topic_name: "Nervous System" },
-    {
-      topic_id: "psych_4",
-      topic_name: "Psychotic and Psychoneurotic Disorders (Mental Health)",
-    },
-    { topic_id: "upperlimbs_5", topic_name: "Upper Limbs" },
-    { topic_id: "lowerlimbs_6", topic_name: "Lower Limbs" },
-    { topic_id: "ent_7", topic_name: "Nose, Mouth, Ear and Throat" },
-    { topic_id: "oral_8", topic_name: "Oral Cavity, Jaws, and Teeth" },
-    {
-      topic_id: "scars_9",
-      topic_name: "Scars, Skin Diseases, and Skin Impairments",
-    },
-  ];
-
-  // Initialize audio element
-  useEffect(() => {
-    audioRef.current = document.getElementById("aiAudio") as HTMLAudioElement;
-  }, []);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      cleanup();
-    };
-  }, []);
-
-  // Check microphone permission
-  useEffect(() => {
-    const checkMicPermission = async () => {
-      try {
-        const result = await navigator.permissions.query({
-          name: "microphone" as PermissionName,
-        });
-        setHasMicPermission(result.state === "granted");
-
-        // Listen for permission changes
-        result.onchange = () => {
-          setHasMicPermission(result.state === "granted");
-        };
-      } catch (error) {
-        // Fallback: try to access microphone directly
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-          });
-          stream.getTracks().forEach((track) => track.stop());
-          setHasMicPermission(true);
-        } catch (err) {
-          setHasMicPermission(false);
-        }
-      }
-    };
-
-    checkMicPermission();
-    const interval = setInterval(checkMicPermission, 1000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  // Auto-scroll transcript
-  useEffect(() => {
-    if (transcriptEndRef.current) {
-      transcriptEndRef.current.scrollIntoView({ behavior: "smooth" });
+  const scrollToBottom = () => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" })
     }
-  }, [transcript]);
+  }
 
-  // Floating tags effect
-  useEffect(() => {
-    const tagTexts = ["אבחנה זוהתה", "סעיף 37", "תביעה רפואית", "זכאות מלאה"];
-    let tagId = 0;
+  // When interview is complete, trigger call analyzer and show popup
+  React.useEffect(() => {
+    if (isComplete && caseId && !isAnalyzing) {
+      console.log("🎯 Interview complete! Starting analysis...")
+      triggerCallAnalyzer()
+    }
+  }, [isComplete, caseId])
 
-    const interval = setInterval(() => {
-      if (Math.random() > 0.7 && isCallActive) {
-        const newTag: FloatingTag = {
-          id: tagId++,
-          text: tagTexts[Math.floor(Math.random() * tagTexts.length)],
-          timestamp: Date.now(),
-        };
-        setFloatingTags((prev) => [...prev.slice(-2), newTag]);
-      }
-    }, 4000);
-
-    return () => clearInterval(interval);
-  }, [isCallActive]);
-
-  const requestMicPermission = async () => {
+  const triggerCallAnalyzer = async () => {
+    setIsAnalyzing(true)
+    setAnalysisError(null)
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
-      setHasMicPermission(true);
-      setError(null);
-      return true;
-    } catch (error: any) {
-      if (error?.name === "NotAllowedError") {
-        setError(
-          "❌ הרשאת המיקרופון נדחתה. אנא עבור להגדרות ה-browser וחזור על ההרשאה."
-        );
-      } else if (error?.name === "NotFoundError") {
-        setError("❌ לא נמצא מיקרופון במכשיר. בדוק חיבור המיקרופון.");
-      } else if (error?.name === "SecurityError") {
-        setError("❌ בעיית אבטחה. אנא טען את הדף מחדש.");
-      } else {
-        setError(`❌ שגיאה בגישה למיקרופון: ${error?.message}`);
-      }
-      setHasMicPermission(false);
-      return false;
-    }
-  };
-
-  const cleanup = () => {
-    if (dataChannelRef.current) {
-      dataChannelRef.current.close();
-      dataChannelRef.current = null;
-    }
-    
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
-    
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach(t => t.stop());
-      micStreamRef.current = null;
-    }
-    
-    setIsCallActive(false);
-    setIsConnecting(false);
-    setVoiceState("idle");
-    setIsMicActive(false);
-    setProcessingStatus("");
-  };
-
-  const startCall = async () => {
-    if (hasMicPermission === false) {
-      const granted = await requestMicPermission();
-      if (!granted) {
-        return;
-      }
-      return;
-    }
-
-    // Clear and reset state
-    setTranscript([]);
-    setIsConnecting(true);
-    setProcessingStatus("מתחבר לעורך דין AI...");
-    setError(null);
-
-    try {
-      // Create RTCPeerConnection FIRST
-      pcRef.current = new RTCPeerConnection();
-
-      // Handle incoming AI audio stream
-      pcRef.current.ontrack = (event) => {
-        console.log("🔊 Received audio track from OpenAI");
-        if (audioRef.current) {
-          audioRef.current.srcObject = event.streams[0];
-          // Explicitly play the audio (required for some browsers)
-          audioRef.current.play().catch(err => {
-            console.warn("⚠️ Audio autoplay blocked, trying to enable:", err);
-          });
-        }
-      };
-
-      micStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-      // Send microphone audio
-      micStreamRef.current.getTracks().forEach(track => {
-        pcRef.current!.addTrack(track, micStreamRef.current!);
-      });
-
-      // Create data channel for events
-      dataChannelRef.current = pcRef.current.createDataChannel("oai-events");
-
-      dataChannelRef.current.onopen = () => {
-        callStartTimeRef.current = Date.now();
-        setIsCallActive(true);
-        setIsConnecting(false);
-        setVoiceState("listening");
-        setIsMicActive(true);
-        setProcessingStatus("");
-        
-        // Ensure audio element is ready to play
-        if (audioRef.current) {
-          audioRef.current.volume = 1.0;
-        }
-      };
-
-      dataChannelRef.current.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-
-        // User - Final transcription
-        if (msg.type === "conversation.item.input_audio_transcription.completed") {
-          const userText = msg.text || msg.transcript;
-          if (userText) {
-            setTranscript((prev) => [...prev, `אתה: ${userText}`]);
-            setVoiceState("listening");
-          }
-        }
-
-        // AI - Final transcription  
-        if (msg.type === "conversation.item.assistant.transcription.completed") {
-          const aiText = msg.text || msg.transcript || msg?.part?.transcript;
-          if (aiText) {
-            setTranscript((prev) => [...prev, `עו״ד שרה לוי: ${aiText}`]);
-            setVoiceState("speaking");
-          }
-        }
-
-        // AI - Output item done (contains transcript in item.content[0].transcript)
-        if (msg.type === "response.output_item.done") {
-          if (msg.item && msg.item.content && msg.item.content[0]) {
-            const aiText = msg.item.content[0].transcript;
-            if (aiText) {
-              setTranscript((prev) => [...prev, `עו״ד שרה לוי: ${aiText}`]);
-              setVoiceState("speaking");
-            }
-          }
-        }
-
-        // Response audio started - AI is speaking
-        if (msg.type === "response.audio.delta" || msg.type === "response.audio_transcript.delta") {
-          setVoiceState("speaking");
-        }
-
-        // Response completed - AI finished speaking
-        if (msg.type === "response.audio.done" || msg.type === "response.done") {
-          setVoiceState("listening");
-        }
-
-        // Input audio started - User is speaking
-        if (msg.type === "input_audio_buffer.speech_started") {
-          setVoiceState("listening");
-        }
-
-        // Error handling
-        if (msg.type === "error") {
-          console.error("❌ OpenAI Error:", msg.error || msg.message);
-          setError(msg.error?.message || msg.message || "Unknown error");
-        }
-      };
-
-      // Get auth token from localStorage
-      const token = localStorage.getItem("access_token");
+      const token = localStorage.getItem("access_token")
       const headers: Record<string, string> = {
         "Content-Type": "application/json"
-      };
+      }
       
-      // Only add authorization if we have a token
       if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-        console.log("📋 Sending auth token to /offer endpoint");
-      } else {
-        console.log("ℹ️ No auth token available, calling /offer without authentication");
+        headers["Authorization"] = `Bearer ${token}`
       }
 
-      const tokenRes = await fetch(`${BACKEND_BASE_URL}/offer`, {
+      console.log(`🔍 Calling analyze endpoint for case ${caseId}...`)
+      const response = await fetch(`${BACKEND_BASE_URL}/api/interview/analyze`, {
         method: "POST",
-        headers: headers
-      });
+        headers,
+        body: JSON.stringify({ case_id: caseId })
+      })
 
-      if (!tokenRes.ok) {
-        throw new Error(`Failed to get session token: ${tokenRes.statusText}`);
+      if (!response.ok) {
+        throw new Error(`Analysis failed: ${response.status}`)
       }
 
-      const { client_secret } = await tokenRes.json();
+      const result = await response.json()
+      console.log("✅ Analysis complete:", result)
 
-      // Create offer
-      const offer = await pcRef.current.createOffer();
-      await pcRef.current.setLocalDescription(offer);
+      // After analysis is done, navigate
+      setTimeout(() => {
+        router.push(`/value-reveal?case_id=${caseId}`)
+      }, 1000)
+    } catch (err) {
+      console.error("❌ Error during analysis:", err)
+      setAnalysisError(isRTL ? "שגיאה בניתוח. אנא נסה שוב." : "Analysis failed. Please try again.")
+      setIsAnalyzing(false)
+    }
+  }
 
-      setProcessingStatus("מתחבר ל-OpenAI...");
+  const retryAnalysis = () => {
+    setAnalysisError(null)
+    triggerCallAnalyzer()
+  }
 
-      // Send offer to OpenAI
-      const sdpRes = await fetch(
-        "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
-        {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${client_secret}`,
-            "Content-Type": "application/sdp"
-          },
-          body: offer.sdp
+  React.useEffect(() => {
+    scrollToBottom()
+  }, [messages])
+
+  // Fetch agent prompt on mount (once per session)
+  React.useEffect(() => {
+    const fetchAgentPrompt = async () => {
+      try {
+        // Fetch agent prompt from database
+        const promptResponse = await fetch(`${BACKEND_BASE_URL}/api/agents/by-name/interview_voice_agent`)
+        if (promptResponse.ok) {
+          const promptData = await promptResponse.json()
+          if (promptData.agent?.prompt) {
+            setAgentPrompt(promptData.agent.prompt)
+            console.log("✅ Agent prompt fetched and cached in React state")
+          }
         }
-      );
+      } catch (err) {
+        console.warn("Could not fetch agent prompt:", err)
+      }
+    }
 
-      if (!sdpRes.ok) {
-        throw new Error(`OpenAI connection failed: ${sdpRes.statusText}`);
+    fetchAgentPrompt()
+  }, [])
+
+  // Initialize interview on mount
+  React.useEffect(() => {
+    const initInterview = async () => {
+      const token = localStorage.getItem("access_token")
+      const storedCaseId = localStorage.getItem("case_id")
+      
+      if (!storedCaseId) {
+        setError(isRTL ? "לא נמצא מזהה תיק" : "No case ID found")
+        return
+      }
+      
+      setCaseId(storedCaseId)
+      
+      try {
+        setIsProcessing(true)
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json"
+        }
+        
+        // Add token if available, but don't require it
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`
+        }
+        
+        const requestBody: any = {
+          case_id: storedCaseId,
+          message: "__INIT__",
+          chat_history: [],
+          language: language
+        }
+
+        // Include agent prompt if we have it cached
+        if (agentPrompt) {
+          requestBody.agentPrompt = agentPrompt
+          console.log("📤 Sending cached agent prompt with init request")
+        }
+        
+        const response = await fetch(`${BACKEND_BASE_URL}/api/interview/chat`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(requestBody)
+        })
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(errorData.detail || `HTTP ${response.status}`)
+        }
+
+        const data = await response.json()
+
+        // Check if we have existing chat history to restore
+        if (data.chat_history && Array.isArray(data.chat_history)) {
+          // Restore previous conversation
+          const restoredMessages: Message[] = data.chat_history.map((msg: any, idx: number) => ({
+            id: idx + 1,
+            role: msg.role,
+            content: msg.content,
+            timestamp: new Date()
+          }))
+          setMessages(restoredMessages)
+          setIsFirstMessage(false)
+          console.log(`📜 Restored ${restoredMessages.length} messages from previous session`)
+        } else if (data.message) {
+          // New conversation - add initial greeting
+          const assistantMessage: Message = {
+            id: "1",
+            role: "assistant",
+            content: data.message,
+            timestamp: new Date()
+          }
+          setMessages([assistantMessage])
+        }
+
+        // On successful init, capture eligibility data for future messages
+        if (data.eligibility_raw) {
+          setEligibilityRaw(data.eligibility_raw)
+          console.log("✅ Eligibility data cached in React state")
+        }
+      } catch (err) {
+        console.error("Error initializing interview:", err)
+        setError(isRTL ? "שגיאה באתחול ראיון: " + (err instanceof Error ? err.message : String(err)) : "Error initializing interview: " + (err instanceof Error ? err.message : String(err)))
+      } finally {
+        setIsProcessing(false)
+      }
+    }
+
+    initInterview()
+  }, [language, isRTL])
+
+  const sendMessageToBackend = async (userMessage: string) => {
+    const token = localStorage.getItem("access_token")
+    
+    if (!caseId) {
+      setError(isRTL ? "מזהה תיק אינו זמין" : "Case ID not available")
+      return
+    }
+
+    try {
+      const chatHistory = messages.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }))
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json"
+      }
+      
+      // Add token if available
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`
       }
 
-      const answerSDP = await sdpRes.text();
-      await pcRef.current.setRemoteDescription({ type: "answer", sdp: answerSDP });
-
-      setProcessingStatus("מתחבר...");
-
-    } catch (error: any) {
-      console.error("❌ Call failed:", error?.message);
-
-      let errorMsg = "שגיאה לא ידועה";
-      if (
-        error?.message?.includes("microphone") ||
-        error?.message?.includes("permission") ||
-        error?.name === "NotAllowedError"
-      ) {
-        errorMsg = "אנא הענק הרשאה למיקרופון";
-        setHasMicPermission(false);
-        await requestMicPermission();
-      } else if (
-        error?.message?.includes("network") ||
-        error?.message?.includes("connection") ||
-        error?.message?.includes("Failed to fetch")
-      ) {
-        errorMsg = "בעיית חיבור לאינטרנט. בדוק את הגדרות הרשת שלך";
-      } else {
-        errorMsg = error?.message || "שגיאה לא ידועה";
+      const requestBody: any = {
+        case_id: caseId,
+        message: userMessage,
+        chat_history: chatHistory,
+        language: language
       }
 
-      setError(`❌ ${errorMsg}`);
-      setIsConnecting(false);
-      setProcessingStatus("");
-      cleanup();
+      // Include cached agent prompt if available
+      if (agentPrompt) {
+        requestBody.agentPrompt = agentPrompt
+      }
+
+      // Include eligibility data on first message only
+      if (isFirstMessage && eligibilityRaw) {
+        requestBody.eligibility_raw = eligibilityRaw
+        console.log("📤 Sending eligibility data with first message (will not repeat)")
+        setIsFirstMessage(false)
+      }
+
+      const response = await fetch(`${BACKEND_BASE_URL}/api/interview/chat`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestBody)
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.detail || `HTTP ${response.status}`)
+      }
+
+      const data = await response.json()
+      
+      console.log("\n" + "=".repeat(80))
+      console.log("🤖 AI RESPONSE RECEIVED:")
+      console.log("=".repeat(80))
+      console.log(data.message)
+      console.log("=".repeat(80))
+      console.log("🔍 Response data:", JSON.stringify(data, null, 2))
+      console.log("📌 Done flag:", data.done)
+      console.log("=".repeat(80) + "\n")
+      
+      if (data.done) {
+        console.log("✅ INTERVIEW MARKED AS COMPLETE")
+        console.log(`📊 Confidence Score: ${data.confidence_score}%`)
+      }
+      
+      const aiResponse: Message = {
+        id: Date.now().toString(),
+        role: "assistant",
+        content: data.message,
+        timestamp: new Date()
+      }
+      
+      setMessages(prev => [...prev, aiResponse])
+      
+      if (data.done) {
+        console.log("🎯 Setting isComplete to true and triggering navigation...")
+        setIsComplete(true)
+        setConfidenceScore(data.confidence_score)
+      }
+    } catch (err) {
+      console.error("Error sending message:", err)
+      setError(isRTL ? "שגיאה בשליחת הודעה: " + (err instanceof Error ? err.message : String(err)) : "Error sending message: " + (err instanceof Error ? err.message : String(err)))
     }
-  };
+  }
 
-  const endCall = async () => {
-    // Save call data before cleanup
-    const callData = {
-      transcript: transcript,
-      duration: callStartTimeRef.current ? Math.floor((Date.now() - callStartTimeRef.current) / 1000) : 0,
-      ended_at: new Date().toISOString()
-    };
-    
-    // Store in localStorage for the end-of-call page to process
-    localStorage.setItem('openai_call_data', JSON.stringify(callData));
-    
-    setIsCallActive(false);
-    cleanup();
+  const handleSendMessage = async () => {
+    if (!inputValue.trim() || isComplete) return
 
-    // Navigate immediately to end-of-call processing
-    router.push("/end-of-call");
-  };
-
-  const toggleMute = () => {
-    if (micStreamRef.current && isCallActive) {
-      const audioTracks = micStreamRef.current.getAudioTracks();
-      audioTracks.forEach(track => {
-        track.enabled = isMuted; // Toggle enabled state
-      });
-      setIsMuted(!isMuted);
+    const newMessage: Message = {
+      id: Date.now().toString(),
+      role: "user",
+      content: inputValue,
+      timestamp: new Date()
     }
-  };
 
-  const toggleMic = () => {
-    if (isCallActive) {
-      toggleMute();
+    setMessages(prev => [...prev, newMessage])
+    setInputValue("")
+    setIsProcessing(true)
+
+    await sendMessageToBackend(newMessage.content)
+    setIsProcessing(false)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault()
+      handleSendMessage()
+    }
+  }
+
+  const toggleRecording = async () => {
+    if (isRecording) {
+      // Stop recording
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+        mediaRecorderRef.current.stop()
+      }
+      setIsRecording(false)
     } else {
-      startCall();
-    }
-  };
+      // Start recording
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        const mediaRecorder = new MediaRecorder(stream)
+        mediaRecorderRef.current = mediaRecorder
+        audioChunksRef.current = []
 
-  const handleHangup = () => {
-    // Always save call data before navigating
-    const callData = {
-      transcript: transcript,
-      duration: callStartTimeRef.current ? Math.floor((Date.now() - callStartTimeRef.current) / 1000) : 0,
-      ended_at: new Date().toISOString()
-    };
-    
-    // Store in localStorage for the end-of-call page to process
-    localStorage.setItem('openai_call_data', JSON.stringify(callData));
-    
-    if (isCallActive) {
-      // Clean up active call resources
-      cleanup();
-    }
-    
-    // Navigate immediately to end-of-call for processing
-    router.push("/end-of-call");
-  };
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data)
+          }
+        }
 
-  const handleSaveAndExit = () => {
-    if (isCallActive) {
-      cleanup();
+        mediaRecorder.onstop = async () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" })
+          
+          setIsProcessing(true)
+          
+          try {
+            // Transcribe audio using backend endpoint
+            const formData = new FormData()
+            formData.append('case_id', caseId!)
+            formData.append('audio', audioBlob, 'audio.webm')
+            formData.append('language', language === 'he' ? 'he' : 'en')
+            
+            console.log("🎤 Sending audio for transcription...")
+            
+            const transcribeResponse = await fetch(`${BACKEND_BASE_URL}/api/interview/transcribe`, {
+              method: "POST",
+              body: formData
+            })
+            
+            if (!transcribeResponse.ok) {
+              const errorData = await transcribeResponse.json().catch(() => ({}))
+              throw new Error(errorData.detail || `Transcription failed: ${transcribeResponse.status}`)
+            }
+            
+            const transcribeData = await transcribeResponse.json()
+            const transcribedText = transcribeData.text
+            
+            console.log(`✅ Transcription complete: ${transcribedText}`)
+            
+            // Add user message
+            const newMessage: Message = {
+              id: Date.now().toString(),
+              role: "user",
+              content: transcribedText,
+              timestamp: new Date()
+            }
+            setMessages(prev => [...prev, newMessage])
+            
+            // Send to interview chat
+            await sendMessageToBackend(transcribedText)
+          } catch (err) {
+            console.error("Error transcribing audio:", err)
+            setError(isRTL ? "שגיאה בתמלול קול: " + (err instanceof Error ? err.message : String(err)) : "Error transcribing audio: " + (err instanceof Error ? err.message : String(err)))
+          } finally {
+            setIsProcessing(false)
+          }
+          
+          // Stop all tracks
+          stream.getTracks().forEach(track => track.stop())
+        }
+
+        mediaRecorder.start()
+        setIsRecording(true)
+      } catch (err) {
+        console.error("Error accessing microphone:", err)
+        setError(isRTL ? "שגיאה בגישה למיקרופון" : "Error accessing microphone")
+      }
     }
-    router.push("/incomplete-intake");
-  };
+  }
+
+  const handleNextStep = () => {
+    router.push("/value-reveal")
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-center">
+          <p className="text-red-500 mb-4">{error}</p>
+          <Button onClick={() => router.push("/")}>{isRTL ? "חזור לבית" : "Go Home"}</Button>
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <>
-      {/* Hidden audio element for AI voice output */}
-      <audio 
-        id="aiAudio" 
-        autoPlay 
-        playsInline
-        style={{ display: 'none' }}
-      />
-      
-      <div
-        className="relative h-screen w-full overflow-hidden bg-slate-950"
-        dir={mounted && isRTL ? "rtl" : "ltr"}
-      >
-        <div className="absolute inset-0">
-          <img
-            src="/professional-female-lawyer.png"
-            alt={mounted && isRTL ? "עורכת דין" : "Lawyer"}
-            className="h-full w-full object-cover opacity-40"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/80 to-slate-950/40" />
-        </div>
-
-        {mounted && (
-          <motion.header
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="relative z-10 flex items-center justify-between px-8 py-6"
-          >
-            <div className="flex items-center gap-4">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-600/20 backdrop-blur-sm ring-2 ring-blue-600/30">
-                <span className="text-lg font-semibold text-blue-400">של</span>
-              </div>
-              <div>
-                <h2 className="text-xl font-semibold text-white">
-                  עו״ד שרה לוי
-                </h2>
-                <p className="text-sm text-slate-400">ייעוץ משפטי AI</p>
-              </div>
+    <div className={cn(
+      "flex flex-col h-[calc(100vh-3.5rem)] w-full bg-background",
+      isRTL ? "rtl" : "ltr"
+    )} dir={isRTL ? "rtl" : "ltr"}>
+      <Card className="flex-1 flex flex-col overflow-hidden border-0 rounded-none shadow-none">
+        <CardHeader className="border-b bg-muted/30 py-4">
+          <div className="flex items-center gap-3">
+            <Avatar className="h-10 w-10 border-2 border-primary/20">
+              <AvatarFallback className="bg-primary text-primary-foreground"><Bot size={24} /></AvatarFallback>
+            </Avatar>
+            <div>
+              <CardTitle className="text-lg">
+                {isRTL ? "ראיון תביעה ללא מגע" : "Zero Touch Claim Interviewer"}
+              </CardTitle>
+              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                </span>
+                {isRTL ? "מחובר - AI Lawyer" : "Online - AI Lawyer"}
+              </p>
             </div>
-
-            <Badge className="gap-2 border-green-500/30 bg-green-950/50 px-4 py-2 text-green-400 backdrop-blur-md">
-              <Shield className="h-4 w-4" />
-              <span>מוצפן מקצה לקצה</span>
-            </Badge>
-          </motion.header>
-        )}
-
-        {/* Toast Notification */}
-        <AnimatePresence>
-          {toastMessage && (
-            <motion.div
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="absolute top-24 left-1/2 z-30 -translate-x-1/2 w-96"
-            >
-              <div className="bg-blue-500/90 backdrop-blur-md text-white px-6 py-4 rounded-xl shadow-2xl border border-blue-400">
-                <p className="text-sm font-medium text-center">{toastMessage}</p>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Error Display */}
-        {error && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="absolute top-24 left-1/2 z-30 -translate-x-1/2 w-96"
-          >
-            <div className="bg-red-500/90 backdrop-blur-md text-white px-6 py-4 rounded-xl shadow-2xl border border-red-400">
-              <p className="text-sm font-medium">{error}</p>
-              <button
-                onClick={() => setError(null)}
-                className="mt-2 text-xs underline hover:no-underline"
-              >
-                סגור
-              </button>
-            </div>
-          </motion.div>
-        )}
-
-        {/* Connecting Status */}
-        {isConnecting && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="absolute top-24 left-1/2 z-30 -translate-x-1/2"
-          >
-            <div className="bg-blue-500/90 backdrop-blur-md text-white px-6 py-3 rounded-xl shadow-2xl">
-              <p className="text-sm font-medium">{processingStatus}</p>
-            </div>
-          </motion.div>
-        )}
-
-        {/* Transcript Display - Show during active call if there's content */}
-        {isCallActive && transcript.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, x: 50 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="absolute right-8 top-32 bottom-32 z-20 w-96"
-          >
-            <div className="bg-slate-900/80 backdrop-blur-xl rounded-2xl border border-slate-700/50 h-full flex flex-col">
-              <div className="px-4 py-3 border-b border-slate-700/50">
-                <h3 className="text-sm font-semibold text-white">תמלול שיחה</h3>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                {transcript.map((line, index) => {
-                  const isUser = line.startsWith("אתה:");
-                  const message = line.replace(/^(אתה:|עו״ד שרה לוי:)\s*/, "");
-                  return (
-                    <div
-                      key={index}
-                      className={`flex ${
-                        isUser ? "justify-start" : "justify-end"
-                      }`}
-                    >
-                      <div
-                        className={`max-w-[85%] rounded-xl px-3 py-2 ${
-                          isUser
-                            ? "bg-blue-600/80 text-white"
-                            : "bg-slate-700/80 text-slate-100"
-                        }`}
-                      >
-                        <p className="text-xs">{message}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-                <div ref={transcriptEndRef} />
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {/* End-of-Call Loader Overlay */}
-        <AnimatePresence>
-          {isCallEnding && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-slate-950/95 backdrop-blur-xl"
-            >
-              {/* Animated loading spinner */}
-              <motion.div
-                className="relative w-24 h-24 mb-8"
-                animate={{ rotate: 360 }}
-                transition={{
-                  duration: 2,
-                  repeat: Number.POSITIVE_INFINITY,
-                  ease: "linear"
-                }}
-              >
-                <div className="absolute inset-0 rounded-full border-4 border-slate-700/30" />
-                <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-blue-500 border-r-blue-500" />
-              </motion.div>
-
-              {/* Loading text */}
-              <motion.div
-                className="text-center space-y-3"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.2 }}
-              >
-                <h3 className="text-xl font-semibold text-white">
-                  {language === "he" ? "מעבדת את השיחה..." : "Processing your call..."}
-                </h3>
-                <p className="text-sm text-slate-400">
-                  {language === "he" 
-                    ? "שומרת נתונים ובודקת זכאות..." 
-                    : "Saving data and checking eligibility..."}
-                </p>
-              </motion.div>
-
-              {/* Progress indicator dots */}
-              <motion.div
-                className="flex gap-2 mt-8"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.4 }}
-              >
-                {[0, 1, 2].map((i) => (
-                  <motion.div
-                    key={i}
-                    className="w-2 h-2 rounded-full bg-blue-500"
-                    animate={{ scale: [1, 1.2, 1], opacity: [0.6, 1, 0.6] }}
-                    transition={{
-                      duration: 1.2,
-                      repeat: Number.POSITIVE_INFINITY,
-                      delay: i * 0.2
-                    }}
-                  />
-                ))}
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <div className="absolute left-8 top-24 z-20 space-y-3">
-          {floatingTags.map((tag) => (
-            <motion.div
-              key={tag.id}
-              initial={{ opacity: 0, x: -50, scale: 0.8 }}
-              animate={{ opacity: 1, x: 0, scale: 1 }}
-              transition={{ type: "spring", stiffness: 300, damping: 25 }}
-              className="rounded-xl border border-blue-500/30 bg-slate-900/60 px-4 py-3 shadow-2xl backdrop-blur-xl"
-              style={{
-                background: "rgba(15, 23, 42, 0.6)",
-                backdropFilter: "blur(20px)",
-              }}
-            >
-              <p className="text-sm font-medium text-blue-300">{tag.text}</p>
-            </motion.div>
-          ))}
-        </div>
-
-        <div className="absolute inset-0 z-10 flex items-center justify-center">
-          <div className="relative">
-            {voiceState !== "idle" && (
-              <>
-                <motion.div
-                  className="absolute inset-0 rounded-full"
-                  style={{
-                    background:
-                      voiceState === "listening"
-                        ? "radial-gradient(circle, rgba(34, 197, 94, 0.2) 0%, transparent 70%)"
-                        : "radial-gradient(circle, rgba(37, 99, 235, 0.2) 0%, transparent 70%)",
-                  }}
-                  animate={{
-                    scale: [1, 1.4, 1],
-                    opacity: [0.6, 0, 0.6],
-                  }}
-                  transition={{
-                    duration: 2,
-                    repeat: Number.POSITIVE_INFINITY,
-                    ease: "easeInOut",
-                  }}
-                />
-                <motion.div
-                  className="absolute inset-0 rounded-full"
-                  style={{
-                    background:
-                      voiceState === "listening"
-                        ? "radial-gradient(circle, rgba(34, 197, 94, 0.15) 0%, transparent 70%)"
-                        : "radial-gradient(circle, rgba(37, 99, 235, 0.15) 0%, transparent 70%)",
-                  }}
-                  animate={{
-                    scale: [1, 1.6, 1],
-                    opacity: [0.4, 0, 0.4],
-                  }}
-                  transition={{
-                    duration: 2,
-                    repeat: Number.POSITIVE_INFINITY,
-                    ease: "easeInOut",
-                    delay: 0.5,
-                  }}
-                />
-              </>
-            )}
-
-            <motion.div
-              className="relative flex h-48 w-48 items-center justify-center rounded-full"
-              style={{
-                background:
-                  voiceState === "listening"
-                    ? "radial-gradient(circle, rgba(34, 197, 94, 0.3) 0%, rgba(34, 197, 94, 0.1) 100%)"
-                    : voiceState === "speaking"
-                    ? "radial-gradient(circle, rgba(37, 99, 235, 0.3) 0%, rgba(37, 99, 235, 0.1) 100%)"
-                    : "radial-gradient(circle, rgba(71, 85, 105, 0.3) 0%, rgba(71, 85, 105, 0.1) 100%)",
-                backdropFilter: "blur(40px)",
-                border: "2px solid",
-                borderColor:
-                  voiceState === "listening"
-                    ? "rgba(34, 197, 94, 0.4)"
-                    : voiceState === "speaking"
-                    ? "rgba(37, 99, 235, 0.4)"
-                    : "rgba(71, 85, 105, 0.4)",
-                boxShadow:
-                  voiceState === "listening"
-                    ? "0 0 60px rgba(34, 197, 94, 0.3)"
-                    : voiceState === "speaking"
-                    ? "0 0 60px rgba(37, 99, 235, 0.3)"
-                    : "0 0 30px rgba(71, 85, 105, 0.2)",
-              }}
-              animate={{
-                scale: voiceState !== "idle" ? [1, 1.05, 1] : 1,
-              }}
-              transition={{
-                duration: 1.5,
-                repeat: voiceState !== "idle" ? Number.POSITIVE_INFINITY : 0,
-                ease: "easeInOut",
-              }}
-            >
-              <motion.div
-                className="h-32 w-32 rounded-full"
-                style={{
-                  background:
-                    voiceState === "listening"
-                      ? "linear-gradient(135deg, #22c55e, #16a34a)"
-                      : voiceState === "speaking"
-                      ? "linear-gradient(135deg, #2563eb, #1d4ed8)"
-                      : "linear-gradient(135deg, #475569, #334155)",
-                }}
-                animate={{
-                  opacity: voiceState !== "idle" ? [0.8, 1, 0.8] : 0.6,
-                }}
-                transition={{
-                  duration: 1,
-                  repeat: voiceState !== "idle" ? Number.POSITIVE_INFINITY : 0,
-                  ease: "easeInOut",
-                }}
-              />
-            </motion.div>
-
-            <motion.p
-              className="mt-6 text-center text-lg font-medium"
-              style={{
-                color:
-                  voiceState === "listening"
-                    ? "#22c55e"
-                    : voiceState === "speaking"
-                    ? "#2563eb"
-                    : "#94a3b8",
-              }}
-              animate={{ opacity: [0.7, 1, 0.7] }}
-              transition={{
-                duration: 1.5,
-                repeat: voiceState !== "idle" ? Number.POSITIVE_INFINITY : 0,
-                ease: "easeInOut",
-              }}
-            >
-              {mounted && (
-                <>
-                  {voiceState === "listening" && "מקשיב..."}
-                  {voiceState === "speaking" && "מדבר..."}
-                  {voiceState === "idle" &&
-                    (hasMicPermission === false
-                      ? "נדרשת גישה למיקרופון"
-                      : "לחץ על המיקרופון להתחלה")}
-                </>
-              )}
-            </motion.p>
           </div>
-        </div>
+        </CardHeader>
+        
+        <CardContent className="flex-1 p-0 overflow-hidden relative">
+          <ScrollArea className="h-full p-4" ref={scrollAreaRef} >
+            <div className="flex flex-col gap-4 pb-4">
+              {messages.map((message) => (
+                <motion.div
+                  key={message.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={cn(
+                    "flex w-full items-end gap-2",
+                    message.role === "user" ? "justify-end" : "justify-start"
+                  )}
+                >
+                  {message.role === 'assistant' && (
+                    <Avatar className="h-8 w-8 shrink-0">
+                      <AvatarFallback className="bg-primary/10 text-primary"><Bot size={16} /></AvatarFallback>
+                    </Avatar>
+                  )}
+                  
+                  <div className={cn(
+                    "max-w-[80%] px-4 py-3 rounded-2xl text-sm leading-relaxed shadow-sm",
+                    message.role === "user" 
+                      ? "bg-primary text-primary-foreground rounded-br-none" 
+                      : "bg-muted text-foreground rounded-bl-none border"
+                  )}>
+                    {message.content}
+                    <div className={cn(
+                      "text-[10px] opacity-50 mt-1",
+                      message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"
+                    )}>
+                      {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  </div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="absolute bottom-12 left-1/2 z-20 flex -translate-x-1/2 items-center gap-8"
-        >
-          {/* Permission button - shown when permission is denied */}
-          {hasMicPermission === false && mounted && (
-            <Button
-              size="lg"
-              onClick={requestMicPermission}
-              className="h-20 w-20 rounded-full border-2 p-0 shadow-2xl transition-all duration-300 cursor-pointer"
-              style={{
-                background: "linear-gradient(135deg, #f59e0b, #d97706)",
-                borderColor: "#f59e0b",
-                backdropFilter: "blur(20px)",
-                boxShadow: "0 0 40px rgba(245, 158, 11, 0.4)",
-              }}
-            >
-              <Mic className="h-8 w-8 text-white" />
-            </Button>
-          )}
+                  {message.role === 'user' && (
+                    <Avatar className="h-8 w-8 shrink-0">
+                       <AvatarFallback className="bg-muted text-muted-foreground"><User size={16} /></AvatarFallback>
+                    </Avatar>
+                  )}
+                </motion.div>
+              ))}
 
-          {/* Mute button - shown during active call */}
-          {isCallActive && (
-            <Button
-              size="lg"
-              onClick={toggleMute}
-              className="h-20 w-20 rounded-full border-2 p-0 shadow-2xl transition-all duration-300"
-              style={{
-                background: isMuted
-                  ? "linear-gradient(135deg, #ef4444, #dc2626)"
-                  : "rgba(30, 41, 59, 0.8)",
-                borderColor: isMuted ? "#ef4444" : "rgba(71, 85, 105, 0.5)",
-                backdropFilter: "blur(20px)",
-                boxShadow: isMuted
-                  ? "0 0 40px rgba(239, 68, 68, 0.4)"
-                  : "0 10px 30px rgba(0, 0, 0, 0.3)",
-              }}
-            >
-              {isMuted ? (
-                <MicOff className="h-8 w-8 text-white" />
-              ) : (
-                <Mic className="h-8 w-8 text-white" />
+              {isProcessing && (
+                 <motion.div 
+                   initial={{ opacity: 0 }}
+                   animate={{ opacity: 1 }}
+                   className="flex items-center gap-2 text-muted-foreground text-sm pl-12"
+                 >
+                   <Loader2 className="h-4 w-4 animate-spin" />
+                   {isRTL ? "AI חושב..." : "AI thinking..."}
+                 </motion.div>
               )}
-            </Button>
-          )}
+              
+              <div ref={messagesEndRef} />
+            </div>
+          </ScrollArea>
 
-          {/* Start mic button - shown when not in call and permission granted */}
-          {!isCallActive && hasMicPermission === true && mounted && (
-            <Button
-              size="lg"
-              onClick={startCall}
-              className="h-20 w-20 rounded-full border-2 p-0 shadow-2xl transition-all duration-300 cursor-pointer"
-              style={{
-                background: isConnecting
-                  ? "rgba(100, 116, 139, 0.8)"
-                  : "linear-gradient(135deg, #22c55e, #16a34a)",
-                borderColor: isConnecting
-                  ? "rgba(100, 116, 139, 0.5)"
-                  : "#22c55e",
-                backdropFilter: "blur(20px)",
-                boxShadow: "0 0 40px rgba(34, 197, 94, 0.4)",
-              }}
-            >
-              <Mic className="h-8 w-8 text-white" />
-            </Button>
-          )}
+          {/* Analysis Popup */}
+          <AnimatePresence>
+            {isAnalyzing && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50"
+              >
+                <motion.div 
+                  className="bg-card border rounded-2xl p-8 max-w-sm w-full mx-4 shadow-2xl"
+                  animate={{ scale: [1, 1.02, 1] }}
+                  transition={{ duration: 2, repeat: Infinity }}
+                >
+                  <div className="flex flex-col items-center gap-4 text-center">
+                    <div className="relative">
+                      <Loader2 size={48} className="text-blue-500 animate-spin" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-lg mb-2">
+                        {isRTL ? "🤖 ה-AI מנתח את התיק שלך" : "🤖 AI is analyzing your case"}
+                      </h3>
+                      <p className="text-sm text-muted-foreground">
+                        {isRTL 
+                          ? "אנחנו מסכמים את כל המידע שיש לנו כדי לתן לך הערכה מדויקת..."
+                          : "We're analyzing all the information to give you an accurate assessment..."
+                        }
+                      </p>
+                    </div>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-          {/* End call button - only shown when connected to call */}
-          {isCallActive && (
-            <Button
-              size="lg"
-              variant="destructive"
-              onClick={endCall}
-              className="h-20 w-20 rounded-full border-2 border-red-500/50 bg-gradient-to-br from-red-600 to-red-700 p-0 shadow-2xl backdrop-blur-xl transition-all duration-300 hover:from-red-700 hover:to-red-800"
-              style={{
-                boxShadow: "0 10px 30px rgba(220, 38, 38, 0.3)",
-              }}
-            >
-              <Phone className="h-8 w-8 text-white" />
-            </Button>
-          )}
-        </motion.div>
+          {/* Analysis Error Popup */}
+          <AnimatePresence>
+            {analysisError && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50"
+              >
+                <motion.div 
+                  className="bg-card border rounded-2xl p-8 max-w-sm w-full mx-4 shadow-2xl"
+                >
+                  <div className="flex flex-col items-center gap-4 text-center">
+                    <div className="text-4xl">⚠️</div>
+                    <div>
+                      <h3 className="font-bold text-lg mb-2 text-red-600">
+                        {isRTL ? "שגיאה בניתוח" : "Analysis Error"}
+                      </h3>
+                      <p className="text-sm text-muted-foreground mb-4">
+                        {analysisError}
+                      </p>
+                    </div>
+                    <Button 
+                      onClick={retryAnalysis}
+                      className="w-full gap-2"
+                      size="lg"
+                    >
+                      {isRTL ? "🔄 נסה שוב" : "🔄 Try Again"}
+                    </Button>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.5 }}
-          className="absolute bottom-12 left-12 z-10"
-        >
-          {mounted && (
-            <Button
-              variant="outline"
-              onClick={handleSaveAndExit}
-              className="border-slate-600/50 bg-slate-900/40 text-slate-300 backdrop-blur-md hover:bg-slate-800/60"
-            >
-              שמור וצא
-            </Button>
-          )}
-        </motion.div>
+          {/* Recording Overlay */}
+          <AnimatePresence>
+            {isRecording && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="absolute inset-0 bg-background/80 backdrop-blur-sm flex flex-col items-center justify-center z-10"
+              >
+                <div className="flex flex-col items-center gap-4 p-8 rounded-xl bg-card border shadow-2xl max-w-sm w-full mx-4">
+                   <div className="relative">
+                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                     <div className="relative bg-red-500 rounded-full p-6 text-white">
+                        <Mic size={32} />
+                     </div>
+                   </div>
+                   <div className="text-center">
+                     <h3 className="font-semibold text-lg">{isRTL ? "מקליט..." : "Listening..."}</h3>
+                     <p className="text-sm text-muted-foreground">{isRTL ? "דבר רגיל, אני מקשיב" : "Speak naturally, I'm listening"}</p>
+                   </div>
+                   <Button 
+                      variant="destructive" 
+                      size="lg" 
+                      className="w-full gap-2 rounded-full"
+                      onClick={toggleRecording}
+                   >
+                     <StopCircle size={18} />
+                     {isRTL ? "סיים הקלטה" : "Stop Recording"}
+                   </Button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </CardContent>
 
-        {mounted && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.6 }}
-            className="absolute bottom-0 left-0 right-0 z-10 bg-slate-900/80 backdrop-blur-md border-t border-slate-700/50 py-3 px-6"
-          >
-            <p className="text-center text-xs text-slate-400 leading-relaxed">
-              <span className="font-semibold text-slate-300">הבהרה:</span>{" "}
-              ZeroTouch הינה מערכת טכנולוגית לניהול מידע ואינה מספקת ייעוץ
-              משפטי. השירות מהווה כלי עזר להגשת תביעות באופן עצמאי. המידע שניתן
-              באמצעות המערכת אינו מהווה תחליף לייעוץ משפטי מקצועי מעורך דין
-              מוסמך.
-            </p>
-          </motion.div>
-        )}
+        <CardFooter className="p-4 border-t bg-background">
+          {isComplete ? (
+            <div className="w-full">
+              <div className="bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg p-4 mb-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="h-2 w-2 bg-green-500 rounded-full"></div>
+                  <h3 className="font-semibold text-green-900 dark:text-green-100">
+                    {isRTL ? "הראיון הושלם בהצלחה!" : "Interview Completed Successfully!"}
+                  </h3>
+                </div>
+                <p className="text-sm text-green-700 dark:text-green-300 mb-2">
+                  {isRTL 
+                    ? `אספנו מספיק מידע לבנות תביעה חזקה. רמת ביטחון: ${confidenceScore?.toFixed(0)}%`
+                    : `We've gathered enough information to build a strong claim. Confidence: ${confidenceScore?.toFixed(0)}%`
+                  }
+                </p>
+              </div>
+              <Button 
+                onClick={handleNextStep}
+                className="w-full h-12 text-base font-semibold gap-2"
+                size="lg"
+              >
+                {isRTL ? "המשך לשלב הבא" : "Continue to Next Step"}
+                <ArrowRight size={20} />
+              </Button>
+            </div>
+          ) : (
+            <div className="flex w-full gap-2 items-center">
+              <Button
+                variant={isRecording ? "destructive" : "outline"}
+                size="icon"
+                className={cn("h-12 w-12 shrink-0 rounded-full border-2", isRecording && "animate-pulse")}
+                onClick={toggleRecording}
+                title={isRecording ? "Stop recording" : "Start recording"}
+                disabled={isProcessing}
+              >
+                {isRecording ? <MicOff size={20} /> : <Mic size={20} />}
+              </Button>
+
+              <div className="flex-1 relative">
+                <Input
+                  className="h-12 rounded-full pl-4 pr-12 bg-muted/50 focus-visible:ring-primary/20 border-muted-foreground/20"
+                  placeholder={isRTL ? "הקלד הודעה..." : "Type a message..."}
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  disabled={isProcessing}
+                />
+              </div>
+
+              <Button 
+                size="icon" 
+                className={cn(
+                  "h-12 w-12 shrink-0 rounded-full transition-all",
+                  inputValue.trim() && !isProcessing ? "bg-primary" : "bg-muted text-muted-foreground/50"
+                )} 
+                onClick={handleSendMessage}
+                disabled={!inputValue.trim() || isProcessing}
+              >
+                <Send size={20} className={isRTL ? "ml-1" : "mr-1"} />
+              </Button>
+            </div>
+          )}
+        </CardFooter>
+      </Card>
+      
+      <div className="text-center text-xs text-muted-foreground/60 p-2">
+        {isRTL 
+          ? "מערכת זו משתמשת בבינה מלאכותית ועשויה לעשות טעויות. נא לוודא את הפרטים החשובים."
+          : "This system uses AI and may make mistakes. Please verify important details."
+        }
       </div>
-
-      <ClaimMaximizationModal
-        isOpen={showMaximizationModal}
-        onClose={() => setShowMaximizationModal(false)}
-        eligibleBenefits={eligibleBenefits}
-      />
-    </>
-  );
+    </div>
+  )
 }

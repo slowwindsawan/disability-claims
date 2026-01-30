@@ -378,6 +378,77 @@ def logout_token(access_token: str) -> dict:
         raise
 
 
+def refresh_session(refresh_token: str) -> dict:
+    """Refresh an access token using a refresh token via Supabase auth."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        raise RuntimeError('Supabase config missing')
+    
+    url = f"{SUPABASE_URL.rstrip('/')}/auth/v1/token"
+    
+    # Try supabase-py first if available
+    if _has_supabase_py and _supabase_admin is not None:
+        try:
+            logger.debug('Attempting token refresh via supabase-py admin client')
+            fn = getattr(_supabase_admin.auth, 'refresh_session', None)
+            if fn:
+                res = fn(refresh_token)
+                if isinstance(res, dict):
+                    if res.get('data') and isinstance(res.get('data'), dict):
+                        if res['data'].get('session'):
+                            session = res['data']['session']
+                            return {
+                                'access_token': session.get('access_token') or session.get('accessToken'),
+                                'refresh_token': session.get('refresh_token') or session.get('refreshToken'),
+                                'user': res['data'].get('user')
+                            }
+                        return res['data']
+                    if res.get('session'):
+                        session = res.get('session')
+                        return {
+                            'access_token': session.get('access_token') or session.get('accessToken'),
+                            'refresh_token': session.get('refresh_token') or session.get('refreshToken'),
+                            'user': res.get('user')
+                        }
+                    return res
+                # Handle object response
+                if hasattr(res, 'session'):
+                    session = res.session
+                    return {
+                        'access_token': getattr(session, 'access_token', None),
+                        'refresh_token': getattr(session, 'refresh_token', None),
+                        'user': getattr(res, 'user', None)
+                    }
+        except Exception:
+            logger.debug('supabase-py token refresh failed, falling back to HTTP')
+    
+    # Fallback: use HTTP token endpoint
+    try:
+        logger.debug("Refreshing token via HTTP token endpoint")
+        headers = {
+            'apikey': SUPABASE_ANON_KEY,
+            'Content-Type': 'application/x-www-form-urlencoded',
+        }
+        data = {
+            'grant_type': 'refresh_token',
+            'refresh_token': refresh_token,
+        }
+        
+        resp = requests.post(url, headers=headers, data=data, timeout=10)
+        logger.debug(f"Token refresh response status={resp.status_code}")
+        resp.raise_for_status()
+        result = resp.json()
+        
+        return {
+            'access_token': result.get('access_token'),
+            'refresh_token': result.get('refresh_token'),
+            'user': result.get('user'),
+            'expires_in': result.get('expires_in')
+        }
+    except Exception:
+        logger.exception('Failed to refresh token')
+        raise
+
+
 def send_password_reset(email: str) -> dict:
     """Trigger Supabase password recovery email (recover endpoint)."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
@@ -1453,6 +1524,68 @@ def storage_upload_file(bucket: str, path: str, file_bytes: bytes, content_type:
         return {'public_url': public_url, 'http_status': resp.status_code}
     except Exception:
         logger.exception('Failed to upload file to Supabase Storage')
+        raise
+
+
+def storage_delete_file(bucket: str, path: str) -> dict:
+    """Delete a file from Supabase Storage.
+    
+    Args:
+        bucket: Storage bucket name
+        path: File path within the bucket
+    
+    Returns:
+        dict with deletion status
+    
+    Raises:
+        RuntimeError: If deletion fails
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError('Supabase storage config missing')
+    
+    # Normalize path: remove leading slash
+    norm_path = path.lstrip('/')
+    
+    # First try supabase-py admin client if present
+    if _has_supabase_py and _supabase_admin is not None:
+        try:
+            logger.debug(f'Deleting from supabase storage via supabase-py: bucket={bucket} path={norm_path}')
+            storage = getattr(_supabase_admin, 'storage', None)
+            if storage is not None:
+                try:
+                    bucket_client = _supabase_admin.storage.from_(bucket)
+                except Exception:
+                    bucket_client = _supabase_admin.storage().from_(bucket) if callable(getattr(_supabase_admin, 'storage', None)) else None
+                
+                if bucket_client is not None:
+                    try:
+                        res = bucket_client.remove([norm_path])
+                        data = _normalize_sdk_response(res)
+                        logger.info(f'Successfully deleted file via SDK: {norm_path}')
+                        return {'status': 'deleted', 'sdk_response': data}
+                    except Exception as e:
+                        logger.debug(f'supabase-py delete failed: {e}', exc_info=True)
+        except Exception:
+            logger.exception('supabase-py storage delete failed; falling back to HTTP')
+    
+    # Fallback: use HTTP DELETE to storage REST endpoint
+    try:
+        url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{bucket}/{norm_path}"
+        headers = {
+            'Authorization': f'Bearer {SUPABASE_SERVICE_ROLE_KEY}',
+            'apikey': SUPABASE_SERVICE_ROLE_KEY,
+        }
+        logger.debug(f'Deleting from supabase storage via HTTP DELETE: {url}')
+        resp = requests.delete(url, headers=headers, timeout=10)
+        
+        if resp.status_code not in (200, 204):
+            logger.warning(f'storage delete HTTP status={resp.status_code} text={resp.text}')
+            resp.raise_for_status()
+        
+        logger.info(f'Successfully deleted file via HTTP: {norm_path}')
+        return {'status': 'deleted', 'http_status': resp.status_code}
+    except Exception:
+        logger.exception(f'Failed to delete file from Supabase Storage: {norm_path}')
         raise
 
 

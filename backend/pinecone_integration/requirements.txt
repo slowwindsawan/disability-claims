@@ -1,0 +1,3 @@
+pinecone-client
+pypdf2
+python-dotenv

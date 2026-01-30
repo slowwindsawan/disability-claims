@@ -428,7 +428,7 @@ FIELD CONSTRAINTS:
 - firstName & lastName: Split from full_name or from questionnaire answers
 - maritalStatus: One of ["אלמן/אלמנה", "גרוש/גרושה ללא ילדים", "גרוש/גרושה עם ילדים", "עגון/עגונה", "פרוד/פרודה", "רווק/רווקה"] or ""
 - kindComplaint: "1" (לא עבדתי כלל), "2" (עבדתי והפסקתי לעבוד), or ""
-- diseases: Array of disease objects with allowed disease values or empty array
+- diseases: Array of disease objects with allowed disease values (empty not allowed), if no diseases, consider אחר. allowed diseases: ["אחר","בעיה נפשית (מקבל טיפול)","הפרעות בבלוטת התריס","יתר לחץ דם","ליקוי שכלי","ליקוי שמיעה","ליקויי ראיה ומחלת עיניים","מחלה אורטופדית (גפיים עליונות ותחתונות, גב, צוואר, דלקת פרקים)","מחלות בתחום נוירולוגי (כולל אלצהיימר, פרקינסון, אפילפסיה ואירוע מוחי)"]
 - medicalTests: Array from allowed medical test names or empty array
 - healthFund: One of ["כללית", "לאומית", "מאוחדת", "מכבי", "אחר"] or ""
 - File URLs: Use full Supabase Storage URLs from documents data

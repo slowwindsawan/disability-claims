@@ -94,19 +94,16 @@ def get_btl_content_by_topics(topic_ids: List[str]) -> str:
 
 def extract_related_topics_from_call_details(call_details: Dict[str, Any]) -> List[str]:
     """Extract related_topics array from call_details.analysis.structuredData.
-    If the array is empty, return all topic IDs from btl.json.
+    Returns empty list if not found - caller should use topic classifier.
     """
     try:
         topics = call_details.get("analysis", {}).get("structuredData", {}).get("related_topics", [])
         logger.debug(f"[BTL] Extracted topics from call_details: {topics}")
         
-        # If topics array is empty, return ALL topic IDs from btl.json
+        # Return what we found (may be empty - classifier will be used)
         if not topics:
-            logger.info("[BTL] 📚 related_topics is empty - loading ALL topics from btl.json")
-            all_guidelines = load_btl_guidelines()
-            all_topic_ids = [topic.get('topic_id') for topic in all_guidelines if topic.get('topic_id')]
-            logger.info(f"[BTL] 📚 Returning all {len(all_topic_ids)} topics: {all_topic_ids}")
-            return all_topic_ids
+            logger.info("[BTL] ℹ️  No related_topics in call_details - will use topic classifier")
+            return []
         
         return topics
     except Exception as e:
@@ -148,6 +145,7 @@ class ConversationSummarySchema(BaseModel):
     living_expenses: float
     products: list[str]
     chance_of_approval: float
+    strength_score: float  # 0-100 rating of claim strength based on interview data
 
 
 # ------------------------------------------------------------------
@@ -193,6 +191,11 @@ Required behavior (schema-first):
 Instructions
 - Map each finding to the relevant BTL rule (include rule code where relevant).
 - Calculate `chance_of_approval` (0–100) as a numeric value with a one-line justification inside `case_summary`.
+- Calculate `strength_score` (0–100) based on:
+  - Completeness of interview data (30 points): Full medical history, symptoms, functional limitations
+  - Evidence quality (30 points): Medical documentation, specialist assessments, test results
+  - Claim clarity (20 points): Clear connection between condition and disability, work impact
+  - BTL guideline alignment (20 points): How well the claim fits BTL disability categories
 - For `documents_requested_list`, use `required_docs` and/or probing questions from the BTL topic to populate `name` and `reason`. Set `uploaded` appropriately.
 - Do NOT pretty-print or include raw JSON dumps in the response.
 - Response in Hebrew only.
@@ -348,6 +351,8 @@ async def analyze_call_conversation_openai(
 
         # Extract and include BTL guidelines based on related topics
         btl_guidelines_context = ""
+        related_topics = []
+        
         if call_details:
             logger.info("[AGENT] 🔍 Extracting related topics from call_details...")
             logger.info(f"[AGENT] 🔍 call_details keys: {list(call_details.keys())}")
@@ -360,14 +365,25 @@ async def analyze_call_conversation_openai(
                 
             related_topics = extract_related_topics_from_call_details(call_details)
             logger.info(f"[AGENT] Related topics extracted: {related_topics}")
-            if related_topics:
-                logger.info(f"[AGENT] ✅ Found {len(related_topics)} related BTL topics: {related_topics}")
-                btl_guidelines_context = get_btl_content_by_topics(related_topics)
-                logger.info(f"[AGENT] 📚 BTL guidelines context length: {len(btl_guidelines_context)} chars")
-            else:
-                logger.warning("[AGENT] ⚠️  No related topics found in call_details - BTL guidelines will NOT be included!")
+        
+        # If no topics found, use topic classifier agent
+        if not related_topics:
+            logger.info("[AGENT] 🤖 No topics in call_details - invoking Topic Classifier Agent...")
+            from .openai_topic_classifier_agent import classify_btl_topics
+            try:
+                related_topics = await classify_btl_topics(transcript, messages)
+                logger.info(f"[AGENT] ✅ Topic Classifier identified {len(related_topics)} topics: {related_topics}")
+            except Exception as e:
+                logger.error(f"[AGENT] ❌ Topic Classifier failed: {e} - proceeding without BTL guidelines")
+                related_topics = []
+        
+        # Load BTL guidelines for identified topics
+        if related_topics:
+            logger.info(f"[AGENT] ✅ Using {len(related_topics)} related BTL topics: {related_topics}")
+            btl_guidelines_context = get_btl_content_by_topics(related_topics)
+            logger.info(f"[AGENT] 📚 BTL guidelines context length: {len(btl_guidelines_context)} chars")
         else:
-            logger.warning("[AGENT] ⚠️  call_details is None/False - BTL guidelines will NOT be included!")
+            logger.warning("[AGENT] ⚠️  No related topics identified - BTL guidelines will NOT be included!")
 
         workflow_input = WorkflowInput(
             input_as_text=(
@@ -428,10 +444,12 @@ async def analyze_call_conversation_openai(
 
     except Exception as e:
         logger.error("\033[91m" + "="*80)
-        print("[AGENT] 🔴 EXCEPTION CAUGHT:", e)
+        logger.error("[AGENT] 🔴 EXCEPTION CAUGHT:")
+        logger.error(f"[AGENT] Exception type: {type(e).__name__}")
+        logger.error(f"[AGENT] Exception message: {str(e)}")
+        import traceback
+        logger.error(f"[AGENT] Traceback:\n{traceback.format_exc()}")
         logger.exception("[AGENT] ❌ AGENT ERROR")
-        logger.error(f"[AGENT] Error type: {type(e).__name__}")
-        logger.error(f"[AGENT] Error details: {str(e)}")
         logger.error("="*80 + "\033[0m")
         logger.info("[AGENT] ═══════════════════════════════════════════")
         return {
@@ -446,4 +464,6 @@ async def analyze_call_conversation_openai(
             "income_tax_exemption": False,
             "living_expenses": 0.0,
             "products": [],
+            "chance_of_approval": 0.0,
+            "strength_score": 0.0,
         }

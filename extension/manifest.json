@@ -13,14 +13,16 @@
     "https://govforms.gov.il/*", 
     "https://*/*",
     "http://localhost:*/*",
-    "http://127.0.0.1:*/*"
+    "http://127.0.0.1:*/*",
+    "https://darling-melomakarona-6cd11d.netlify.app/"
   ],
   "externally_connectable": {
     "matches": [
       "http://localhost:*/*",
       "http://127.0.0.1:*/*",
       "https://*.vercel.app/*",
-      "https://*.netlify.app/*"
+      "https://*.netlify.app/*",
+      "https://*.trycloudflare.com/*"
     ]
   },
   "background": {
@@ -33,17 +35,21 @@
   "content_scripts": [
     {
       "matches": [
-        "https://govforms.gov.il/*"
+        "https://govforms.gov.il/*",
+        "https://darling-melomakarona-6cd11d.netlify.app/*",
+        "https://*.netlify.app/*",
+        "https://*.vercel.app/*",
+        "https://*.trycloudflare.com/*"
       ],
-      "js": ["content.js"],
-      "run_at": "document_idle"
+      "js": ["config.js", "content.js"],
+      "run_at": "document_start"
     },
     {
       "matches": [
         "http://localhost:*/*",
         "http://127.0.0.1:*/*"
       ],
-      "js": ["content.js"],
+      "js": ["config.js", "content.js"],
       "run_at": "document_start",
       "all_frames": false
     }

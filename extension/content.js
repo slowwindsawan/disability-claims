@@ -4,13 +4,16 @@
  * ============================================================================
  * Add new flows, modify existing ones, or add conditional logic here.
  * Each flow contains URL, test data, and an ordered list of steps to execute.
+ * 
+ * Configuration is loaded from config.js (loaded by manifest before this script)
  */
 
 // Verify content script is loaded
 console.log("[CONTENT.JS] Script loaded at:", window.location.href);
+console.log("[CONTENT.JS] Backend URL:", typeof BACKEND_BASE_URL !== 'undefined' ? BACKEND_BASE_URL : 'NOT LOADED');
 
 // If on localhost, set up postMessage relay to extension and exit
-if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname === 'darling-melomakarona-6cd11d.netlify.app') {
   console.log("[CONTENT.JS] On localhost - setting up postMessage relay");
   
   window.addEventListener('message', (event) => {
@@ -330,10 +333,10 @@ const T7801_DATA = {
       date: "01/01/2023", // DD/MM/YYYY
       hospitalized: true, // Was hospitalized, only check if the user was ever hospitalized for this disease
       uploadHospitalFile: true, // Upload hospital document, only if hospitalized = true
-      hospitalFileUrl: "http://localhost:8000/demo.pdf", // URL to hospital file (PDF)
+      hospitalFileUrl: DEMO_PDF_URL, // URL to hospital file (PDF)
       sawSpecialist: true, // Saw specialist doctor, only check if user saw a specialist for this disease
       uploadSpecialistFile: true, // Upload specialist document, only if sawSpecialist = true
-      specialistFileUrl: "http://localhost:8000/demo.jpeg", // URL to specialist file (image)
+      specialistFileUrl: DEMO_IMAGE_URL, // URL to specialist file (image)
       otherDescription: "פירוט נוסף על המחלה" // Additional description only if disease is "אחר"
     },
     {
@@ -343,7 +346,7 @@ const T7801_DATA = {
       uploadHospitalFile: false,
       sawSpecialist: true,
       uploadSpecialistFile: true,
-      specialistFileUrl: "http://localhost:8000/demo.jpeg",
+      specialistFileUrl: DEMO_IMAGE_URL,
       otherDescription: "טיפול תרופתי קבוע"
     }
   ],// Array of disease objects. Each must have: disease (string), date, hospitalized, uploadHospitalFile, hospitalFileUrl (if uploading), sawSpecialist, uploadSpecialistFile, specialistFileUrl (if uploading), otherDescription
@@ -370,7 +373,7 @@ const T7801_DATA = {
 
 
   uploadArmyFile: true, // Upload army injury file? true = yes, false = no
-  armyFileUrl: "http://localhost:8000/demo.pdf", // URL to army injury document (PDF or image), Medical Committee Report, Ministry of Defense document, etc.
+  armyFileUrl: DEMO_PDF_URL, // URL to army injury document (PDF or image), Medical Committee Report, Ministry of Defense document, etc.
   statement: true, // Agree to consent statement? true = agree, false = don't agree
   // Health Fund and Signature Section (קופת חולים וחתימה)
   // healthFund: string - Health fund name. Allowed values: "כללית", "לאומית", "מאוחדת", "מכבי", "אחר"
@@ -385,7 +388,7 @@ const T7801_DATA = {
   declaration: true, // Agree to declaration? true = agree, false = don't agree
   signatureType: "חתימה סרוקה", // Signature type - always "חתימה סרוקה" (scanned signature)
   uploadSignatureFile: true, // Upload signature file? true = yes, false = no
-  signatureFileUrl: "http://localhost:8000/demo.jpeg", // URL to signature file (PDF or image)
+  signatureFileUrl: DEMO_IMAGE_URL, // URL to signature file (PDF or image)
   signatureFileType: "image", // File type: "pdf" or "image"
   // Final Declarations Section (הצהרות סופיות)
   // finalDeclaration: boolean - Agree to final declaration (all statements above)? true = agree, false = don't agree (REQUIRED)
@@ -397,9 +400,9 @@ const T7801_DATA = {
   // Other Documents Section (מסמכים אחרים)
   // otherDocuments: array of objects - Each object contains: name (string), fileType ('image' or 'pdf'), fileUrl (URL)
   otherDocuments: [
-    { name: 'passport-page', fileType: 'image', fileUrl: 'http://localhost:8000/demo.jpeg' },
-    { name: 'medical-report', fileType: 'image', fileUrl: 'http://localhost:8000/demo.jpeg' },
-    { name: 'consent-form', fileType: 'pdf', fileUrl: 'http://localhost:8000/demo.pdf' }
+    { name: 'passport-page', fileType: 'image', fileUrl: DEMO_IMAGE_URL },
+    { name: 'medical-report', fileType: 'image', fileUrl: DEMO_IMAGE_URL },
+    { name: 'consent-form', fileType: 'pdf', fileUrl: DEMO_PDF_URL }
   ], // Array of additional documents to upload. Each must have: name (string), fileType ('image' or 'pdf'), fileUrl (URL), Documents and certificates that support the claim.
   
   // Information Transfer Permission Checkbox (הסכמה להעברת מידע)
@@ -893,15 +896,15 @@ const FLOW_CONFIGS = {
         required: true,
         description: "Fill health fund details and upload scanned signature. Fields: healthFund (string - allowed: 'כללית', 'לאומית', 'מאוחדת', 'מכבי', 'אחר'), healthDetails (string), declaration (boolean), signatureType (string), uploadSignatureFile (boolean), signatureFileUrl (URL), signatureFileType ('pdf' or 'image')"
       },
-      {
-        id: "click_next_step_4",
-        type: "button",
-        label: "Next Step Button 4",
-        elementText: "לשלב הבא",
-        selector: '[data-testid="nextButton"]',
-        required: true,
-        description: "Click the 'Next Step' button to continue to next section"
-      },
+      // {
+      //   id: "click_next_step_4",
+      //   type: "button",
+      //   label: "Next Step Button 4",
+      //   elementText: "לשלב הבא",
+      //   selector: '[data-testid="nextButton"]',
+      //   required: true,
+      //   description: "Click the 'Next Step' button to continue to next section"
+      // },
       {
         id: "final_declarations",
         type: "final_declarations",
@@ -939,15 +942,15 @@ const FLOW_CONFIGS = {
         required: true,
         description: "Select scanned signature and upload signature file (manual upload by user). Fields: secondSignatureType (string), uploadSecondSignature (boolean)"
       },
-      {
-        id: "click_final_submit",
-        type: "button",
-        label: "Final Submit Button",
-        elementText: "שליחה",
-        selector: '[data-testid="submitButton"]',
-        required: true,
-        description: "Click the submit button (note: user may click manually, success monitoring runs in background)"
-      }
+      // {
+      //   id: "click_final_submit",
+      //   type: "button",
+      //   label: "Final Submit Button",
+      //   elementText: "שליחה",
+      //   selector: '[data-testid="submitButton"]',
+      //   required: true,
+      //   description: "Click the submit button (note: user may click manually, success monitoring runs in background)"
+      // }
     ]
   }
   // Add more flows here as needed: T7801, T7802, etc.
@@ -1660,6 +1663,15 @@ async function invokeFlow(flowConfig) {
 
       pageLogger.log(`[STEP: ${step.id}] Input element found, preparing to enter value`, { dataTestId: input.getAttribute('data-testid'), currentValue: input.value, newValue: dataValue });
 
+      // Dispatch mouse events first (mousedown/mouseup)
+      try {
+        input.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        input.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+        await sleep(50);
+      } catch (e) {
+        pageLogger.warn(`[STEP: ${step.id}] Could not dispatch mouse events`);
+      }
+
       // Clear any existing value first
       try {
         input.value = "";
@@ -1735,6 +1747,9 @@ async function invokeFlow(flowConfig) {
 
       // Fallback: direct assignment
       try {
+        input.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        input.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+        await sleep(50);
         input.value = dataValue;
         input.dispatchEvent(new Event("input", { bubbles: true }));
         input.dispatchEvent(new Event("change", { bubbles: true }));
@@ -3204,6 +3219,148 @@ async function invokeFlow(flowConfig) {
     // ============================================================================
 
     // ============================================================================
+    // SIGNATURE STEP POLLING HELPERS - START
+    // ============================================================================
+
+    /**
+     * Detect which signature step we're currently at
+     * @returns {string|null} - Returns '1st' | '2nd' | null
+     */
+    function detectSignatureStep() {
+      // Check if we're at the 1st signature section (health fund and signature)
+      const healthFundSection = document.querySelector('[data-testid="sugKupa"]');
+      const scannedSignatureRadios = Array.from(
+        document.querySelectorAll('input[type="radio"]')
+      ).filter(r => 
+        r.nextElementSibling?.textContent?.includes('חתימה סרוקה') ||
+        document.querySelector(`label[for="${r.id}"]`)?.textContent?.includes('חתימה סרוקה')
+      );
+
+      // Check if we have the health fund section visible (1st signature step)
+      if (healthFundSection && scannedSignatureRadios.length > 0) {
+        const firstSectionVisible = healthFundSection.offsetParent !== null;
+        if (firstSectionVisible) {
+          console.log('[SIGNATURE] Detected 1st signature step (Health Fund & Signature)');
+          return '1st';
+        }
+      }
+
+      // Check for 2nd signature section (final signature after declarations)
+      const secondSignatureSection = Array.from(
+        document.querySelectorAll('[role="heading"], h1, h2, h3')
+      ).find(h => 
+        h.textContent?.includes('חתימה') && 
+        h.textContent?.includes('סופית')
+      );
+
+      if (secondSignatureSection && secondSignatureSection.offsetParent !== null) {
+        console.log('[SIGNATURE] Detected 2nd signature step (Final Signature)');
+        return '2nd';
+      }
+
+      return null;
+    }
+
+    /**
+     * Show contextual alert for signature step
+     * @param {string} stepType - '1st' or '2nd'
+     */
+    function showSignatureAlert(stepType) {
+      if (stepType === '1st') {
+        alert('אנא חתום על המסמך וזה אחרי לחץ על כפתור "הבא"\n\nPlease sign the document and then click the "Next" button');
+      } else if (stepType === '2nd') {
+        alert('אנא חתום על המסמך וזה אחרי לחץ על כפתור "שליחה"\n\nPlease sign the document and then click the "Send" button');
+      }
+    }
+
+    /**
+     * Poll for the next step to appear on the page after signature completion
+     * @param {string} currentSignatureStep - '1st' or '2nd'
+     * @param {number} maxWaitMs - Maximum time to wait (default 5 minutes)
+     * @returns {Promise<boolean>} - Returns true when next step appears, false on timeout
+     */
+    async function pollForNextStepAfterSignature(currentSignatureStep, maxWaitMs = 300000) {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const pollIntervalMs = 1000; // Check every 1 second
+      const deadline = Date.now() + maxWaitMs;
+
+      console.log('[SIGNATURE] Starting poll for next step after signature', {
+        currentStep: currentSignatureStep,
+        maxWaitMs,
+        pollIntervalMs
+      });
+
+      let pollCount = 0;
+
+      while (Date.now() < deadline) {
+        pollCount++;
+        await sleep(pollIntervalMs);
+
+        if (currentSignatureStep === '1st') {
+          // After 1st signature, next step should be "Final Declarations" section
+          // Look for הצהרות סופיות or Decheck checkbox
+          const finalDeclarationsSection = Array.from(
+            document.querySelectorAll('[role="heading"], h1, h2, h3')
+          ).find(h => h.textContent?.includes('הצהרות סופיות'));
+
+          const finalDeclCheckbox = document.querySelector('[data-testid="Decheck"]');
+
+          if ((finalDeclarationsSection && finalDeclarationsSection.offsetParent !== null) || 
+              (finalDeclCheckbox && finalDeclCheckbox.offsetParent !== null)) {
+            console.log('[SIGNATURE] ✓ Next step detected after 1st signature', {
+              pollCount,
+              elapsedMs: Date.now() - (deadline - maxWaitMs),
+              detectedElement: finalDeclarationsSection ? 'finalDeclarationsSection' : 'finalDeclCheckbox'
+            });
+            return true;
+          }
+        } else if (currentSignatureStep === '2nd') {
+          // After 2nd signature, we should see success page or submission complete message
+          // Look for success indicators
+          const successPage = window.location.href.includes('gbxid=success');
+          const successMessage = document.body.textContent?.includes('הטופס נשלח בהצלחה') ||
+            document.body.textContent?.includes('successfully submitted');
+          const applicationNumber = Array.from(document.querySelectorAll('*')).find(el => 
+            el.textContent?.match(/מספר בקשה|Application number/) && 
+            el.textContent?.match(/\d{6,}/)
+          );
+
+          if (successPage || successMessage || applicationNumber) {
+            console.log('[SIGNATURE] ✓ Next step detected after 2nd signature', {
+              pollCount,
+              elapsedMs: Date.now() - (deadline - maxWaitMs),
+              successPage,
+              successMessage,
+              hasApplicationNumber: !!applicationNumber
+            });
+            return true;
+          }
+        }
+
+        // Log progress every 10 polls
+        if (pollCount % 10 === 0) {
+          const elapsedSec = Math.round((Date.now() - (deadline - maxWaitMs)) / 1000);
+          console.log('[SIGNATURE] Still polling for next step...', {
+            pollCount,
+            elapsedSec,
+            remainingSec: Math.round((deadline - Date.now()) / 1000)
+          });
+        }
+      }
+
+      console.error('[SIGNATURE] ✗ Timeout waiting for next step after signature', {
+        totalPolls: pollCount,
+        maxWaitMs
+      });
+
+      return false;
+    }
+
+    // ============================================================================
+    // SIGNATURE STEP POLLING HELPERS - END
+    // ============================================================================
+
+    // ============================================================================
     // SECOND SIGNATURE SECTION HANDLER - START
     // ============================================================================
 
@@ -3241,56 +3398,20 @@ async function invokeFlow(flowConfig) {
       await sleep(300);
 
       /* ===========================
-         2. Manual upload by user
+         2. Manual upload by user - Poll for next step
       =========================== */
 
-      // Ask user to upload the file manually
-      alert('נא להעלות את חתימתך הסרוקה עתה (חתימה שנייה).\n\nPlease upload your scanned signature now (second signature).\n\nלחץ אישור כדי להמשיך / Click OK to continue');
+      // Show contextual alert for second signature
+      showSignatureAlert('2nd');
 
-      // Wait for upload to complete automatically
-      const waitForUploadComplete = async () => {
-        const maxWaitTime = 300000; // 5 minutes
-        const startTime = Date.now();
-        let uploadStarted = false;
+      // Poll for next step (success page) to appear
+      const nextStepDetected = await pollForNextStepAfterSignature('2nd', 300000);
 
-        while (Date.now() - startTime < maxWaitTime) {
-          await sleep(500);
+      if (!nextStepDetected) {
+        throw new Error('Timeout waiting for next step after second signature');
+      }
 
-          const iconsWrapper = document.querySelector('div._newestWrapperIcons_1ycd2_297');
-          const spinner = iconsWrapper?.querySelector('.MuiCircularProgress-root, [data-testid="loading-indicator"]');
-          
-          // Step 1: Wait for upload to start (iconsWrapper appears with spinner)
-          if (!uploadStarted && iconsWrapper && spinner) {
-            uploadStarted = true;
-            console.log('[SIGNATURE] Upload started, spinner detected');
-            continue;
-          }
-          
-          // Step 2: After upload started, wait for it to complete
-          if (uploadStarted && iconsWrapper && !spinner) {
-            const fileNameEl = document.querySelector('span[data-testid="fileName"]');
-            const fileSizeEl = document.querySelector('span[data-testid="fileSize"]');
-            const viewIcon = iconsWrapper.querySelector('[data-testid^="viewFile"]');
-            const deleteIcon = iconsWrapper.querySelector('[data-testid^="deleteFile"]');
-            
-            if (fileNameEl && fileSizeEl && viewIcon && deleteIcon) {
-              const fileName = fileNameEl.textContent.trim();
-              const fileSize = fileSizeEl.textContent.trim();
-              
-              // Complete: fileName exists, fileSize has content (KB/MB), view/delete icons present, no spinner
-              if (fileName.length > 0 && fileSize.length > 0 && (fileSize.includes('KB') || fileSize.includes('MB'))) {
-                console.log('[SIGNATURE] Upload complete:', fileName, fileSize);
-                alert('✅ העלאת הטופס הושלמה!\n\n✅ Form uploaded!\n\nהטופס שלך הוגש בהצלחה / Your form has been submitted successfully');
-                return true;
-              }
-            }
-          }
-        }
-
-        throw new Error('Timeout waiting for second signature upload');
-      };
-
-      await waitForUploadComplete();
+      console.log('[SIGNATURE] Second signature completed, next step detected');
 
       return true;
     }
@@ -3766,49 +3887,20 @@ async function invokeFlow(flowConfig) {
       await sleep(300);
 
       /* ===========================
-         5. Manual upload by user
+         5. Manual upload by user - Poll for next step
       =========================== */
 
-      // Ask user to upload the file manually
-      alert('נא להעלות את חתימתך הסרוקה כעת.\n\nPlease upload your scanned signature now.\n\nלחץ אישור כדי להמשיך / Click OK to continue');
+      // Show contextual alert for first signature
+      showSignatureAlert('1st');
 
-      // Wait for upload to complete
-      const waitForUploadComplete = async () => {
-        const maxWaitTime = 300000; // 5 minutes
-        const startTime = Date.now();
+      // Poll for next step (final declarations section) to appear
+      const nextStepDetected = await pollForNextStepAfterSignature('1st', 300000);
 
-        while (Date.now() - startTime < maxWaitTime) {
-          await sleep(1000);
+      if (!nextStepDetected) {
+        throw new Error('Timeout waiting for next step after first signature');
+      }
 
-          // Check if upload is complete by looking for the two action icons (view and delete)
-          const iconsWrapper = document.querySelector('._newestWrapperIcons_1ycd2_297');
-          
-          if (iconsWrapper) {
-            // Check if loading spinner is gone and two icons exist
-            const loadingSpinner = iconsWrapper.querySelector('.MuiCircularProgress-root');
-            const viewIcon = iconsWrapper.querySelector('[data-testid="viewFile_undefined"]');
-            const deleteIcon = iconsWrapper.querySelector('[data-testid="deleteFile_undefined"]');
-
-            if (!loadingSpinner && viewIcon && deleteIcon) {
-              // Upload complete - ask for confirmation
-              const confirmed = confirm('העלאת הקובץ הושלמה.\n\nFile upload completed.\n\nהאם הקובץ נכון או שברצונך לשנות אותו?\nIs the file correct or do you want to change it?\n\nלחץ אישור אם הקובץ נכון / Click OK if file is correct\nלחץ ביטול כדי לשנות / Click Cancel to change');
-
-              if (confirmed) {
-                return true;
-              } else {
-                // User wants to change - wait for new upload
-                alert('נא להעלות קובץ חדש.\n\nPlease upload a new file.\n\nלחץ אישור כדי להמשיך / Click OK to continue');
-                await sleep(2000); // Wait a bit before checking again
-                continue;
-              }
-            }
-          }
-        }
-
-        throw new Error('Timeout waiting for signature upload');
-      };
-
-      await waitForUploadComplete();
+      console.log('[SIGNATURE] First signature completed, next step detected');
 
       return true;
     }

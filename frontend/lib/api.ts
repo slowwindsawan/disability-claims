@@ -217,10 +217,18 @@ export async function apiGetCaseDocuments(caseId: string) {
   return request(`/cases/${caseId}/documents`)
 }
 
-export async function apiUploadCaseDocument(caseId: string, file: File, documentType: string = 'general', documentId?: string, documentName?: string) {
+export async function apiUploadCaseDocument(
+  caseId: string, 
+  file: File, 
+  documentType: string = 'general', 
+  documentId?: string, 
+  documentName?: string,
+  confirmed: boolean = false
+) {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('document_type', documentType)
+  formData.append('confirmed', confirmed.toString())
   if (documentId) {
     formData.append('document_id', documentId)
   }
@@ -247,6 +255,23 @@ export async function apiUploadCaseDocument(caseId: string, file: File, document
 
 export async function apiDeleteCaseDocument(caseId: string, documentId: string) {
   return request(`/cases/${caseId}/documents/${documentId}`, { method: 'DELETE' })
+}
+
+export async function apiDeleteTempDocument(caseId: string, storagePath: string) {
+  const token = localStorage.getItem('access_token')
+  const headers: any = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  
+  const res = await fetch(`${BACKEND_BASE_URL}/cases/${caseId}/documents/temp?storage_path=${encodeURIComponent(storagePath)}`, {
+    method: 'DELETE',
+    headers
+  })
+  
+  const text = await res.text()
+  let json: any = null
+  try { json = text ? JSON.parse(text) : null } catch (e) { json = { text } }
+  if (!res.ok) throw { status: res.status, body: json }
+  return json
 }
 
 export default { request }

@@ -10,7 +10,7 @@ from .schemas import EligibilityRequest, EligibilityResult, CaseFilterRequest
 from .ocr import extract_text_from_document
 from .legal import load_legal_document_chunks
 from .gemini_client import call_gemini, analyze_document_questions
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pathlib import Path
 import json
 import logging
@@ -1397,6 +1397,7 @@ async def upload_case_document(
     document_type: str = Form('general'),
     document_id: str = Form(None),
     document_name: str = Form(None),
+    confirmed: bool = Form(False),
     user = Depends(require_auth)
 ):
     """Upload an additional document to a case. Supports PDF and image files with OCR and summarization.
@@ -1404,9 +1405,15 @@ async def upload_case_document(
     Args:
         document_id: Backend ID if available (from case_documents table)
         document_name: Name of the document from documents_requested_list (REQUIRED for matching)
+        confirmed: Set to True when user confirms uploading a low-confidence document
     
     The document_name is used to match and update the correct document in call_summary.documents_requested_list.
     The local uploaded filename is irrelevant for matching - it's just stored as the file.
+    
+    Returns:
+        - If relevance confidence > 60: Standard upload response with document saved
+        - If relevance confidence <= 60 and not confirmed: {status: "needs_confirmation", relevance_check: {...}, temp_storage_info: {...}}
+        - If confirmed=True: Standard upload response regardless of confidence
     """
     try:
         from datetime import datetime
@@ -1459,12 +1466,15 @@ async def upload_case_document(
                 document_summary = summary_result.get('document_summary', '')
                 document_key_points = summary_result.get('key_points', [])
                 is_relevant = summary_result.get('is_relevant', True)
+                structured_data = summary_result.get('structured_data', {})
                 
                 logger.info(f"Document analysis complete: relevant={is_relevant}, summary_length={len(document_summary) if document_summary else 0}, key_points={len(document_key_points)}")
             else:
                 logger.warning(f"Failed to extract text from {file.filename}")
+                structured_data = {}
         except Exception as e:
             logger.warning(f"Failed to analyze document: {e}")
+            structured_data = {}
         
         # Upload to Supabase Storage
         from .utils import sanitize_filename
@@ -1496,6 +1506,102 @@ async def upload_case_document(
         storage_url = upload_result.get('public_url')
         logger.info(f"Uploaded document to: {storage_url}")
         
+        # ============================================================
+        # RELEVANCE CHECK - Match against required document spec
+        # ============================================================
+        relevance_check_result = None
+        should_proceed_with_save = confirmed  # If user already confirmed, skip relevance check gate
+        
+        if not confirmed and document_name and document_summary:
+            # Find the required document spec from call_summary
+            try:
+                call_summary = case.get('call_summary', {})
+                if isinstance(call_summary, str):
+                    try:
+                        call_summary = json.loads(call_summary)
+                    except json.JSONDecodeError:
+                        call_summary = {}
+                
+                documents_requested_list = call_summary.get('documents_requested_list', [])
+                
+                # Normalize documents_list (handle string items)
+                normalized_documents_list = []
+                for item in documents_requested_list:
+                    if isinstance(item, str):
+                        try:
+                            item = json.loads(item)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                    if isinstance(item, dict):
+                        normalized_documents_list.append(item)
+                
+                # Find the matching required document spec
+                required_doc_spec = None
+                for doc in normalized_documents_list:
+                    if doc.get('name') == document_name or doc.get('id') == document_id:
+                        required_doc_spec = doc
+                        logger.info(f"Found matching required document spec: {doc.get('name')}")
+                        break
+                
+                if required_doc_spec:
+                    # Run relevance check
+                    from .document_relevance_checker_agent import check_document_relevance
+                    
+                    logger.info(f"Running relevance check for document: {document_name}")
+                    relevance_check_result = check_document_relevance(
+                        document_summary=document_summary,
+                        document_key_points=document_key_points,
+                        structured_data=structured_data,
+                        required_document_spec=required_doc_spec,
+                        ocr_text_sample=text[:2000] if extraction_success and text else ""
+                    )
+                    
+                    confidence = relevance_check_result.get('confidence', 0)
+                    is_relevant_check = relevance_check_result.get('is_relevant', False)
+                    
+                    logger.info(f"Relevance check complete: confidence={confidence}, is_relevant={is_relevant_check}")
+                    
+                    # Decision gate: confidence must be > 60 to auto-approve
+                    if confidence > 60:
+                        should_proceed_with_save = True
+                        logger.info(f"✓ Document auto-approved (confidence {confidence} > 60)")
+                    else:
+                        should_proceed_with_save = False
+                        logger.warning(f"⚠ Document requires user confirmation (confidence {confidence} <= 60)")
+                else:
+                    # No matching required doc spec found - allow upload without check
+                    logger.info(f"No matching required document spec found for '{document_name}' - allowing upload")
+                    should_proceed_with_save = True
+                    
+            except Exception as e:
+                logger.exception(f"Error during relevance check: {e}")
+                # On error, allow upload to proceed (fail-open)
+                should_proceed_with_save = True
+        else:
+            # No document_name provided or confirmed=True - proceed without relevance check
+            should_proceed_with_save = True
+        
+        # If confidence is low and not confirmed, return early with confirmation request
+        if not should_proceed_with_save:
+            logger.info(f"Returning confirmation request to frontend")
+            return JSONResponse({
+                'status': 'needs_confirmation',
+                'relevance_check': relevance_check_result,
+                'temp_storage_info': {
+                    'storage_path': storage_path,
+                    'storage_url': storage_url,
+                    'file_name': file.filename,
+                    'file_size': filesize,
+                    'document_type': document_type
+                },
+                'document_summary': document_summary,
+                'key_points': document_key_points
+            })
+        
+        # ============================================================
+        # PROCEED WITH DATABASE SAVE
+        # ============================================================
+        
         # Insert document record with analysis metadata
         doc_record = insert_case_document(
             case_id=case_id,
@@ -1509,7 +1615,9 @@ async def upload_case_document(
                 'upload_source': 'manual_upload',
                 'document_summary': document_summary,
                 'key_points': document_key_points,
-                'is_relevant': is_relevant
+                'is_relevant': is_relevant,
+                'relevance_check': relevance_check_result,
+                'confirmed_by_user': confirmed
             }
         )
         
@@ -1622,13 +1730,70 @@ async def upload_case_document(
             'document': doc_record,
             'storage_url': storage_url,
             'summary': document_summary,
-            'key_points': document_key_points
+            'key_points': document_key_points,
+            'relevance_check': relevance_check_result
         })
     except HTTPException:
         raise
     except Exception:
         logger.exception(f'upload_case_document failed for case_id={case_id}')
         raise HTTPException(status_code=500, detail='upload_case_document_failed')
+
+
+@app.delete('/cases/{case_id}/documents/temp')
+async def delete_temp_document(
+    case_id: str,
+    storage_path: str,
+    user = Depends(require_auth)
+):
+    """Delete a temporary document from storage when user rejects low-confidence upload.
+    
+    Args:
+        case_id: Case ID for access verification
+        storage_path: Path to file in storage (e.g., 'cases/{case_id}/documents/{filename}')
+    
+    This endpoint is called when:
+    - User uploads a document
+    - Relevance confidence <= 60
+    - User chooses to reject and re-upload
+    """
+    try:
+        from .supabase_client import get_case, storage_delete_file
+        
+        # Verify user has access to this case
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        
+        case = case_list[0]
+        if user['role'] != 'admin' and case.get('user_id') != user['id']:
+            raise HTTPException(status_code=403, detail='access_denied')
+        
+        # Verify storage_path belongs to this case (security check)
+        expected_prefix = f"cases/{case_id}/documents/"
+        if not storage_path.startswith(expected_prefix):
+            logger.warning(f"Attempted to delete file outside case directory: {storage_path}")
+            raise HTTPException(status_code=403, detail='invalid_storage_path')
+        
+        # Delete file from Supabase Storage
+        logger.info(f"Deleting temporary document: {storage_path}")
+        delete_result = storage_delete_file(
+            bucket='case-documents',
+            path=storage_path
+        )
+        
+        logger.info(f"Successfully deleted temporary document: {storage_path}")
+        return JSONResponse({
+            'status': 'ok',
+            'message': 'Document deleted successfully',
+            'deleted_path': storage_path
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'delete_temp_document failed for case_id={case_id}, path={storage_path}')
+        raise HTTPException(status_code=500, detail=f'delete_temp_document_failed: {str(e)}')
 
 
 @app.patch('/cases/{case_id}/form-data')
@@ -3833,6 +3998,188 @@ async def _execute_agent_analysis(case_id: str, documents_with_summaries: list):
     }
 
 
+@app.post('/cases/{case_id}/validate-case-readiness')
+async def validate_case_readiness(case_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Validate case readiness before Form 7801 generation.
+    Analyzes call_summary, uploaded documents, and eligibility data to assess:
+    - Case strength
+    - Missing or incomplete documents
+    - Recommended additional documents
+    - Risk factors if proceeding as-is
+    
+    Returns validation results to show user before final Form 7801 submission.
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    
+    try:
+        from .supabase_client import get_case, _supabase_admin, SUPABASE_URL
+        from .openai_case_validator_agent import validate_case_readiness as run_validation
+        
+        logger.info(f"🔍 Starting case validation for case {case_id}")
+        
+        # Get case and verify access
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='Case not found')
+        
+        case = case_list[0]
+        if current_user['role'] != 'admin' and case.get('user_id') != current_user['id']:
+            raise HTTPException(status_code=403, detail='Access denied')
+        
+        user_id = case.get('user_id')
+        
+        # Extract call summary
+        call_summary = case.get('call_summary', {})
+        if isinstance(call_summary, str):
+            try:
+                call_summary = json.loads(call_summary)
+            except:
+                call_summary = {}
+        
+        documents_requested_list = call_summary.get('documents_requested_list', [])
+        
+        # Get uploaded documents with metadata (skip OCR for speed)
+        uploaded_documents = []
+        if _supabase_admin:
+            docs_response = _supabase_admin.table('case_documents').select('*').eq('case_id', case_id).execute()
+            if docs_response.data:
+                for doc in docs_response.data:
+                    doc_with_url = doc.copy()
+                    
+                    # Add public URL for reference
+                    file_path = doc.get('file_path', '')
+                    if file_path:
+                        full_url = f"{SUPABASE_URL}/storage/v1/object/public/case-documents/{file_path}"
+                        doc_with_url['file_url'] = full_url
+                    
+                    # Use existing metadata/ocr_text if available
+                    # Agent will analyze based on metadata and document names
+                    uploaded_documents.append(doc_with_url)
+        
+        # Get eligibility data
+        eligibility_raw = {}
+        if _supabase_admin:
+            eligibility_response = _supabase_admin.table('user_eligibility').select('eligibility_raw').eq('user_id', user_id).execute()
+            if eligibility_response.data:
+                eligibility_raw = eligibility_response.data[0].get('eligibility_raw', {}) or {}
+        
+        # Get user profile
+        user_profile = {}
+        if _supabase_admin:
+            profile_response = _supabase_admin.table('user_profile').select('email, phone, full_name, contact_details').eq('user_id', user_id).execute()
+            if profile_response.data:
+                user_profile = profile_response.data[0]
+        
+        # Prepare validation input
+        validation_input = {
+            'case_id': case_id,
+            'call_summary': call_summary,
+            'uploaded_documents': uploaded_documents,
+            'documents_requested_list': documents_requested_list,
+            'eligibility_raw': eligibility_raw,
+            'user_profile': user_profile
+        }
+        
+        logger.info(f"📊 Validation input prepared - {len(uploaded_documents)} documents uploaded")
+        
+        # Run validation
+        validation_result = await run_validation(validation_input)
+        
+        logger.info(f"✅ Validation completed - Score: {validation_result.case_strength.overall_score}")
+        
+        # Convert pydantic model to dict
+        result_dict = validation_result.model_dump()
+        
+        return result_dict
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"❌ Error in case validation: {e}")
+        raise HTTPException(status_code=500, detail=f'Validation error: {str(e)}')
+
+
+@app.post('/cases/{case_id}/update-documents-requested')
+async def update_documents_requested(case_id: str, payload: Dict[str, List[dict]] = Body(...), current_user: dict = Depends(get_current_user)):
+    """
+    Update call_summary.documents_requested_list with new recommended documents from validation.
+    Merges new recommendations with existing documents_requested_list.
+    
+    Body: {"recommended_documents": [...]}
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    
+    try:
+        from .supabase_client import get_case, update_case
+        
+        recommended_documents = payload.get('recommended_documents', [])
+        logger.info(f"📝 Updating documents_requested_list for case {case_id}")
+        
+        # Get case and verify access
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='Case not found')
+        
+        case = case_list[0]
+        if current_user['role'] != 'admin' and case.get('user_id') != current_user['id']:
+            raise HTTPException(status_code=403, detail='Access denied')
+        
+        # Get existing call_summary
+        call_summary = case.get('call_summary', {})
+        if isinstance(call_summary, str):
+            try:
+                call_summary = json.loads(call_summary)
+            except:
+                call_summary = {}
+        
+        existing_docs = call_summary.get('documents_requested_list', [])
+        
+        # Convert recommended documents to documents_requested_list format
+        new_docs = []
+        for doc in recommended_documents:
+            # Check if document already exists in list (by name)
+            existing_doc = next((d for d in existing_docs if d.get('name') == doc.get('document_name')), None)
+            
+            if not existing_doc:
+                # Add new document
+                new_docs.append({
+                    'name': doc.get('document_name'),
+                    'reason': doc.get('reason'),
+                    'source': doc.get('source'),
+                    'required': doc.get('priority') == 'required',
+                    'uploaded': False
+                })
+        
+        # Merge: keep existing docs and add new ones
+        updated_docs_list = existing_docs + new_docs
+        
+        # Update call_summary
+        call_summary['documents_requested_list'] = updated_docs_list
+        
+        # Save to database - serialize as JSON string
+        update_case(case_id, {
+            'call_summary': json.dumps(call_summary, ensure_ascii=False)
+        })
+        
+        logger.info(f"✅ Updated documents_requested_list - added {len(new_docs)} new documents, total now {len(updated_docs_list)}")
+        
+        return {
+            'status': 'success',
+            'documents_added': len(new_docs),
+            'total_documents': len(updated_docs_list),
+            'updated_list': updated_docs_list
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"❌ Error updating documents_requested_list: {e}")
+        raise HTTPException(status_code=500, detail=f'Update error: {str(e)}')
+
+
 @app.post('/cases/{case_id}/analyze-documents-form7801')
 async def analyze_documents_form7801(case_id: str, current_user: dict = Depends(get_current_user)):
     """
@@ -3902,39 +4249,18 @@ async def analyze_documents_form7801(case_id: str, current_user: dict = Depends(
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to fetch document {doc_id}: {e}")
         
-        # Create job
-        job_queue = get_job_queue()
-        job_id = job_queue.create_job(
-            job_type='document_analysis_form7801',
-            metadata={
-                'case_id': case_id,
-                'user_id': current_user['id'],
-                'document_count': len(documents_with_metadata),
-                'endpoint': 'analyze-documents-form7801'
-            }
+        # Execute analysis synchronously
+        logger.info(f"🤖 Executing Form 7801 analysis synchronously for case {case_id}")
+        result = await _execute_form7801_analysis(
+            case_id,
+            documents_with_metadata,
+            call_summary,
+            call_details
         )
         
-        # Execute job in background
-        asyncio.create_task(
-            job_queue.execute_job(
-                job_id,
-                _execute_form7801_analysis,
-                case_id,
-                documents_with_metadata,
-                call_summary,
-                call_details
-            )
-        )
+        logger.info(f"✅ Form 7801 analysis completed for case {case_id}")
         
-        logger.info(f"✅ Created job {job_id} for Form 7801 analysis of case {case_id}")
-        
-        return JSONResponse({
-            'status': 'accepted',
-            'job_id': job_id,
-            'message': 'Form 7801 analysis job created. Poll /jobs/{job_id} for status.',
-            'poll_url': f'/jobs/{job_id}',
-            'documents_count': len(documents_with_metadata)
-        })
+        return result
         
     except HTTPException:
         raise
@@ -3945,13 +4271,14 @@ async def analyze_documents_form7801(case_id: str, current_user: dict = Depends(
 
 async def _execute_form7801_analysis(case_id: str, documents_with_metadata: list, call_summary: dict, call_details: dict | None = None):
     """
-    Background task for Form 7801 payload generation.
+    Execute Form 7801 payload generation synchronously.
     
     Steps:
     1. Gather data from DB (case_documents, user_eligibility, user_profile, call_details)
     2. Construct Form 7801 payload structure
     3. Pass data to OpenAI agent to map and fill payload
     4. Save to cases.7801_form column
+    5. Return results to caller
     """
     from .supabase_client import update_case, _supabase_admin, SUPABASE_URL
     from .openai_form7801_agent import generate_form7801_payload
@@ -4033,7 +4360,7 @@ async def _execute_form7801_analysis(case_id: str, documents_with_metadata: list
         
         return {
             'case_id': case_id,
-            '7801_form_payload': form7801_payload,
+            'form_7801_payload': form7801_payload,
             'documents_processed': len(documents_with_urls),
             'timestamp': datetime.utcnow().isoformat()
         }
@@ -5726,6 +6053,72 @@ async def user_login(payload: Dict[str, Any] = Body(...), response: Response = N
     except Exception as e:
         logger.exception('Login failed')
         raise HTTPException(status_code=401, detail='login_failed')
+
+
+@app.post('/refresh-token')
+async def refresh_token_endpoint(
+    authorization: Optional[str] = Header(None),
+    payload: Dict[str, Any] = Body(default=None)
+):
+    """Refresh an expired access token using refresh token or current token.
+    Accepts refresh_token in body or uses current bearer token to get a new one.
+    Returns: {status, access_token, refresh_token?, user}
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail='missing_authorization')
+    
+    # Extract bearer token
+    token = authorization
+    if isinstance(authorization, str) and authorization.lower().startswith('bearer '):
+        token = authorization.split(' ', 1)[1]
+    
+    try:
+        # Try to refresh using Supabase's refresh endpoint
+        refresh_tok = None
+        if payload and payload.get('refresh_token'):
+            refresh_tok = payload.get('refresh_token')
+        else:
+            # Try to get refresh token from cookies or body
+            refresh_tok = payload.get('refresh_token') if payload else None
+        
+        # Call Supabase to refresh the session
+        if refresh_tok:
+            logger.info("Attempting token refresh with refresh_token")
+            from app.supabase_client import refresh_session
+            result = refresh_session(refresh_tok)
+            
+            if result and result.get('access_token'):
+                new_access_token = result.get('access_token')
+                new_refresh_token = result.get('refresh_token', refresh_tok)
+                user_data = result.get('user')
+                
+                logger.info("✅ Token refreshed successfully")
+                return JSONResponse({
+                    'status': 'ok',
+                    'access_token': new_access_token,
+                    'refresh_token': new_refresh_token,
+                    'user': user_data
+                })
+        
+        # Fallback: verify current token is still valid (might not be expired yet)
+        auth_user = get_user_from_token(token)
+        if auth_user:
+            logger.info("Current token still valid, returning as-is")
+            return JSONResponse({
+                'status': 'ok',
+                'access_token': token,
+                'user': auth_user
+            })
+        
+        raise HTTPException(status_code=401, detail='token_refresh_failed')
+        
+    except ValueError as ve:
+        if str(ve) == 'user_not_found':
+            raise HTTPException(status_code=401, detail='user_not_found')
+        raise HTTPException(status_code=401, detail='invalid_token')
+    except Exception as e:
+        logger.exception(f'Token refresh failed: {e}')
+        raise HTTPException(status_code=401, detail=f'token_refresh_failed: {str(e)}')
 
 
 @app.post('/signup-with-case')
@@ -7868,5 +8261,504 @@ Use this information to guide your interview questions and address the identifie
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post('/api/interview/chat', response_model=dict)
+async def interview_chat(
+    request: Request,
+    chat_request: dict = Body(...),
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Process interview chat messages for Zero Touch Claim Interviewer.
+    
+    This endpoint handles the conversational interview to gather comprehensive
+    disability claim information from the user.
+    
+    Optimization: Accepts optional agentPrompt and eligibility_raw from frontend
+    to reduce database calls. Only fetches from database if not provided.
+    """
+    try:
+        from .interview_chat_agent import process_interview_message, generate_initial_greeting, ChatMessage
+        from .schemas import InterviewChatRequest
+        import base64
+        
+        # Parse request
+        case_id = chat_request.get('case_id')
+        message = chat_request.get('message', '').strip()
+        chat_history_raw = chat_request.get('chat_history', [])
+        language = chat_request.get('language', 'en')
+        cached_agent_prompt = chat_request.get('agentPrompt')  # Optional: from frontend
+        cached_eligibility_raw = chat_request.get('eligibility_raw')  # Optional: from frontend
+        
+        if not case_id:
+            raise HTTPException(status_code=400, detail="case_id is required")
+        
+        # Verify case exists (lenient approach - don't require auth validation)
+        case_data_raw = get_case(case_id)
+        if not case_data_raw:
+            raise HTTPException(status_code=404, detail="Case not found")
+        
+        # get_case returns a list, so extract the first element
+        case_data = case_data_raw[0] if isinstance(case_data_raw, list) and len(case_data_raw) > 0 else case_data_raw
+        
+        # Try to extract user_id from JWT token without Supabase validation (to avoid expired token issues)
+        user_id = None
+        if authorization:
+            try:
+                token = authorization.replace("Bearer ", "")
+                # Decode JWT token directly without Supabase validation
+                token_parts = token.split('.')
+                if len(token_parts) == 3:
+                    # Decode payload (add padding if needed)
+                    payload_b64 = token_parts[1]
+                    payload_b64 += '=' * (-len(payload_b64) % 4)
+                    payload_json = base64.urlsafe_b64decode(payload_b64.encode('utf-8'))
+                    payload_obj = json.loads(payload_json)
+                    user_id = payload_obj.get('sub')
+                    
+                    # Verify case belongs to user
+                    case_user_id = case_data.get('user_id') if isinstance(case_data, dict) else None
+                    if case_user_id and case_user_id != user_id:
+                        raise HTTPException(status_code=403, detail="Access denied")
+            except HTTPException:
+                raise
+            except Exception as e:
+                # Token decode failed, but continue without auth for interview flow
+                logger.debug(f"⚠️ Could not decode JWT token: {str(e)}")
+                # Extract user_id from case_data as fallback
+                user_id = case_data.get('user_id') if isinstance(case_data, dict) else None
+                # Continue without auth for interview flow
+        # Handle initial greeting request
+        if message == "__INIT__":
+            # Fetch user info (name) for personalized greeting
+            user_name = None
+            temp_user_id = None
+            if isinstance(case_data, dict):
+                temp_user_id = case_data.get('user_id')
+            
+            if temp_user_id:
+                try:
+                    user_profile_data = get_profile_by_user_id(temp_user_id)
+                    if user_profile_data and isinstance(user_profile_data, list) and len(user_profile_data) > 0:
+                        user_profile = user_profile_data[0]
+                        user_name = user_profile.get('full_name')
+                        logger.info(f"👤 Fetched user profile: {user_name}")
+                except Exception as e:
+                    logger.debug(f"⚠️ Could not fetch user profile: {str(e)}")
+            
+            # Fetch eligibility data early if not cached from frontend (needed for personalized greeting)
+            eligibility_raw = cached_eligibility_raw
+            if not eligibility_raw:
+                try:
+                    # If we have user_id, fetch eligibility
+                    if temp_user_id:
+                        eligibilities = get_user_eligibilities(temp_user_id)
+                        if eligibilities and len(eligibilities) > 0:
+                            eligibility_record = eligibilities[0] if isinstance(eligibilities, list) else eligibilities
+                            eligibility_raw = eligibility_record.get('eligibility_raw', {}) if isinstance(eligibility_record, dict) else {}
+                            # Parse if it's a string
+                            if isinstance(eligibility_raw, str):
+                                try:
+                                    eligibility_raw = json.loads(eligibility_raw)
+                                except:
+                                    eligibility_raw = {}
+                            logger.info(f"📊 Fetched eligibility for personalized greeting: {eligibility_raw.get('diagnosis', 'unknown')}")
+                except Exception as e:
+                    logger.debug(f"⚠️ Could not fetch eligibility for greeting: {str(e)}")
+                    eligibility_raw = {}
+            
+            # Check if we have existing chat history in call_details
+            call_details = case_data.get('call_details') if isinstance(case_data, dict) else None
+            existing_messages = []
+            
+            # Parse call_details if it's a JSON string (from database JSONB column)
+            if isinstance(call_details, str):
+                try:
+                    call_details = json.loads(call_details)
+                except:
+                    call_details = None
+            
+            if call_details and isinstance(call_details, dict):
+                stored_messages = call_details.get('messages', [])
+                if stored_messages and isinstance(stored_messages, list):
+                    # Validate and return existing chat history
+                    existing_messages = [
+                        {"role": msg.get('role'), "content": msg.get('content')}
+                        for msg in stored_messages
+                        if msg.get('role') in ['user', 'assistant'] and msg.get('content')
+                    ]
+                    
+                    if existing_messages:
+                        logger.info(f"📜 Loaded {len(existing_messages)} messages from call_details")
+                        return {
+                            "chat_history": existing_messages,
+                            "is_complete": call_details.get('is_complete', False),
+                            "confidence_score": None
+                        }
+            
+            # No existing history - generate new greeting (personalized with user name and eligibility data)
+            greeting = await generate_initial_greeting(language, user_name=user_name, eligibility_raw=eligibility_raw if eligibility_raw else None)
+            init_response = {
+                "message": greeting,
+                "is_complete": False,
+                "confidence_score": None
+            }
+            
+            # Include eligibility data in init response for frontend caching
+            if eligibility_raw:
+                init_response["eligibility_raw"] = eligibility_raw
+            
+            # Save initial greeting to call_details
+            try:
+                from datetime import datetime
+                initial_call_details = {
+                    "messages": [{"role": "assistant", "content": greeting, "timestamp": datetime.utcnow().isoformat()}],
+                    "language": language,
+                    "is_complete": False,
+                    "last_updated": datetime.utcnow().isoformat()
+                }
+                # Pass dict directly - Supabase handles JSONB serialization
+                update_case(case_id, {'call_details': initial_call_details})
+                logger.info(f"💾 Saved initial greeting to call_details with {len(initial_call_details['messages'])} message(s)")
+            except Exception as e:
+                logger.exception(f"❌ Error saving initial greeting: {str(e)}")
+                raise
+            
+            return init_response
+        
+        # Convert chat history to ChatMessage objects
+        chat_history = [
+            ChatMessage(role=msg['role'], content=msg['content'])
+            for msg in chat_history_raw
+        ]
+        
+        # Extract user_id from case_data if not already set
+        if not user_id and isinstance(case_data, dict):
+            user_id = case_data.get('user_id')
+        
+        # Get user profile for context if available
+        user_info = {}
+        if user_id:
+            try:
+                user_profile_data = get_profile_by_user_id(user_id)
+                # get_profile_by_user_id returns a list
+                if user_profile_data and isinstance(user_profile_data, list) and len(user_profile_data) > 0:
+                    user_profile = user_profile_data[0]
+                    user_info = {
+                        'name': user_profile.get('full_name'),
+                        'email': user_profile.get('email')
+                    }
+                    logger.info(f"✅ Fetched user profile: {user_info.get('name')}")
+            except Exception as e:
+                logger.debug(f"⚠️ Could not fetch user profile: {str(e)}")
+        
+        # Fetch eligibility data if not provided from frontend (optimization)
+        eligibility_raw = cached_eligibility_raw  # Use cached if provided
+        if not eligibility_raw and user_id:
+            try:
+                eligibilities = get_user_eligibilities(user_id)
+                if eligibilities and len(eligibilities) > 0:
+                    # eligibilities is a list of dicts
+                    eligibility_record = eligibilities[0] if isinstance(eligibilities, list) else eligibilities
+                    eligibility_raw = eligibility_record.get('eligibility_raw', {}) if isinstance(eligibility_record, dict) else {}
+                    # Parse if it's a string
+                    if isinstance(eligibility_raw, str):
+                        try:
+                            eligibility_raw = json.loads(eligibility_raw)
+                        except:
+                            eligibility_raw = {}
+                    logger.info(f"📊 Fetched eligibility data from DB: score={eligibility_raw.get('eligibility_score')}, status={eligibility_raw.get('eligibility_status')}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not fetch eligibility data: {str(e)}")
+        else:
+            if cached_eligibility_raw:
+                logger.debug("📌 Using cached eligibility data from frontend (reducing DB calls)")
+        
+        # Process the message with optional agent prompt
+        response = await process_interview_message(
+            case_id=case_id,
+            user_message=message,
+            chat_history=chat_history,
+            user_info=user_info if user_info else None,
+            case_data=case_data,
+            eligibility_raw=eligibility_raw,
+            agent_prompt=cached_agent_prompt  # Pass cached prompt if available
+        )
+        
+        # Save chat history to call_details after each message
+        try:
+            from datetime import datetime
+            
+            # Build complete message history including current exchange
+            all_messages = [
+                {"role": msg.role, "content": msg.content, "timestamp": datetime.utcnow().isoformat()}
+                for msg in chat_history
+            ]
+            all_messages.append({"role": "user", "content": message, "timestamp": datetime.utcnow().isoformat()})
+            all_messages.append({"role": "assistant", "content": response.message, "timestamp": datetime.utcnow().isoformat()})
+            
+            call_details_update = {
+                "messages": all_messages,
+                "language": language,
+                "is_complete": response.done,  # True when AI detects completion
+                "last_updated": datetime.utcnow().isoformat()
+            }
+            
+            if response.confidence_score:
+                call_details_update["confidence_score"] = response.confidence_score
+            
+            # Pass dict directly - Supabase handles JSONB serialization
+            update_case(case_id, {'call_details': call_details_update})
+            logger.info(f"💾 Saved {len(all_messages)} messages to call_details (done={response.done})")
+            
+        except Exception as e:
+            logger.exception(f"❌ Error saving chat history: {str(e)}")
+            raise
+        
+        # DO NOT auto-complete interview - wait for user to confirm they want to proceed
+        # When done=true, frontend shows confirmation button instead of auto-proceeding
+        
+        response_data = {
+            "message": response.message,
+            "done": response.done,  # True when AI detects completion, False while ongoing
+            "confidence_score": response.confidence_score
+        }
+        
+        # Include eligibility_raw in response for frontend caching on init message
+        if eligibility_raw and message == "__INIT__":
+            response_data["eligibility_raw"] = eligibility_raw
+        
+        # Print raw response for debugging
+        print("\n" + "="*80)
+        print("📤 RAW BACKEND RESPONSE:")
+        print("="*80)
+        print(json.dumps(response_data, indent=2, ensure_ascii=False))
+        print("="*80 + "\n")
+        
+        return response_data
+
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error in interview chat endpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/api/interview/proceed')
+async def proceed_with_analysis(
+    case_id: str = Form(...),
+    user = Depends(require_auth)
+):
+    """
+    User confirms they want to proceed with analysis after interview.
+    Marks the interview as complete and initiates further analysis.
+    
+    Args:
+        case_id: The case ID
+    """
+    try:
+        from datetime import datetime
+        
+        logger.info(f"👉 User proceeding with analysis for case {case_id}")
+        
+        # Verify case exists and user has access
+        case_data = get_case(case_id)
+        if not case_data:
+            raise HTTPException(status_code=404, detail="Case not found")
+        
+        case_dict = case_data[0] if isinstance(case_data, list) else case_data
+        
+        if user['role'] != 'admin' and case_dict.get('user_id') != user['id']:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Update case to mark interview as officially complete
+        update_case(case_id, {
+            'interview_completed': True,
+            'interview_completed_at': datetime.utcnow().isoformat(),
+            'status': 'interview_complete'  # Update status to reflect next phase
+        })
+        
+        logger.info(f"✅ Marked interview complete for case {case_id}")
+        
+        return {
+            "status": "success",
+            "message": "Interview complete. Proceeding with analysis.",
+            "case_id": case_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error in proceed endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/api/interview/transcribe', response_model=dict)
+async def transcribe_audio(
+    case_id: str = Form(...),
+    audio: UploadFile = File(...),
+    language: str = Form(default="en")
+):
+    """
+    Transcribe audio file to text using OpenAI Whisper API.
+    
+    This endpoint accepts an audio file recorded by the user and converts it to text.
+    """
+    try:
+        from .stt_utils import transcribe_audio
+        
+        logger.info(f"🎤 Received audio transcription request for case {case_id}")
+        
+        # Verify case exists
+        case_data = get_case(case_id)
+        if not case_data:
+            raise HTTPException(status_code=404, detail="Case not found")
+        
+        # Read audio bytes
+        audio_bytes = await audio.read()
+        
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="No audio data provided")
+        
+        logger.info(f"📦 Audio file size: {len(audio_bytes)} bytes")
+        
+        # Transcribe audio
+        text = await transcribe_audio(audio_bytes, language=language if language != "en" else None)
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="Transcription returned empty result")
+        
+        logger.info(f"✅ Transcription successful: {text[:100]}...")
+        
+        return {
+            "text": text,
+            "success": True
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error in transcribe endpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post('/api/interview/analyze')
+async def analyze_interview(request: dict = Body(...)):
+    """
+    Analyze the interview conversation after it's complete.
+    Runs the call analyzer agent on the collected interview data.
+    """
+    try:
+        case_id = request.get('case_id')
+        
+        if not case_id:
+            raise HTTPException(status_code=400, detail="case_id is required")
+        
+        logger.info(f"🔍 Starting analysis for case {case_id}")
+        
+        # Get case and call details
+        case_data = get_case(case_id)
+        if not case_data:
+            raise HTTPException(status_code=404, detail="Case not found")
+        
+        # Handle case_data being a list (convert to dict)
+        if isinstance(case_data, list) and len(case_data) > 0:
+            case_data = case_data[0]
+        
+        # Get call_details - it might be the data itself or nested
+        if isinstance(case_data, dict) and 'messages' in case_data:
+            # The data IS the call_details object
+            call_details = case_data
+        else:
+            # Try to get call_details as a nested key
+            call_details = case_data.get('call_details', {})
+            if isinstance(call_details, str):
+                try:
+                    call_details = json.loads(call_details)
+                except:
+                    call_details = {}
+        
+        # Extract messages from call_details
+        messages = call_details.get('messages', [])
+        if not messages:
+            logger.warning(f"⚠️ No messages found in call_details for case {case_id}")
+            return {"success": True, "analysis": {}}
+        
+        # Convert messages to OpenAI format (ensure proper structure)
+        formatted_messages = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                formatted_messages.append({
+                    "role": msg.get('role', 'user'),
+                    "content": msg.get('content', '')
+                })
+        
+        logger.info(f"📤 Extracted {len(formatted_messages)} messages from call_details")
+        
+        # Get eligibility data for context
+        eligibility_raw = {}
+        try:
+            # Try to get user_id from case_data
+            user_id = case_data.get('user_id') if isinstance(case_data, dict) else None
+            if user_id:
+                eligibilities = get_user_eligibilities(user_id)
+                if eligibilities and len(eligibilities) > 0:
+                    eligibility_record = eligibilities[0] if isinstance(eligibilities, list) else eligibilities
+                    eligibility_raw = eligibility_record.get('eligibility_raw', {}) if isinstance(eligibility_record, dict) else {}
+                    if isinstance(eligibility_raw, str):
+                        try:
+                            eligibility_raw = json.loads(eligibility_raw)
+                        except:
+                            eligibility_raw = {}
+                    logger.info(f"📊 Fetched eligibility data: {eligibility_raw.get('eligibility_score')}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch eligibility data: {str(e)}")
+        
+        # Call the analyzer agent
+        from .openai_call_analyzer import analyze_call_conversation_openai
+        
+        logger.info(f"📤 Calling analyze_call_conversation_openai with {len(formatted_messages)} messages")
+        analysis_result = await analyze_call_conversation_openai(
+            transcript="",  # Empty since we have structured messages
+            messages=formatted_messages,
+            eligibility_records=[eligibility_raw] if eligibility_raw else None,
+            call_details=call_details
+        )
+        
+        logger.info(f"✅ Analysis complete for case {case_id}")
+        print("\n" + "="*80)
+        print("📊 ANALYSIS RESULT:")
+        print("="*80)
+        print(json.dumps(analysis_result, indent=2, ensure_ascii=False))
+        print("="*80 + "\n")
+        
+        # Save analysis result to case
+        try:
+            from .supabase_client import update_case
+            
+            # Save as call_summary (main analysis field that exists in DB)
+            update_case(case_id, {
+                'call_summary': analysis_result
+            })
+            logger.info(f"💾 Saved analysis result to case {case_id}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not save analysis to database: {str(e)}")
+        
+        return {
+            "success": True,
+            "analysis": analysis_result,
+            "case_id": case_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error in analyze endpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 # python -m uvicorn app.main:app --reload --port 8000
