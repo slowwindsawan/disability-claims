@@ -4,6 +4,7 @@ import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
 import { useRouter } from "next/navigation"
 import { Key, Eye, EyeOff, Save, Loader2, AlertCircle, CheckCircle } from "lucide-react"
+import { BACKEND_BASE_URL } from '@/variables'
 
 interface Secret {
   id: number
@@ -31,7 +32,7 @@ export default function SecretsManagementPage() {
           return
         }
 
-        const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/auth/me`, {
+        const response = await fetch(`${BACKEND_BASE_URL}/auth/me`, {
           headers: {
             'Authorization': `Bearer ${token}`
           }
@@ -64,7 +65,7 @@ export default function SecretsManagementPage() {
   const fetchSecrets = async () => {
     try {
       const token = localStorage.getItem('access_token')
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/secrets`, {
+      const response = await fetch(`${BACKEND_BASE_URL}/admin/secrets`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -118,7 +119,7 @@ export default function SecretsManagementPage() {
     try {
       const token = localStorage.getItem('access_token')
       console.log('Making PUT request to /admin/secrets/', secret.id)
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/secrets/${secret.id}`, {
+      const response = await fetch(`${BACKEND_BASE_URL}/admin/secrets/${secret.id}`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${token}`,

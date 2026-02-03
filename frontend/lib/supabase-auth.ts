@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { BACKEND_BASE_URL } from "@/variables";
 
 // Initialize Supabase client lazily for session management and auth metadata updates
 let supabaseClient: ReturnType<typeof createClient> | null = null;
@@ -34,8 +35,7 @@ export const supabase = new Proxy({} as any, {
   },
 });
 
-// Get backend URL from environment or default to localhost
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+// Use centralized backend URL from variables
 
 /**
  * Send OTP to phone number via backend
@@ -45,7 +45,7 @@ export async function sendOtp(phone: string) {
   // Ensure phone starts with +
   const formattedPhone = phone.startsWith("+") ? phone : `+${phone}`;
   
-  const response = await fetch(`${BACKEND_URL}/auth/send-phone-otp`, {
+  const response = await fetch(`${BACKEND_BASE_URL}/auth/send-phone-otp`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -74,7 +74,7 @@ export async function verifyOtp(phone: string, otp: string) {
   // Ensure phone starts with +
   const formattedPhone = phone.startsWith("+") ? phone : `+${phone}`;
   
-  const response = await fetch(`${BACKEND_URL}/auth/verify-phone-otp`, {
+  const response = await fetch(`${BACKEND_BASE_URL}/auth/verify-phone-otp`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

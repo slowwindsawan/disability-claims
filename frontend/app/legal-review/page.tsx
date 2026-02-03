@@ -1154,7 +1154,7 @@ export default function LegalReviewPage() {
                             <p className="text-sm text-amber-900 font-medium">⚠️ פרטי בנק חסרים במערכת</p>
                             <p className="text-sm text-amber-800">לפני שתוכל להגיש את הטופס, עליך למלא את פרטי התשלום שלך.</p>
                             <a
-                              href="http://localhost:3000/payment-details"
+                              href="https://app.adhdeal.com/payment-details"
                               target="_blank"
                               rel="noopener noreferrer"
                               className="inline-block mt-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded font-medium"
