@@ -8,14 +8,16 @@ from typing import Dict, Any, Optional, List
 import os
 from openai import OpenAI
 from pydantic import BaseModel, Field
+from .secrets_utils import get_openai_api_key
 
 logger = logging.getLogger('document_relevance_checker')
 
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+# Get OpenAI API key from database with fallback to environment
+OPENAI_API_KEY = get_openai_api_key()
 if not OPENAI_API_KEY:
-    logger.warning("OPENAI_API_KEY not configured")
+    logger.warning("OPENAI_API_KEY not configured in database or environment")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 # Use gpt-4o for structured outputs support (gpt-4-turbo doesn't support json_schema)
 OPENAI_MODEL = os.environ.get('RELEVANCE_CHECKER_MODEL', 'gpt-4o')
 

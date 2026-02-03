@@ -16,7 +16,7 @@ export default function ExtensionSyncWidget() {
   const dir = language === "he" ? "rtl" : "ltr"
 
   useEffect(() => {
-    const statuses: SyncStatus[] = ["not_installed", "stale", "fresh"]
+    const statuses: SyncStatus[] = ["not_installed", "fresh"]
     let index = 0
     const interval = setInterval(() => {
       index = (index + 1) % statuses.length
@@ -59,29 +59,8 @@ export default function ExtensionSyncWidget() {
     )
   }
 
-  // State B: Stale (>3 days)
-  if (syncStatus === "stale") {
-    return (
-      <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}>
-        <Card
-          className="p-4 bg-gradient-to-r from-orange-500 to-amber-500 text-white border-0 shadow-lg cursor-pointer hover:shadow-xl transition-shadow"
-          onClick={handleSync}
-        >
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center animate-pulse">
-                <RefreshCw className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="font-bold">{t("extension.widget.stale_title")}</p>
-                <p className="text-sm text-orange-100">{t("extension.widget.stale_subtitle")}</p>
-              </div>
-            </div>
-          </div>
-        </Card>
-      </motion.div>
-    )
-  }
+  // State B: Stale (>3 days) - HIDDEN
+  // Skipped to avoid showing status update required message
 
   // State C: Syncing
   if (syncStatus === "syncing") {

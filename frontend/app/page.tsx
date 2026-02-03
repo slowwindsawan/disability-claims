@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { useRouter } from "next/navigation"
 import { BACKEND_BASE_URL } from '@/variables'
+import { sendOtp, verifyOtp } from '@/lib/supabase-auth'
 import {
   Shield,
   Check,
@@ -27,14 +28,42 @@ import Link from "next/link"
 import * as legacyApi from "@/lib/api"
 import { EligibilityQuestionnaire } from "@/components/eligibility-questionnaire"
 import { AILawyerWrapper } from "@/components/ai-lawyer-wrapper"
+import { LogoutButton } from "@/components/logout-button"
+
+// Popular country codes for phone authentication
+const COUNTRY_CODES = [
+  { code: "+972", country: "Israel", flag: "🇮🇱" },
+  { code: "+1", country: "USA/Canada", flag: "🇺🇸" },
+  { code: "+91", country: "India", flag: "🇮🇳" },
+  { code: "+44", country: "UK", flag: "🇬🇧" },
+  { code: "+86", country: "China", flag: "🇨🇳" },
+  { code: "+81", country: "Japan", flag: "🇯🇵" },
+  { code: "+49", country: "Germany", flag: "🇩🇪" },
+  { code: "+33", country: "France", flag: "🇫🇷" },
+  { code: "+39", country: "Italy", flag: "🇮🇹" },
+  { code: "+34", country: "Spain", flag: "🇪🇸" },
+  { code: "+7", country: "Russia", flag: "🇷🇺" },
+  { code: "+55", country: "Brazil", flag: "🇧🇷" },
+  { code: "+52", country: "Mexico", flag: "🇲🇽" },
+  { code: "+61", country: "Australia", flag: "🇦🇺" },
+  { code: "+82", country: "South Korea", flag: "🇰🇷" },
+  { code: "+31", country: "Netherlands", flag: "🇳🇱" },
+  { code: "+46", country: "Sweden", flag: "🇸🇪" },
+  { code: "+41", country: "Switzerland", flag: "🇨🇭" },
+  { code: "+971", country: "UAE", flag: "🇦🇪" },
+  { code: "+966", country: "Saudi Arabia", flag: "🇸🇦" },
+]
 
 export default function Home() {
+  // Only show email login if explicitly enabled via env var (for dev/testing only)
+  const showEmailAuth = process.env.NEXT_PUBLIC_SHOW_EMAIL_AUTH === 'true'
   const [showLoginModal, setShowLoginModal] = useState(false)
   const [showQuiz, setShowQuiz] = useState(false)
-  const [signupMethod, setSignupMethod] = useState<"email" | "phone">("email") // Default to email
+  const [signupMethod, setSignupMethod] = useState<"email" | "phone">("phone") // Default to phone
   const [otpState, setOtpState] = useState<"phone" | "code" | "success" | "signup" | "eligibility" | "wizard" | "ai-lawyer">("phone")
   const [phone, setPhone] = useState("")
-  const [otpCode, setOtpCode] = useState(["", "", "", ""])
+  const [countryCode, setCountryCode] = useState("+972") // Default to Israel
+  const [otpCode, setOtpCode] = useState(["", "", "", "", "", ""])
   const [email, setEmail] = useState("demo1@demo.com")
   const [password, setPassword] = useState("Qwert@123")
   const [confirmPassword, setConfirmPassword] = useState("")
@@ -64,6 +93,60 @@ export default function Home() {
     window.addEventListener('storage', check)
     return () => window.removeEventListener('storage', check)
   }, [])
+
+  // Handle redirects when NOT logged in
+  React.useEffect(() => {
+    if (isLoggedIn) return
+    const searchParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '')
+    const redirectParam = searchParams.get('redirect')
+    
+    if (redirectParam === 'conversation') {
+      setShowLoginModal(true)
+    }
+  }, [isLoggedIn])
+
+  // Check on mount if user is logged in and redirected from dashboard - auto-start quiz
+  React.useEffect(() => {
+    const checkAndStartQuizIfNeeded = async () => {
+      if (!isLoggedIn) return
+      
+      // Check if we were redirected from dashboard
+      const searchParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '')
+      const redirectParam = searchParams.get('redirect')
+
+      if (redirectParam === 'conversation') {
+        router.push('/conversation')
+        return
+      }
+      
+      // Only auto-start quiz if redirected from dashboard with redirect=onboarding param
+      if (redirectParam !== 'onboarding') {
+        console.log('Home page - not redirected from dashboard, skipping auto-start quiz')
+        return
+      }
+      
+      try {
+        const casesRes: any = await legacyApi.apiGetCases()
+        console.log('Home page - apiGetCases response:', casesRes)
+        
+        if (casesRes?.cases && casesRes.cases.length > 0) {
+          const caseStatus = casesRes.cases[0].status
+          console.log('Home page - case status:', caseStatus)
+          
+          if (caseStatus === 'Initial questionnaire') {
+            console.log('Home page - User in Initial questionnaire, auto-starting quiz')
+            setShowQuiz(true)
+            setOtpState('wizard')
+            setWizardStep(0)
+          }
+        }
+      } catch (error) {
+        console.error('Failed to check case status on home mount:', error)
+      }
+    }
+    
+    checkAndStartQuizIfNeeded()
+  }, [isLoggedIn])
 
   // Check if user already has full_name in profile on wizard state
   React.useEffect(() => {
@@ -122,6 +205,7 @@ export default function Home() {
         throw new Error('No authentication token')
       }
 
+      // Save to backend profile
       const response = await fetch(`${BACKEND_BASE_URL}/user/profile`, {
         method: 'PATCH',
         headers: {
@@ -131,12 +215,22 @@ export default function Home() {
         body: JSON.stringify({ full_name: fullName.trim() })
       })
 
-      if (response.ok) {
-        // Successfully saved, move to step 1
-        setWizardStep(1)
-      } else {
-        throw new Error('Failed to save name')
+      if (!response.ok) {
+        throw new Error('Failed to save name to backend')
       }
+      
+      // Also update Supabase auth metadata
+      try {
+        const { supabase } = await import('@/lib/supabase-auth')
+        await supabase.auth.updateUser({
+          data: { full_name: fullName.trim() }
+        })
+      } catch (supabaseError) {
+        console.warn('Failed to update Supabase metadata:', supabaseError)
+      }
+
+      // Successfully saved, move to step 1
+      setWizardStep(1)
     } catch (error) {
       console.error('Error saving name:', error)
       alert(isRTL ? 'שגיאה בשמירת השם' : 'Error saving name')
@@ -169,6 +263,15 @@ export default function Home() {
         if (response.ok) {
           const userData = await response.json()
           const eligibilities = userData?.user?.eligibilities || []
+          const caseStatus = userData?.user?.case?.status || userData?.user?.case_status
+          
+          // Check if user is still in initial questionnaire - force onboarding
+          if (caseStatus === 'Initial questionnaire') {
+            console.log('User still in Initial questionnaire, forcing onboarding')
+            setOtpState("wizard")
+            setWizardStep(0)
+            return
+          }
           
           // If user has eligibility records, skip quiz and go directly to voice agent
           if (eligibilities && eligibilities.length > 0) {
@@ -195,37 +298,194 @@ export default function Home() {
     }
   }
 
-  const handlePhoneSubmit = (e: React.FormEvent) => {
+  const handlePhoneSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (phone.length >= 9) {
-      setOtpState("code")
+    setSignupError("")
+    
+    // Validation - just check that there are some digits
+    if (!phone || phone.trim().length === 0) {
+      setSignupError(isRTL ? "אנא הזן מספר טלפון" : "Please enter a phone number")
+      return
+    }
+    
+    const digits = phone.replace(/\D/g, '')
+    if (digits.length < 4) {
+      setSignupError(isRTL ? "מספר טלפון קצר מדי" : "Phone number too short")
+      return
+    }
+    
+    setSignupLoading(true)
+    
+    try {
+      // Format phone number to E.164 format with selected country code
+      const formattedPhone = phone.startsWith("+") ? phone : `${countryCode}${phone}`
+      
+      console.log('Sending OTP to:', formattedPhone)
+      
+      // Send OTP via backend
+      const result = await sendOtp(formattedPhone)
+      
+      if (result.success) {
+        console.log('✅ OTP sent successfully')
+        // Move to OTP code entry state
+        setOtpState("code")
+      } else {
+        setSignupError(result.message || "Failed to send OTP")
+        console.error('❌ OTP send failed:', result.message)
+      }
+    } catch (error: any) {
+      console.error('Error sending OTP:', error)
+      setSignupError(error.message || 'Failed to send verification code. Please try again.')
+    } finally {
+      setSignupLoading(false)
     }
   }
 
-  const handleOtpChange = (index: number, value: string) => {
-    if (value.length <= 1 && /^\d*$/.test(value)) {
+  const handleOtpChange = async (index: number, value: string) => {
+    // Only allow single digit
+    if (value.length > 1) {
+      value = value.slice(-1) // Take only the last character
+    }
+    
+    if (/^\d*$/.test(value)) {
       const newCode = [...otpCode]
       newCode[index] = value
       setOtpCode(newCode)
 
-      if (value && index < 3) {
-        const nextInput = document.getElementById(`otp-${index + 1}`)
-        nextInput?.focus()
+      // Auto-focus to next input
+      if (value && index < 5) {
+        setTimeout(() => {
+          const nextInput = document.getElementById(`otp-${index + 1}`)
+          nextInput?.focus()
+        }, 10)
       }
 
-      if (newCode.every((digit) => digit !== "") && newCode.join("").length === 4) {
-        setTimeout(() => {
-          setOtpState("success")
-          setTimeout(() => {
-            if (isReturningUser) {
-              router.push("/dashboard")
-            } else {
-              // Skip signup form and go directly to wizard
-              setOtpState("wizard")
+      // Auto-verify when all 6 digits are entered
+      if (newCode.every((digit) => digit !== "") && newCode.join("").length === 6) {
+        setSignupLoading(true)
+        setSignupError("")
+        
+        try {
+          // Format phone number to E.164 format with selected country code
+          const formattedPhone = phone.startsWith("+") ? phone : `${countryCode}${phone}`
+          const otpString = newCode.join("")
+          
+          // Verify OTP with backend
+          const result = await verifyOtp(formattedPhone, otpString)
+          
+          if (result.success && result.accessToken) {
+            // Store Supabase session tokens
+            localStorage.setItem('access_token', result.accessToken)
+            localStorage.setItem('supabase_session', JSON.stringify(result.session))
+            
+            // Mark as logged in immediately
+            setIsLoggedIn(true)
+            
+            // Show success state
+            setOtpState("success")
+            
+            // Get or create user in backend
+            try {
+              const backendResponse = await fetch(`${BACKEND_BASE_URL}/auth/phone-login`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${result.accessToken}`
+                },
+                body: JSON.stringify({
+                  phone: formattedPhone,
+                  supabase_user_id: result.user?.id,
+                })
+              })
+              
+              if (backendResponse.ok) {
+                const backendData = await backendResponse.json()
+                
+                // Store backend user info
+                if (backendData.user_id) localStorage.setItem('user_id', backendData.user_id)
+                if (backendData.case_id) localStorage.setItem('case_id', backendData.case_id)
+                
+                setUserId(backendData.user_id)
+                setCaseId(backendData.case_id)
+                
+                // Check user name from Supabase auth metadata
+                const userName = result.user?.user_metadata?.full_name || result.user?.user_metadata?.name
+                
+                // Check case status
+                const caseStatus = backendData.case_status
+                
+                // Determine if user needs onboarding
+                const needsOnboarding = !userName || caseStatus === 'Initial questionnaire'
+                
+                console.log('User onboarding check:', {
+                  userName,
+                  caseStatus,
+                  needsOnboarding
+                })
+                
+                // Transition based on onboarding status
+                setTimeout(() => {
+                  setShowLoginModal(false) // Close modal
+                  
+                  // Priority check for redirect param
+                  const searchParams = new URLSearchParams(window.location.search)
+                  if (searchParams.get('redirect') === 'conversation') {
+                     router.push('/conversation')
+                     return
+                  }
+                  
+                  if (needsOnboarding) {
+                    // New user or incomplete onboarding - go to wizard
+                    console.log('Starting onboarding flow')
+                    setShowQuiz(true) // Show quiz/wizard section
+                    setOtpState("wizard")
+                    setWizardStep(userName ? 1 : 0) // Skip name if already exists
+                  } else {
+                    // Existing user with complete onboarding - go to dashboard
+                    console.log('Existing user, going to dashboard')
+                    setIsReturningUser(true)
+                    router.push("/dashboard")
+                  }
+                }, 1500)
+              }
+            } catch (backendError) {
+              console.warn('Backend sync failed, continuing with Supabase auth:', backendError)
+              // On error, default to wizard
+              setTimeout(() => {
+                setOtpState("wizard")
+              }, 1500)
             }
-          }, 1500)
-        }, 300)
+          }
+        } catch (error: any) {
+          console.error('OTP verification failed:', error)
+          const errorMessage = error.message || 'Invalid verification code'
+          
+          // Check for specific error types
+          if (errorMessage.includes('expired') || errorMessage.includes('invalid')) {
+            setSignupError(isRTL ? 'קוד האימות פג תוקף או שגוי. אנא בקש קוד חדש' : 'Verification code expired or invalid. Please request a new code')
+          } else {
+            setSignupError(errorMessage)
+          }
+          
+          setOtpCode(["", "", "", "", "", ""]) // Reset OTP input
+          
+          // Focus first input
+          setTimeout(() => {
+            const firstInput = document.getElementById('otp-0')
+            firstInput?.focus()
+          }, 100)
+        } finally {
+          setSignupLoading(false)
+        }
       }
+    }
+  }
+
+  const handleOtpKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Handle backspace
+    if (e.key === 'Backspace' && !otpCode[index] && index > 0) {
+      const prevInput = document.getElementById(`otp-${index - 1}`)
+      prevInput?.focus()
     }
   }
 
@@ -240,9 +500,47 @@ export default function Home() {
     }
   }
 
-  const handleLoginModalOtp = (e: React.FormEvent) => {
+  const handleLoginModalOtp = async (e: React.FormEvent) => {
     e.preventDefault()
-    // Logic to handle OTP submission in the login modal
+    setSignupError("")
+    
+    // Validation - just check that there are some digits
+    if (!phone || phone.trim().length === 0) {
+      setSignupError(isRTL ? "אנא הזן מספר טלפון" : "Please enter a phone number")
+      return
+    }
+    
+    const digits = phone.replace(/\D/g, '')
+    if (digits.length < 4) {
+      setSignupError(isRTL ? "מספר טלפון קצר מדי" : "Phone number too short")
+      return
+    }
+    
+    setSignupLoading(true)
+    setIsReturningUser(true)
+    
+    try {
+      // Format phone number to E.164 format with selected country code
+      const formattedPhone = phone.startsWith("+") ? phone : `${countryCode}${phone}`
+      
+      console.log('Sending OTP to:', formattedPhone)
+      
+      const result = await sendOtp(formattedPhone)
+      
+      if (result.success) {
+        console.log('✅ OTP sent successfully')
+        setOtpState("code")
+      } else {
+        setSignupError(result.message || "Failed to send OTP")
+        console.error('❌ OTP send failed:', result.message)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "An error occurred"
+      setSignupError(message)
+      console.error('❌ Error sending OTP:', error)
+    } finally {
+      setSignupLoading(false)
+    }
   }
 
   const [emailLogin, setEmailLogin] = useState("")
@@ -354,11 +652,32 @@ export default function Home() {
     }
   }
 
-  const handleWizardNext = () => {
+  const handleWizardNext = async () => {
     if (wizardStep < 6) {
       setWizardStep(wizardStep + 1)
     } else {
-      // Complete wizard and navigate
+      // Complete wizard - update case status and navigate
+      try {
+        const token = localStorage.getItem('access_token')
+        const caseId = localStorage.getItem('case_id')
+        
+        if (token && caseId) {
+          // Mark onboarding as complete by updating case status
+          await fetch(`${BACKEND_BASE_URL}/cases/${caseId}`, {
+            method: 'PATCH',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              status: 'Document collection'
+            })
+          })
+        }
+      } catch (error) {
+        console.error('Failed to update case status:', error)
+      }
+      
       router.push("/medical-documents")
     }
   }
@@ -505,12 +824,15 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             {isLoggedIn ? (
-              <Link href="/dashboard">
-                <Button variant="outline" className="flex items-center gap-2">
-                  <span className="hidden sm:inline">{t("header.personal_area")}</span>
-                  <Shield className="w-4 h-4" />
-                </Button>
-              </Link>
+              <>
+                <Link href="/dashboard">
+                  <Button variant="outline" className="flex items-center gap-2">
+                    <span className="hidden sm:inline">{t("header.personal_area")}</span>
+                    <Shield className="w-4 h-4" />
+                  </Button>
+                </Link>
+                <LogoutButton variant="outline" className="flex items-center gap-2" />
+              </>
             ) : (
               <Button variant="outline" onClick={() => setShowLoginModal(true)} className="flex items-center gap-2">
                 <span className="hidden sm:inline">{t("header.personal_area")}</span>
@@ -820,31 +1142,40 @@ export default function Home() {
                     {isRTL ? "צור חשבון כדי להתחיל את תהליך בדיקת הזכאות" : "Create an account to start your eligibility check"}
                   </p>
 
-                  {/* Signup Method Tabs */}
-                  <div className="flex gap-2 mb-6 bg-slate-100 p-1 rounded-lg" dir={isRTL ? "rtl" : "ltr"}>
-                    <button
-                      type="button"
-                      onClick={() => setSignupMethod("email")}
-                      className={`flex-1 py-3 px-4 rounded-md font-medium transition-all ${
-                        signupMethod === "email"
-                          ? "bg-white text-orange-600 shadow-sm"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      {isRTL ? "📧 אימייל וסיסמה" : "📧 Email & Password"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSignupMethod("phone")}
-                      className={`flex-1 py-3 px-4 rounded-md font-medium transition-all ${
-                        signupMethod === "phone"
-                          ? "bg-white text-orange-600 shadow-sm"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      {isRTL ? "📱 טלפון ו-SMS" : "📱 Phone & SMS"}
-                    </button>
-                  </div>
+                  {/* Signup Method Tabs - Only show email if explicitly enabled */}
+                  {showEmailAuth ? (
+                    <div className="flex gap-2 mb-6 bg-slate-100 p-1 rounded-lg" dir={isRTL ? "rtl" : "ltr"}>
+                      <button
+                        type="button"
+                        onClick={() => setSignupMethod("email")}
+                        className={`flex-1 py-3 px-4 rounded-md font-medium transition-all ${
+                          signupMethod === "email"
+                            ? "bg-white text-orange-600 shadow-sm"
+                            : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        {isRTL ? "📧 אימייל וסיסמה" : "📧 Email & Password"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSignupMethod("phone")}
+                        className={`flex-1 py-3 px-4 rounded-md font-medium transition-all ${
+                          signupMethod === "phone"
+                            ? "bg-white text-orange-600 shadow-sm"
+                            : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        {isRTL ? "📱 טלפון ו-SMS" : "📱 Phone & SMS"}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mb-4 text-center">
+                      <div className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 rounded-lg">
+                        <span className="text-2xl">📱</span>
+                        <span className="font-medium">{isRTL ? "כניסה באמצעות טלפון" : "Sign in with Phone"}</span>
+                      </div>
+                    </div>
+                  )}
 
                   {signupError && (
                     <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm mb-4">
@@ -852,8 +1183,8 @@ export default function Home() {
                     </div>
                   )}
 
-                  {/* Email Signup Form */}
-                  {signupMethod === "email" && (
+                  {/* Email Signup Form - Only show if explicitly enabled */}
+                  {showEmailAuth && signupMethod === "email" && (
                     <form onSubmit={handleSignupSubmit} className="space-y-4">
                     <div className="space-y-2 text-right" dir={isRTL ? "rtl" : "ltr"}>
                       <label className="text-sm font-medium text-slate-700">
@@ -896,9 +1227,19 @@ export default function Home() {
                           value={phone}
                           onChange={(e) => setPhone(e.target.value)}
                           className="flex-1 text-right text-lg py-6"
-                          maxLength={10}
+                          maxLength={15}
                         />
-                        <div className="bg-slate-100 px-4 py-3 rounded-lg text-slate-600 font-medium">972+</div>
+                        <select
+                          value={countryCode}
+                          onChange={(e) => setCountryCode(e.target.value)}
+                          className="bg-slate-100 px-2 py-3 rounded-lg text-slate-700 text-sm font-medium border-0 cursor-pointer hover:bg-slate-200 transition-colors"
+                        >
+                          {COUNTRY_CODES.map((country) => (
+                            <option key={country.code} value={country.code}>
+                              {country.flag} {country.code}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     </div>
 
@@ -917,6 +1258,11 @@ export default function Home() {
                   {/* Phone Signup Form */}
                   {signupMethod === "phone" && (
                     <form onSubmit={handlePhoneSubmit} className="space-y-6">
+                      {signupError && (
+                        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                          {signupError}
+                        </div>
+                      )}
                       <div className="flex items-center gap-2">
                         <Input
                           type="tel"
@@ -924,17 +1270,28 @@ export default function Home() {
                           value={phone}
                           onChange={(e) => setPhone(e.target.value)}
                           className="flex-1 text-right text-lg py-6"
-                          maxLength={10}
+                          maxLength={15}
                         />
-                        <div className="bg-slate-100 px-4 py-3 rounded-lg text-slate-600 font-medium">972+</div>
+                        <select
+                          value={countryCode}
+                          onChange={(e) => setCountryCode(e.target.value)}
+                          className="bg-slate-100 px-3 py-3 rounded-lg text-slate-700 font-medium border-0 cursor-pointer hover:bg-slate-200 transition-colors"
+                          style={{ minWidth: '100px' }}
+                        >
+                          {COUNTRY_CODES.map((country) => (
+                            <option key={country.code} value={country.code}>
+                              {country.flag} {country.code}
+                            </option>
+                          ))}
+                        </select>
                       </div>
 
                       <Button
                         type="submit"
-                        className="w-full bg-orange-600 hover:bg-orange-700 py-6 text-lg"
-                        disabled={phone.length < 9}
+                        className="w-full bg-orange-600 hover:bg-orange-700 py-6 text-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={signupLoading || !phone.trim()}
                       >
-                        {isRTL ? "שלח קוד אימות" : "Send Verification Code"}
+                        {signupLoading ? (isRTL ? "שולח..." : "Sending...") : (isRTL ? "שלח קוד אימות" : "Send Verification Code")}
                       </Button>
                     </form>
                   )}
@@ -959,9 +1316,15 @@ export default function Home() {
                     {isRTL ? "הזן קוד אימות" : "Enter Verification Code"}
                   </h2>
                   <p className="text-slate-600 text-sm mb-8" style={{ direction: isRTL ? "rtl" : "ltr" }}>
-                    {isRTL ? "שלחנו קוד בן 4 ספרות למספר" : "We sent a 4-digit code to"}
-                    <span className="font-medium text-slate-900 mx-1">972-{phone}</span>
+                    {isRTL ? "שלחנו קוד בן 6 ספרות למספר" : "We sent a 6-digit code to"}
+                    <span className="font-medium text-slate-900 mx-1">{countryCode}-{phone}</span>
                   </p>
+
+                  {signupError && (
+                    <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm mb-4">
+                      {signupError}
+                    </div>
+                  )}
 
                   <div className="flex justify-center gap-3 mb-8" dir="ltr">
                     {otpCode.map((digit, index) => (
@@ -973,12 +1336,21 @@ export default function Home() {
                         maxLength={1}
                         value={digit}
                         onChange={(e) => handleOtpChange(index, e.target.value)}
+                        onKeyDown={(e) => handleOtpKeyDown(index, e)}
                         className="w-14 h-14 text-center text-2xl font-bold"
+                        disabled={signupLoading}
+                        autoFocus={index === 0}
                       />
                     ))}
                   </div>
 
-                  <Button variant="ghost" className="text-orange-600 hover:text-orange-700">
+                  {signupLoading && (
+                    <div className="text-sm text-slate-600 mb-4">
+                      {isRTL ? "מאמת..." : "Verifying..."}
+                    </div>
+                  )}
+
+                  <Button variant="ghost" className="text-orange-600 hover:text-orange-700" onClick={handlePhoneSubmit} disabled={signupLoading}>
                     {isRTL ? "שלח קוד שוב" : "Resend Code"}
                   </Button>
                 </motion.div>
@@ -1496,40 +1868,91 @@ export default function Home() {
 
                 <div className="text-center mb-6">
                   <h2 className="text-2xl font-bold text-slate-900 mb-2" style={{ direction: isRTL ? "rtl" : "ltr" }}>
-                    {t("login.title")}
+                    {otpState === "code" ? (isRTL ? "הזן קוד אימות" : "Enter Verification Code") : t("login.title")}
                   </h2>
                   <p className="text-slate-600 text-sm mb-8" style={{ direction: isRTL ? "rtl" : "ltr" }}>
-                    {t("login.subtitle")}
+                    {otpState === "code" ? (isRTL ? `קוד אימות נשלח אל ${phone}` : `Verification code sent to ${phone}`) : t("login.subtitle")}
                   </p>
                 </div>
 
-                <form onSubmit={handleLoginModalOtp} className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Input type="tel" placeholder="50-123-4567" className="flex-1 text-right" dir="rtl" />
-                    <div className="flex h-10 w-16 items-center justify-center rounded-lg bg-slate-100 text-slate-600 font-medium">
-                      972+
-                    </div>
+                {signupError && (
+                  <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm mb-4">
+                    {signupError}
                   </div>
+                )}
 
-                  <Button
-                    type="submit"
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold"
-                    onClick={() => setIsReturningUser(true)}
-                  >
-                    {t("login.send_code")}
-                  </Button>
-                </form>
+                {otpState === "code" ? (
+                  // OTP Entry Form
+                  <div className="space-y-4">
+                    <div className="flex justify-center gap-2">
+                      {otpCode.map((digit, index) => (
+                        <input
+                          key={index}
+                          id={`otp-${index}`}
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={1}
+                          value={digit}
+                          onChange={(e) => handleOtpChange(index, e.target.value)}
+                          onKeyDown={(e) => handleOtpKeyDown(index, e)}
+                          className="w-12 h-12 text-center text-2xl font-bold border-2 border-slate-300 rounded-lg focus:border-blue-600 focus:outline-none"
+                          autoFocus={index === 0}
+                        />
+                      ))}
+                    </div>
+                    
+                    <Button variant="ghost" className="text-orange-600 hover:text-orange-700 w-full" onClick={handlePhoneSubmit} disabled={signupLoading}>
+                      {isRTL ? "שלח קוד שוב" : "Resend Code"}
+                    </Button>
+                  </div>
+                ) : (
+                  // Phone Entry Form
+                  <form onSubmit={handleLoginModalOtp} className="space-y-4">
+                    <div className="flex items-center gap-2">
+                      <Input 
+                        type="tel" 
+                        placeholder="50-123-4567" 
+                        className="flex-1 text-right" 
+                        dir="rtl"
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        maxLength={15}
+                      />
+                      <select
+                        value={countryCode}
+                        onChange={(e) => setCountryCode(e.target.value)}
+                        className="flex h-10 items-center justify-center rounded-lg bg-slate-100 px-2 text-slate-700 text-sm font-medium border-0 cursor-pointer hover:bg-slate-200 transition-colors"
+                      >
+                        {COUNTRY_CODES.map((country) => (
+                          <option key={country.code} value={country.code}>
+                            {country.flag} {country.code}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <Button
+                      type="submit"
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                      onClick={() => setIsReturningUser(true)}
+                      disabled={signupLoading || !phone.trim()}
+                    >
+                      {signupLoading ? (isRTL ? "שולח..." : "Sending...") : t("login.send_code")}
+                    </Button>
+                  </form>
+                )}
 
                 <div className="flex items-center justify-center gap-2 mt-6 text-sm text-slate-600">
                   <Shield className="w-4 h-4" />
                   <span>{t("login.secure_connection")}</span>
                 </div>
 
-                {/* Email/password login (testing) */}
-                <div className="mt-6 pt-6 border-t border-slate-100">
-                  <h3 className="text-sm font-semibold text-slate-800 mb-2">Email & password (testing)</h3>
-                  {emailError && <div className="text-sm text-red-600 mb-2">{emailError}</div>}
-                  <form onSubmit={handleEmailLogin} className="space-y-3">
+                {/* Email/password login - Only if explicitly enabled for dev/testing */}
+                {showEmailAuth && (
+                  <div className="mt-6 pt-6 border-t border-slate-100">
+                    <h3 className="text-sm font-semibold text-slate-800 mb-2">Email & password (DEV only)</h3>
+                    {emailError && <div className="text-sm text-red-600 mb-2">{emailError}</div>}
+                    <form onSubmit={handleEmailLogin} className="space-y-3">
                     <Input
                       type="email"
                       placeholder="you@email.com"
@@ -1553,7 +1976,8 @@ export default function Home() {
                       </Button>
                     </div>
                   </form>
-                </div>
+                  </div>
+                )}
               </div>
             </motion.div>
           </>

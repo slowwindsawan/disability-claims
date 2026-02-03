@@ -96,9 +96,11 @@ def get_btl_content_by_topics(topic_ids: List[str] = None) -> str:
     logger.error("[BTL_SELECT] No matching BTL topics found")
     return ""
 
-# Load .env (OPENAI_API_KEY, optional OPENAI_MODEL)
+# Load .env for other API keys
 load_dotenv()
-OPENAI_API_KEY: Optional[str] = os.getenv('OPENAI_API_KEY')
+# Get OpenAI API key from database with fallback to environment
+from .secrets_utils import get_openai_api_key
+OPENAI_API_KEY: Optional[str] = get_openai_api_key()
 # Default model used here; override via OPENAI_MODEL in .env
 OPENAI_MODEL: str = os.getenv('OPENAI_MODEL', 'gpt-5-nano')
 

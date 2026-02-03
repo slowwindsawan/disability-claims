@@ -30,7 +30,7 @@ export function useAdminCases(initialOptions?: UseAdminCasesOptions): UseAdminCa
   const [error, setError] = useState<Error | null>(null);
   const [total, setTotal] = useState(0);
   const [options, setOptions] = useState<UseAdminCasesOptions>({
-    limit: 200,
+    limit: 8,  // Default to 8 items per page
     offset: 0,
     ...initialOptions,
   });
@@ -39,7 +39,7 @@ export function useAdminCases(initialOptions?: UseAdminCasesOptions): UseAdminCa
     setLoading(true);
     setError(null);
     try {
-      const response = await fetchAdminCases(options.limit || 200, options.offset || 0);
+      const response = await fetchAdminCases(options.limit || 8, options.offset || 0);
       setCases(response.cases || []);
       setTotal(response.total || 0);
     } catch (err) {

@@ -148,7 +148,7 @@ export default function TeamManagement() {
       try {
         const token = localStorage.getItem('access_token')
         if (!token) {
-          router.push('/')
+          router.push('/admin/login')
           return
         }
 
@@ -166,7 +166,7 @@ export default function TeamManagement() {
         fetchSubAdmins()
       } catch (error) {
         console.error('Authorization check failed:', error)
-        router.push('/')
+        router.push('/admin/login')
       } finally {
         setIsLoading(false)
       }

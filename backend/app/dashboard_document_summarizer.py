@@ -7,14 +7,16 @@ import logging
 from typing import Dict, Any, Optional
 import os
 from openai import OpenAI
+from .secrets_utils import get_openai_api_key
 
 logger = logging.getLogger('dashboard_document_summarizer')
 
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+# Get OpenAI API key from database with fallback to environment
+OPENAI_API_KEY = get_openai_api_key()
 if not OPENAI_API_KEY:
-    logger.warning("OPENAI_API_KEY not configured")
+    logger.warning("OPENAI_API_KEY not configured in database or environment")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4-turbo')
 
 

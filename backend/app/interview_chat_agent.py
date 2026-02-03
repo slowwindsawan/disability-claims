@@ -8,9 +8,12 @@ import json
 from typing import List, Dict, Any, Optional
 from openai import AsyncOpenAI
 from pydantic import BaseModel
+from .secrets_utils import get_openai_api_key
 
 logger = logging.getLogger('interview_chat_agent')
-client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Initialize AsyncOpenAI client with key from database
+_openai_key = get_openai_api_key()
+client = AsyncOpenAI(api_key=_openai_key) if _openai_key else None
 
 # Configure colored logging
 class ColoredFormatter(logging.Formatter):

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
 import { MessageCircle, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -8,11 +9,10 @@ import { Card } from "@/components/ui/card"
 
 export default function WhatsAppSupportWidget() {
   const [isExpanded, setIsExpanded] = useState(false)
+  const router = useRouter()
 
   const handleWhatsAppClick = () => {
-    const phoneNumber = "972501234567" // Replace with actual WhatsApp business number
-    const message = encodeURIComponent("היי, אני צריך עזרה עם ZeroTouch Claims")
-    window.open(`https://wa.me/${phoneNumber}?text=${message}`, "_blank")
+    router.push("/conversation")
   }
 
   return (

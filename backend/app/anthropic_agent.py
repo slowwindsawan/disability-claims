@@ -7,9 +7,12 @@ import logging
 import json
 from typing import Dict, Any, List
 from openai import AsyncOpenAI
+from .secrets_utils import get_openai_api_key
 
 logger = logging.getLogger('openai_agent')
-client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Initialize AsyncOpenAI client with key from database
+_openai_key = get_openai_api_key()
+client = AsyncOpenAI(api_key=_openai_key) if _openai_key else None
 
 # Import Pinecone retriever for RAG
 try:

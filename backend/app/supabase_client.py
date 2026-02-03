@@ -1840,3 +1840,199 @@ def clear_agent_cache():
     global _agent_cache
     _agent_cache = {}
     logger.info("Agent prompt cache cleared")
+
+
+def send_phone_otp(phone: str):
+    """
+    Send OTP to phone number via Supabase Auth.
+    Returns dict with success status and message.
+    """
+    if not _has_supabase_py or not _supabase:
+        raise ValueError("Supabase Python client not available")
+    
+    try:
+        logger.info(f"Sending OTP to phone: {phone}")
+        res = _supabase.auth.sign_in_with_otp({
+            "phone": phone
+        })
+        
+        logger.info(f"OTP sent successfully to {phone}, message_id: {getattr(res, 'message_id', None)}")
+        return {
+            'success': True,
+            'message': 'OTP sent successfully'
+        }
+    except Exception as e:
+        logger.exception(f"Failed to send OTP to {phone}: {e}")
+        return {
+            'success': False,
+            'message': str(e)
+        }
+
+
+def verify_phone_otp(phone: str, otp: str):
+    """
+    Verify OTP for phone number via Supabase Auth.
+    Returns dict with user data and session if successful.
+    """
+    if not _has_supabase_py or not _supabase:
+        raise ValueError("Supabase Python client not available")
+    
+    try:
+        logger.info(f"Verifying OTP for phone: {phone}")
+        verify_res = _supabase.auth.verify_otp({
+            "phone": phone,
+            "token": otp,
+            "type": "sms"
+        })
+        
+        if verify_res.user and verify_res.session:
+            logger.info(f"✅ OTP verified successfully for {phone}, user_id: {verify_res.user.id}")
+            return {
+                'success': True,
+                'user': {
+                    'id': verify_res.user.id,
+                    'phone': verify_res.user.phone,
+                    'user_metadata': verify_res.user.user_metadata
+                },
+                'session': {
+                    'access_token': verify_res.session.access_token,
+                    'refresh_token': verify_res.session.refresh_token
+                }
+            }
+        else:
+            logger.warning(f"❌ OTP verification failed for {phone}")
+            return {
+                'success': False,
+                'message': 'Invalid OTP'
+            }
+    except Exception as e:
+        logger.exception(f"Failed to verify OTP for {phone}: {e}")
+        return {
+            'success': False,
+            'message': str(e)
+        }
+
+
+# =============================
+# Secrets Management Functions
+# =============================
+
+def get_secret(provider: str) -> dict:
+    """
+    Fetch a secret by provider name.
+    Returns the secret record or None if not found.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError('Supabase config missing')
+    
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/secrets"
+    params = {'provider': f'eq.{provider}', 'limit': '1'}
+    
+    # Prefer supabase-py admin client if available
+    if _has_supabase_py and _supabase_admin is not None:
+        try:
+            logger.debug(f'Fetching secret for provider={provider} via supabase-py')
+            res = _supabase_admin.table('secrets').select('*').eq('provider', provider).limit(1).execute()
+            data = _normalize_sdk_response(res)
+            return data[0] if data and len(data) > 0 else None
+        except Exception:
+            logger.exception('supabase-py get_secret failed, falling back to HTTP')
+    
+    try:
+        resp = requests.get(url, headers=_postgrest_headers(), params=params, timeout=10)
+        resp.raise_for_status()
+        result = resp.json()
+        return result[0] if isinstance(result, list) and len(result) > 0 else None
+    except Exception:
+        logger.exception(f'Failed to fetch secret for provider={provider}')
+        return None
+
+
+def list_secrets() -> list:
+    """
+    List all secrets from the database.
+    Returns list of secret records.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError('Supabase config missing')
+    
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/secrets"
+    
+    # Prefer supabase-py admin client if available
+    if _has_supabase_py and _supabase_admin is not None:
+        try:
+            logger.debug('Listing all secrets via supabase-py')
+            res = _supabase_admin.table('secrets').select('*').execute()
+            return _normalize_sdk_response(res) or []
+        except Exception:
+            logger.exception('supabase-py list_secrets failed, falling back to HTTP')
+    
+    try:
+        resp = requests.get(url, headers=_postgrest_headers(), timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        logger.exception('Failed to list secrets')
+        return []
+
+
+def update_secret(secret_id: int, key: str) -> dict:
+    """
+    Update a secret's key value by id.
+    Returns the updated secret record.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError('Supabase config missing')
+    
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/secrets"
+    params = {'id': f'eq.{secret_id}'}
+    body = {'key': key}
+    
+    # Prefer supabase-py admin client if available
+    if _has_supabase_py and _supabase_admin is not None:
+        try:
+            logger.debug(f'Updating secret id={secret_id} via supabase-py')
+            res = _supabase_admin.table('secrets').update(body).eq('id', secret_id).execute()
+            data = _normalize_sdk_response(res)
+            return data[0] if data and len(data) > 0 else {}
+        except Exception:
+            logger.exception('supabase-py update_secret failed, falling back to HTTP')
+    
+    try:
+        resp = requests.patch(url, params=params, headers=_postgrest_headers(), json=body, timeout=10)
+        resp.raise_for_status()
+        result = resp.json()
+        return result[0] if isinstance(result, list) and len(result) > 0 else result
+    except Exception:
+        logger.exception(f'Failed to update secret id={secret_id}')
+        raise
+
+
+def create_secret(provider: str, key: str) -> dict:
+    """
+    Create a new secret record.
+    Returns the created secret record.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError('Supabase config missing')
+    
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/secrets"
+    body = {'provider': provider, 'key': key}
+    
+    # Prefer supabase-py admin client if available
+    if _has_supabase_py and _supabase_admin is not None:
+        try:
+            logger.debug(f'Creating secret for provider={provider} via supabase-py')
+            res = _supabase_admin.table('secrets').insert(body).execute()
+            return _normalize_sdk_response(res)
+        except Exception:
+            logger.exception('supabase-py create_secret failed, falling back to HTTP')
+    
+    try:
+        resp = requests.post(url, headers=_postgrest_headers(), json=body, timeout=10)
+        resp.raise_for_status()
+        logger.info(f"Created secret for provider={provider}")
+        return resp.json()
+    except Exception:
+        logger.exception(f'Failed to create secret for provider={provider}')
+        raise

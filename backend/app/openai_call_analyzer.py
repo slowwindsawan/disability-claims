@@ -335,8 +335,11 @@ async def analyze_call_conversation_openai(
         logger.info(f"[AGENT] Eligibility records: {len(eligibility_records) if eligibility_records else 0}")
         logger.info(f"[AGENT] Call details provided: {call_details is not None}")
         
-        if not os.getenv("OPENAI_API_KEY"):
-            raise ValueError("OPENAI_API_KEY not configured")
+        # Get OpenAI API key from database with fallback to environment
+        from .secrets_utils import get_openai_api_key
+        openai_key = get_openai_api_key()
+        if not openai_key:
+            raise ValueError("OPENAI_API_KEY not configured in database or environment")
 
         eligibility_context = ""
         if eligibility_records:

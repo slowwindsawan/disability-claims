@@ -39,6 +39,7 @@ export function AILawyerInterface() {
   const [isFirstMessage, setIsFirstMessage] = React.useState(true)
   const [isAnalyzing, setIsAnalyzing] = React.useState(false)
   const [analysisError, setAnalysisError] = React.useState<string | null>(null)
+  const [showEndConfirmation, setShowEndConfirmation] = React.useState(false)
   
   const scrollAreaRef = React.useRef<HTMLDivElement>(null)
   const messagesEndRef = React.useRef<HTMLDivElement>(null)
@@ -328,6 +329,21 @@ export function AILawyerInterface() {
       e.preventDefault()
       handleSendMessage()
     }
+  }
+
+  const handleEndInterview = () => {
+    setShowEndConfirmation(true)
+  }
+
+  const confirmEndInterview = () => {
+    console.log("👤 User manually ended interview")
+    setShowEndConfirmation(false)
+    setIsComplete(true)
+    // The existing useEffect will trigger analysis automatically
+  }
+
+  const cancelEndInterview = () => {
+    setShowEndConfirmation(false)
   }
 
   const toggleRecording = async () => {
@@ -641,40 +657,84 @@ export function AILawyerInterface() {
               </Button>
             </div>
           ) : (
-            <div className="flex w-full gap-2 items-center">
-              <Button
-                variant={isRecording ? "destructive" : "outline"}
-                size="icon"
-                className={cn("h-12 w-12 shrink-0 rounded-full border-2", isRecording && "animate-pulse")}
-                onClick={toggleRecording}
-                title={isRecording ? "Stop recording" : "Start recording"}
-                disabled={isProcessing}
-              >
-                {isRecording ? <MicOff size={20} /> : <Mic size={20} />}
-              </Button>
-
-              <div className="flex-1 relative">
-                <Input
-                  className="h-12 rounded-full pl-4 pr-12 bg-muted/50 focus-visible:ring-primary/20 border-muted-foreground/20"
-                  placeholder={isRTL ? "הקלד הודעה..." : "Type a message..."}
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  onKeyDown={handleKeyDown}
+            <div className="w-full space-y-2">
+              <div className="flex w-full gap-2 items-center">
+                <Button
+                  variant={isRecording ? "destructive" : "outline"}
+                  size="icon"
+                  className={cn("h-12 w-12 shrink-0 rounded-full border-2", isRecording && "animate-pulse")}
+                  onClick={toggleRecording}
+                  title={isRecording ? "Stop recording" : "Start recording"}
                   disabled={isProcessing}
-                />
-              </div>
+                >
+                  {isRecording ? <MicOff size={20} /> : <Mic size={20} />}
+                </Button>
 
-              <Button 
-                size="icon" 
-                className={cn(
-                  "h-12 w-12 shrink-0 rounded-full transition-all",
-                  inputValue.trim() && !isProcessing ? "bg-primary" : "bg-muted text-muted-foreground/50"
-                )} 
-                onClick={handleSendMessage}
-                disabled={!inputValue.trim() || isProcessing}
-              >
-                <Send size={20} className={isRTL ? "ml-1" : "mr-1"} />
-              </Button>
+                <div className="flex-1 relative">
+                  <Input
+                    className="h-12 rounded-full pl-4 pr-12 bg-muted/50 focus-visible:ring-primary/20 border-muted-foreground/20"
+                    placeholder={isRTL ? "הקלד הודעה..." : "Type a message..."}
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    disabled={isProcessing}
+                  />
+                </div>
+
+                <Button 
+                  size="icon" 
+                  className={cn(
+                    "h-12 w-12 shrink-0 rounded-full transition-all",
+                    inputValue.trim() && !isProcessing ? "bg-primary" : "bg-muted text-muted-foreground/50"
+                  )} 
+                  onClick={handleSendMessage}
+                  disabled={!inputValue.trim() || isProcessing}
+                >
+                  <Send size={20} className={isRTL ? "ml-1" : "mr-1"} />
+                </Button>
+              </div>
+              
+              {/* End Interview Button */}
+              {messages.length > 2 && !showEndConfirmation && (
+                <Button
+                  variant="outline"
+                  className="w-full h-10 text-sm"
+                  onClick={handleEndInterview}
+                  disabled={isProcessing}
+                >
+                  {isRTL ? "סיים ראיון" : "End Interview"}
+                </Button>
+              )}
+              
+              {/* Confirmation Dialog */}
+              {showEndConfirmation && (
+                <div className="border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 rounded-lg p-3">
+                  <p className="text-sm font-medium text-amber-900 dark:text-amber-100 mb-3">
+                    {isRTL 
+                      ? "האם אתה בטוח שברצונך לסיים את הראיון? המערכת תתחיל לנתח את המידע שאספת."
+                      : "Are you sure you want to end the interview? The system will start analyzing the information you've provided."
+                    }
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="default"
+                      size="sm"
+                      className="flex-1"
+                      onClick={confirmEndInterview}
+                    >
+                      {isRTL ? "כן, סיים" : "Yes, End Interview"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
+                      onClick={cancelEndInterview}
+                    >
+                      {isRTL ? "ביטול" : "Cancel"}
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </CardFooter>

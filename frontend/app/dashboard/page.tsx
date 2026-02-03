@@ -39,6 +39,7 @@ import NotEligiblePage from "@/new-resources/app/not-eligible/page";
 import useCurrentCase from "@/lib/useCurrentCase";
 import { BACKEND_BASE_URL } from "@/variables";
 import { DocumentRelevanceDialog } from "@/components/DocumentRelevanceDialog";
+import { LogoutButton } from "@/components/logout-button";
 
 interface RequiredDocument {
   id: number;
@@ -132,22 +133,70 @@ export default function DashboardPage() {
   // Check authentication on mount
   useEffect(() => {
     const checkAuth = async () => {
+      setCheckingAuth(true);
       try {
         const token = localStorage.getItem("access_token");
         if (!token) {
+          console.log('No auth token, redirecting to home');
           router.push("/");
           return;
         }
         // Verify token is still valid and get user data
         const res: any = await legacyApi.apiMe();
+        console.log('Full apiMe response:', JSON.stringify(res, null, 2));
+        
         if (res?.anonymous || !res?.user) {
+          console.log('User not authenticated, redirecting to home');
           router.push("/");
+          return;
+        }
+
+        // Get cases to check case status
+        let caseStatus = null;
+        let callSummary = null;
+        try {
+          const casesRes: any = await legacyApi.apiGetCases();
+          console.log('apiGetCases response:', casesRes);
+          
+          if (casesRes?.cases && casesRes.cases.length > 0) {
+            caseStatus = casesRes.cases[0].status;
+            callSummary = casesRes.cases[0].call_summary;
+            console.log('Found case status from cases API:', caseStatus);
+            console.log('Found call_summary from cases API:', callSummary);
+          }
+        } catch (e) {
+          console.error('Failed to fetch cases:', e);
+        }
+        
+        // Fallback to checking user object
+        if (!caseStatus) {
+          caseStatus = res?.user?.case?.status || res?.user?.case_status || res?.user?.cases?.[0]?.status;
+          callSummary = res?.user?.case?.call_summary || res?.user?.cases?.[0]?.call_summary;
+          console.log('Using fallback case status from user object:', caseStatus);
+          console.log('Using fallback call_summary from user object:', callSummary);
+        }
+        
+        console.log('Final caseStatus for validation:', caseStatus);
+        console.log('Final callSummary for validation:', callSummary);
+        
+        if (caseStatus === 'Initial questionnaire') {
+          // User must complete onboarding first
+          console.log('User in Initial questionnaire, redirecting to onboarding');
+          router.push("/?redirect=onboarding");
+          return;
+        }
+
+        // Check if user has completed questionnaire but doesn't have call_summary - redirect to AI lawyer
+        if ((!callSummary || callSummary.trim() === '') && caseStatus !== 'Initial questionnaire') {
+          console.log('User completed questionnaire but has no call summary, redirecting to AI lawyer');
+          router.push("/ai-lawyer");
           return;
         }
 
         // Check if user is admin or subadmin - they cannot access user dashboard
         const role = res?.user?.role;
         if (role === "admin" || role === "subadmin") {
+          console.log('Admin/subadmin user, redirecting to admin panel');
           router.push("/admin");
           return;
         }
@@ -1119,6 +1168,8 @@ export default function DashboardPage() {
                   </div>
                 </div>
               </div>
+
+              <LogoutButton variant="outline" size="sm" className="ml-2" />
             </div>
           </div>
         </div>
@@ -2169,6 +2220,34 @@ export default function DashboardPage() {
 
           {/* Sidebar */}
           <div className="space-y-6">
+            {/* WhatsApp Support Card */}
+            <motion.div
+              initial={{ y: 20, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ delay: 0.25 }}
+            >
+              <Card 
+                className="p-6 bg-[#25D366] text-white shadow-lg cursor-pointer hover:bg-[#20bd5a] transition-colors"
+                onClick={() => router.push('/conversation')}
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center">
+                    <MessageSquare className="w-6 h-6 text-white" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold">תמיכה בוואטסאפ</h4>
+                    <p className="text-sm text-green-100">צ'אט אנושי חי</p>
+                  </div>
+                </div>
+                <p className="text-sm text-green-50 mb-4 leading-relaxed">
+                  זקוק לעזרה? הצוות שלנו זמין עבורך לשיחה מיידית.
+                </p>
+                <Button className="w-full bg-white text-[#25D366] hover:bg-green-50 font-semibold">
+                  פתח שיחה
+                </Button>
+              </Card>
+            </motion.div>
+
             {/* AI Lawyer Card */}
             <motion.div
               initial={{ y: 20, opacity: 0 }}

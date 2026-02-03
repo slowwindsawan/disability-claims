@@ -45,7 +45,7 @@ export default function AnalyticsPage() {
       try {
         const token = localStorage.getItem('access_token')
         if (!token) {
-          router.push('/')
+          router.push('/admin/login')
           return
         }
 
@@ -53,7 +53,7 @@ export default function AnalyticsPage() {
         const role = res?.user?.role || res?.profile?.role || res?.role
 
         if (role !== 'admin' && role !== 'subadmin') {
-          router.push('/')
+          router.push('/admin/login')
           return
         }
 
@@ -62,7 +62,7 @@ export default function AnalyticsPage() {
         fetchAnalyticsData("30days")
       } catch (error) {
         console.error('Authorization check failed:', error)
-        router.push('/')
+        router.push('/admin/login')
       } finally {
         setIsLoading(false)
       }

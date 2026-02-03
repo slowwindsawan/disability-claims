@@ -6,9 +6,12 @@ import logging
 from typing import Optional
 from openai import AsyncOpenAI
 import tempfile
+from .secrets_utils import get_openai_api_key
 
 logger = logging.getLogger('stt_utils')
-client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Initialize AsyncOpenAI client with key from database
+_openai_key = get_openai_api_key()
+client = AsyncOpenAI(api_key=_openai_key) if _openai_key else None
 
 
 async def transcribe_audio(audio_bytes: bytes, language: Optional[str] = None) -> str:

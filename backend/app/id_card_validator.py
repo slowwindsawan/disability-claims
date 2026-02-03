@@ -8,11 +8,13 @@ import logging
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 from openai import OpenAI
+from .secrets_utils import get_openai_api_key
 
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Initialize OpenAI client with key from database
+_openai_key = get_openai_api_key()
+client = OpenAI(api_key=_openai_key) if _openai_key else None
 
 
 def validate_id_card(ocr_text: str, id_type: str) -> Dict[str, Any]:

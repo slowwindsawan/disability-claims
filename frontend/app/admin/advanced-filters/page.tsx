@@ -60,20 +60,20 @@ export default function AdvancedFiltersPage() {
       try {
         const token = localStorage.getItem('access_token')
         if (!token) {
-          router.push('/')
+          router.push('/admin/login')
           return
         }
 
         const res: any = await legacyApi.apiMe()
         if (!res) {
-          router.push('/')
+          router.push('/admin/login')
           return
         }
 
         const role = res?.user?.role || res?.profile?.role || res?.role
 
         if (role !== 'admin' && role !== 'subadmin') {
-          router.push('/')
+          router.push('/admin/login')
           return
         }
 
@@ -81,7 +81,7 @@ export default function AdvancedFiltersPage() {
         fetchSavedFilters()
       } catch (error) {
         console.error('Authorization check failed:', error)
-        router.push('/')
+        router.push('/admin/login')
       } finally {
         setIsLoading(false)
       }

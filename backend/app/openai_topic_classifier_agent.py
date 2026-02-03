@@ -226,8 +226,11 @@ async def classify_btl_topics(
         logger.info(f"[CLASSIFIER] Transcript length: {len(transcript) if transcript else 0} chars")
         logger.info(f"[CLASSIFIER] Messages count: {len(messages) if messages else 0}")
         
-        if not os.getenv("OPENAI_API_KEY"):
-            raise ValueError("OPENAI_API_KEY not configured")
+        # Get OpenAI API key from database with fallback to environment
+        from .secrets_utils import get_openai_api_key
+        openai_key = get_openai_api_key()
+        if not openai_key:
+            raise ValueError("OPENAI_API_KEY not configured in database or environment")
         
         # Load topic metadata
         topics_metadata = load_btl_topics_metadata()

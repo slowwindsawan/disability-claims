@@ -54,6 +54,8 @@ from .supabase_client import (
 from .supabase_client import (
     list_notifications,
     mark_notification_read,
+    send_phone_otp,
+    verify_phone_otp,
 )
 from .supabase_client import _has_supabase_py, _supabase_admin, SUPABASE_URL
 from .email_utils import send_otp_email
@@ -65,8 +67,11 @@ from .openai_form7801_agent import analyze_documents_with_openai_agent
 from .job_queue import get_job_queue, JobStatus
 from aiohttp import web
 from openai import OpenAI
+from .secrets_utils import get_openai_api_key
 
-client = OpenAI()
+# Initialize OpenAI client with key from database
+_openai_key = get_openai_api_key()
+client = OpenAI(api_key=_openai_key) if _openai_key else None
 
 app = FastAPI(title="Eligibility Orchestrator")
 # Default to WARNING to reduce noisy logs; allow override with LOG_LEVEL env var
@@ -169,6 +174,13 @@ async def me(user = Depends(get_current_user)):
         return JSONResponse({'status': 'ok', 'anonymous': True})
     return JSONResponse({'status': 'ok', 'user': {'id': user.get('id'), 'email': user.get('email'), 'role': user.get('role'), 'profile': user.get('profile')}})
 
+
+@app.get('/auth/me')
+async def auth_me(user = Depends(get_current_user)):
+    """Alias for /me endpoint - returns current user information."""
+    if not user:
+        return JSONResponse({'status': 'ok', 'anonymous': True})
+    return JSONResponse({'status': 'ok', 'user': {'id': user.get('id'), 'email': user.get('email'), 'role': user.get('role'), 'profile': user.get('profile')}, 'id': user.get('id'), 'email': user.get('email'), 'role': user.get('role')})
 
 
 def require_auth(user = Depends(get_current_user)):
@@ -650,7 +662,7 @@ async def admin_list_all_users_cases(
         return JSONResponse({
             'status': 'ok', 
             'cases': cases, 
-            'total': len(cases)
+            'total': total  # Return total count from user_profile table, not just current page
         })
     except HTTPException:
         raise
@@ -1295,6 +1307,65 @@ async def delete_admin_filter(filter_name: str, user = Depends(get_current_user)
     except Exception as e:
         logger.exception(f'delete_admin_filter failed: {e}')
         raise HTTPException(status_code=500, detail='delete_filter_failed')
+
+
+# =============================
+# Secrets Management Endpoints
+# =============================
+
+@app.get('/admin/secrets')
+async def get_admin_secrets(user = Depends(require_admin)):
+    """List all secrets from the database (admin only)."""
+    try:
+        from .supabase_client import list_secrets
+        secrets = list_secrets()
+        return JSONResponse({'status': 'ok', 'data': secrets})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'get_admin_secrets failed: {e}')
+        raise HTTPException(status_code=500, detail='list_secrets_failed')
+
+
+@app.post('/admin/secrets')
+async def create_admin_secret(request: Request, user = Depends(require_admin)):
+    """Create a new secret (admin only)."""
+    try:
+        body = await request.json()
+        provider = body.get('provider')
+        key = body.get('key')
+        
+        if not provider or not key:
+            raise HTTPException(status_code=400, detail='provider_and_key_required')
+        
+        from .supabase_client import create_secret
+        result = create_secret(provider, key)
+        return JSONResponse({'status': 'ok', 'data': result})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'create_admin_secret failed: {e}')
+        raise HTTPException(status_code=500, detail='create_secret_failed')
+
+
+@app.put('/admin/secrets/{secret_id}')
+async def update_admin_secret(secret_id: int, request: Request, user = Depends(require_admin)):
+    """Update a secret's key value (admin only)."""
+    try:
+        body = await request.json()
+        key = body.get('key')
+        
+        if not key:
+            raise HTTPException(status_code=400, detail='key_required')
+        
+        from .supabase_client import update_secret
+        result = update_secret(secret_id, key)
+        return JSONResponse({'status': 'ok', 'data': result})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'update_admin_secret failed: {e}')
+        raise HTTPException(status_code=500, detail='update_secret_failed')
 
 
 @app.get('/cases/{case_id}/documents')
@@ -5871,8 +5942,14 @@ async def user_register(payload: Dict[str, Any] = Body(...)):
                 logger.exception('send_otp_email failed; continuing')
             # Create an initial case even when email verification is required so user can resume later
             try:
-                case_metadata = {'initial_eligibility': eligibility_payload}
-                created_case = create_case(user_id=str(user_id), title=None, description='Initial case created at signup', metadata=case_metadata)
+                # Check if user already has a case first
+                existing_cases = list_cases_for_user(str(user_id))
+                if existing_cases and len(existing_cases) > 0:
+                    logger.info(f"User {user_id} already has case, skipping creation")
+                    created_case = existing_cases
+                else:
+                    case_metadata = {'initial_eligibility': eligibility_payload}
+                    created_case = create_case(user_id=str(user_id), title=None, description='Initial case created at signup', metadata=case_metadata)
                 case_id = None
                 if isinstance(created_case, list) and len(created_case) > 0:
                     case_id = created_case[0].get('id')
@@ -5915,8 +5992,14 @@ async def user_register(payload: Dict[str, Any] = Body(...)):
                 raise HTTPException(status_code=500, detail=f'profile_creation_failed: {str(e)}')
             # Create an initial case for this user to track the signup/eligibility flow
             try:
-                case_metadata = {'initial_eligibility': eligibility_payload}
-                created_case = create_case(user_id=str(user_id), title=None, description='Initial case created at signup', metadata=case_metadata)
+                # Check if user already has a case first
+                existing_cases = list_cases_for_user(str(user_id))
+                if existing_cases and len(existing_cases) > 0:
+                    logger.info(f"User {user_id} already has case, skipping creation")
+                    created_case = existing_cases
+                else:
+                    case_metadata = {'initial_eligibility': eligibility_payload}
+                    created_case = create_case(user_id=str(user_id), title=None, description='Initial case created at signup', metadata=case_metadata)
                 # If the insert_user_eligibility function exists, link the eligibility audit to the created case
                 case_id = None
                 if isinstance(created_case, list) and len(created_case) > 0:
@@ -6166,16 +6249,23 @@ async def signup_with_case(payload: Dict[str, Any] = Body(...)):
         logger.exception(f'insert_user_profile failed: {e}')
         raise HTTPException(status_code=400, detail=f'profile_creation_failed: {str(e)}')
 
-    # Create initial case
+    # Create initial case ONLY if user doesn't already have one
     case_id = None
     try:
-        case_metadata = {}
-        created_case = create_case(
-            user_id=str(user_id),
-            title=None,
-            description='Initial case created at signup',
-            metadata=case_metadata
-        )
+        # Check if user already has a case
+        existing_cases = list_cases_for_user(str(user_id))
+        if existing_cases and len(existing_cases) > 0:
+            case_id = existing_cases[0].get('id')
+            logger.info(f"User {user_id} already has case {case_id}, skipping creation")
+            created_case = existing_cases
+        else:
+            case_metadata = {}
+            created_case = create_case(
+                user_id=str(user_id),
+                title=None,
+                description='Initial case created at signup',
+                metadata=case_metadata
+            )
         
         # Extract case_id from response (can be list or dict)
         if isinstance(created_case, list) and len(created_case) > 0:
@@ -6218,6 +6308,212 @@ async def signup_with_case(payload: Dict[str, Any] = Body(...)):
 
     logger.info(f"Signup-with-case completed for {email}: user_id={user_id}, case_id={case_id}")
     return JSONResponse(response_data)
+
+
+@app.post('/auth/send-phone-otp')
+async def send_otp_endpoint(payload: Dict[str, Any] = Body(...)):
+    """
+    Send OTP to phone number via Supabase Auth.
+    Payload: {phone: str}
+    Returns: {success: bool, message: str}
+    """
+    phone = payload.get('phone')
+    
+    if not phone:
+        raise HTTPException(status_code=400, detail='missing_phone')
+    
+    try:
+        result = send_phone_otp(phone)
+        if result['success']:
+            return JSONResponse(result)
+        else:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Failed to send OTP'))
+    except Exception as e:
+        logger.exception(f"Error sending OTP: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/auth/verify-phone-otp')
+async def verify_otp_endpoint(payload: Dict[str, Any] = Body(...)):
+    """
+    Verify OTP for phone number via Supabase Auth.
+    Payload: {phone: str, otp: str}
+    Returns: {success: bool, user: dict, session: dict}
+    """
+    phone = payload.get('phone')
+    otp = payload.get('otp')
+    
+    if not phone or not otp:
+        raise HTTPException(status_code=400, detail='missing_phone_or_otp')
+    
+    try:
+        result = verify_phone_otp(phone, otp)
+        if result['success']:
+            return JSONResponse(result)
+        else:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Invalid OTP'))
+    except Exception as e:
+        logger.exception(f"Error verifying OTP: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/auth/phone-login')
+async def phone_login(
+    payload: Dict[str, Any] = Body(...),
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Phone OTP authentication endpoint.
+    Verifies Supabase JWT token and creates/logs in user based on phone number.
+    
+    Expects Authorization header with Supabase JWT token.
+    Payload: {phone: str, supabase_user_id: str}
+    
+    Returns: {user_id: str, case_id: str, is_existing_user: bool}
+    """
+    phone = payload.get('phone')
+    supabase_user_id = payload.get('supabase_user_id')
+    
+    if not phone or not supabase_user_id:
+        raise HTTPException(status_code=400, detail='missing_phone_or_user_id')
+    
+    # Extract token from Authorization header
+    if not authorization or not authorization.startswith('Bearer '):
+        raise HTTPException(status_code=401, detail='missing_or_invalid_token')
+    
+    access_token = authorization.replace('Bearer ', '')
+    
+    try:
+        # Verify the Supabase JWT token
+        user_data = get_user_from_token(access_token)
+        if not user_data or user_data.get('id') != supabase_user_id:
+            raise HTTPException(status_code=401, detail='invalid_token_or_user_mismatch')
+        
+        logger.info(f"Phone login attempt for {phone}, supabase_user_id={supabase_user_id}")
+        
+        # Check if user already exists in our database
+        # First try by supabase_user_id, then by phone
+        existing_profile = None
+        
+        # Try to find by supabase_user_id first
+        try:
+            profile_result = get_profile_by_user_id(supabase_user_id)
+            # Handle both list and dict returns
+            if isinstance(profile_result, list) and len(profile_result) > 0:
+                existing_profile = profile_result[0]
+            elif isinstance(profile_result, dict):
+                existing_profile = profile_result
+        except:
+            pass
+        
+        # If not found, try to find by phone
+        if not existing_profile:
+            try:
+                # Query profiles by phone (custom query needed)
+                if _has_supabase_py and _supabase_admin:
+                    result = _supabase_admin.table('profiles').select('*').eq('phone', phone).execute()
+                    if result.data and len(result.data) > 0:
+                        existing_profile = result.data[0]
+                        # Update profile with supabase_user_id
+                        _supabase_admin.table('profiles').update({
+                            'user_id': supabase_user_id
+                        }).eq('id', existing_profile['id']).execute()
+            except:
+                pass
+        
+        # Existing user - return their data
+        if existing_profile:
+            user_id = existing_profile.get('user_id') or supabase_user_id
+            
+            # Get user's cases and case status
+            case_id = None
+            case_status = None
+            try:
+                cases = list_cases_for_user(user_id)
+                if cases and len(cases) > 0:
+                    case_id = cases[0].get('id')
+                    case_status = cases[0].get('status')
+            except:
+                pass
+            
+            logger.info(f"Existing user logged in: user_id={user_id}, case_id={case_id}, status={case_status}")
+            
+            return JSONResponse({
+                'user_id': user_id,
+                'case_id': case_id or '',
+                'case_status': case_status,
+                'is_existing_user': True,
+                'message': 'User logged in successfully'
+            })
+        
+        # New user - create profile and case
+        logger.info(f"Creating new user for phone {phone}")
+        
+        # Create user profile
+        try:
+            profile_res = insert_user_profile(
+                user_id=supabase_user_id,
+                name=phone,  # Default name to phone number
+                email='',
+                phone=phone,
+                identity_code='',
+                otp=None,
+                otp_expires_at=None,
+                eligibility=None,
+                verified=True  # Phone verified via Supabase OTP
+            )
+            logger.info(f"Created profile for new user {supabase_user_id}")
+        except Exception as e:
+            logger.exception(f'insert_user_profile failed: {e}')
+            raise HTTPException(status_code=400, detail=f'profile_creation_failed: {str(e)}')
+        
+        # Create initial case ONLY if user doesn't already have one
+        case_id = None
+        try:
+            # Check if user already has a case
+            existing_cases = list_cases_for_user(supabase_user_id)
+            if existing_cases and len(existing_cases) > 0:
+                case_id = existing_cases[0].get('id')
+                logger.info(f"User {supabase_user_id} already has case {case_id}, skipping creation")
+            else:
+                created_case = create_case(
+                    user_id=supabase_user_id,
+                    title=None,
+                    description='Initial case created via phone signup',
+                    metadata={'status': 'Initial questionnaire'}  # Set initial status
+                )
+            
+            if isinstance(created_case, list) and len(created_case) > 0:
+                case_id = created_case[0].get('id')
+                # Update case status explicitly
+                try:
+                    update_case(case_id, {'status': 'Initial questionnaire'})
+                except:
+                    pass
+            elif isinstance(created_case, dict):
+                case_id = created_case.get('id')
+                try:
+                    update_case(case_id, {'status': 'Initial questionnaire'})
+                except:
+                    pass
+            
+            logger.info(f"Created case {case_id} for new user {supabase_user_id} with status 'Initial questionnaire'")
+        except Exception as e:
+            logger.exception('Failed to create case (non-fatal)')
+        
+        return JSONResponse({
+            'user_id': supabase_user_id,
+            'case_id': case_id or '',
+            'case_status': 'Initial questionnaire',
+            'is_existing_user': False,
+            'message': 'New user created successfully'
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'Phone login failed: {e}')
+        raise HTTPException(status_code=500, detail=f'phone_login_failed: {str(e)}')
 
 
 @app.post('/user/logout')
@@ -8032,15 +8328,16 @@ Rules:
 - Do not repeat questions
 """
 
-# Get OpenAI API key from environment
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
 @app.post("/offer")
 async def offer(request: Request):
     try:
+        # Get OpenAI API key from database with fallback to environment
+        from .secrets_utils import get_openai_api_key
+        OPENAI_API_KEY = get_openai_api_key()
+        
         # Check if OpenAI API key is configured
         if not OPENAI_API_KEY:
-            print("❌ OPENAI_API_KEY is not configured in environment variables")
+            print("❌ OPENAI_API_KEY is not configured in database or environment variables")
             raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
         
         # Get user from token if available (optional - the endpoint works without auth too)

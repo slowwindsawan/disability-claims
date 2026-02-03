@@ -39,6 +39,7 @@ import {
   Download,
   Trash2,
   ChevronDown,
+  Key,
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -158,9 +159,19 @@ export default function AdminDashboard() {
   const [expandedDocuments, setExpandedDocuments] = useState<Record<string, boolean>>({})
   const [documentSummaries, setDocumentSummaries] = useState<Record<string, any>>({})
   const [loadingSummary, setLoadingSummary] = useState<Record<string, boolean>>({})
+  
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1)
+  const [itemsPerPage, setItemsPerPage] = useState(8)
 
-  // Use live cases from backend (replaces mockClients)
-  const { cases: adminCases, loading: casesLoading, error: casesError, total: casesTotal, refetch: refetchCases } = useAdminCases();
+  // Use live cases from backend with pagination (replaces mockClients)
+  const { cases: adminCases, loading: casesLoading, error: casesError, total: casesTotal, refetch: refetchCases, updateFilters } = useAdminCases({
+    limit: itemsPerPage,
+    offset: (currentPage - 1) * itemsPerPage
+  });
+  
+  // Calculate total pages
+  const totalPages = casesTotal === 0 ? 1 : Math.ceil(casesTotal / itemsPerPage)
 
   const mapStatus = (s?: string): ClientStatus => {
     // Use the actual status from the database, return as-is
@@ -282,7 +293,7 @@ export default function AdminDashboard() {
       try {
         const token = localStorage.getItem('access_token')
         if (!token) {
-          router.push('/')
+          router.push('/admin/login')
           return
         }
 
@@ -300,11 +311,11 @@ export default function AdminDashboard() {
         if (role === 'admin' || role === 'subadmin') {
           setIsAuthorized(true)
         } else {
-          router.push('/')
+          router.push('/admin/login')
         }
       } catch (error) {
         console.error('Authorization check failed:', error)
-        router.push('/')
+        router.push('/admin/login')
       } finally {
         setIsLoading(false)
       }
@@ -312,6 +323,16 @@ export default function AdminDashboard() {
 
     checkAuthorization()
   }, [router])
+  
+  // Update filters when pagination changes
+  useEffect(() => {
+    if (updateFilters) {
+      updateFilters({
+        limit: itemsPerPage,
+        offset: (currentPage - 1) * itemsPerPage
+      })
+    }
+  }, [currentPage, itemsPerPage, updateFilters])
 
   // Fetch requested documents when a case is selected
   useEffect(() => {
@@ -422,7 +443,7 @@ export default function AdminDashboard() {
       console.error('Logout error:', error)
     } finally {
       localStorage.removeItem('access_token')
-      router.push('/')
+      router.push('/admin/login')
     }
   }
 
@@ -837,6 +858,12 @@ export default function AdminDashboard() {
                   AI Prompts
                 </Button>
               </Link>
+              <Link href="/admin/secrets">
+                <Button variant="ghost" className="w-full justify-start text-slate-300 hover:bg-slate-800">
+                  <Key className={`w-5 h-5 ${language === "he" ? "ml-3" : "mr-3"}`} />
+                  Secrets
+                </Button>
+              </Link>
               {/* Settings hidden for now */}
               {/* <Link href="/admin/settings">
                 <Button variant="ghost" className="w-full justify-start text-slate-300 hover:bg-slate-800">
@@ -1000,7 +1027,15 @@ export default function AdminDashboard() {
 
               {/* Claims Management Table */}
               <Card className="bg-white shadow-md overflow-hidden">
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto relative">
+                  {casesLoading && (
+                    <div className="absolute inset-0 bg-white/50 backdrop-blur-sm flex items-center justify-center z-10 rounded">
+                      <div className="flex flex-col items-center gap-2">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                        <p className="text-sm text-slate-600 font-medium">טוען תיקים...</p>
+                      </div>
+                    </div>
+                  )}
                   <table className="w-full">
                     <thead className="bg-slate-100 border-b border-slate-200">
                       <tr>
@@ -1158,6 +1193,71 @@ export default function AdminDashboard() {
                       )}
                     </tbody>
                   </table>
+                </div>
+                
+                {/* Pagination Controls */}
+                <div className="border-t border-slate-200 px-6 py-4 flex items-center justify-between bg-slate-50">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-slate-600">תוצאות לעמוד:</span>
+                    <select
+                      value={itemsPerPage}
+                      onChange={(e) => {
+                        setItemsPerPage(Number(e.target.value))
+                        setCurrentPage(1) // Reset to first page when changing items per page
+                      }}
+                      className="border border-slate-300 rounded px-2 py-1 text-sm"
+                      disabled={casesLoading}
+                    >
+                      <option value={8}>8</option>
+                      <option value={16}>16</option>
+                      <option value={24}>24</option>
+                      <option value={50}>50</option>
+                    </select>
+                  </div>
+                  
+                  <div className="flex items-center gap-4">
+                    <span className="text-sm text-slate-600">
+                      מציג {casesTotal === 0 ? 0 : Math.min((currentPage - 1) * itemsPerPage + 1, casesTotal)} - {Math.min(currentPage * itemsPerPage, casesTotal)} מתוך {casesTotal}
+                    </span>
+                    
+                    <div className="flex gap-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(1)}
+                        disabled={currentPage === 1 || casesLoading}
+                      >
+                        ראשון
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                        disabled={currentPage === 1 || casesLoading}
+                      >
+                        הקודם
+                      </Button>
+                      <span className="px-3 py-1 text-sm font-medium text-slate-700">
+                        עמוד {currentPage} מתוך {totalPages}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(p => p + 1)}
+                        disabled={currentPage >= totalPages || casesLoading}
+                      >
+                        הבא
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(totalPages)}
+                        disabled={currentPage >= totalPages || casesLoading}
+                      >
+                        אחרון
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               </Card>
             </>

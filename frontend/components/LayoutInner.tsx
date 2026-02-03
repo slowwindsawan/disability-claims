@@ -5,7 +5,7 @@ import { Analytics } from "@vercel/analytics/next"
 import { LanguageProvider, useLanguage } from "@/lib/language-context"
 import { UserProvider } from "@/lib/user-context"
 import { Heebo } from "next/font/google" // Assuming Heebo font is still needed here
-import AccountControls from "@/components/account-controls"
+import { useTokenExpirationHandler } from "@/components/account-controls"
 import { Toaster } from "@/components/ui/toaster"
 import CompleteDetailsNotice from '@/components/complete-details-notice'
 import { useEffect, useState } from "react"
@@ -17,6 +17,9 @@ function LayoutInnerComponent({ children }: { children: React.ReactNode }) {
   const { language } = useLanguage()
   const isRTL = language === "he"
   const [isMounted, setIsMounted] = useState(false)
+  
+  // Setup global token expiration handler
+  useTokenExpirationHandler()
 
   useEffect(() => {
     setIsMounted(true)
@@ -32,7 +35,6 @@ function LayoutInnerComponent({ children }: { children: React.ReactNode }) {
       <body className={`${heebo.className} font-sans antialiased`}>
         {children}
         <CompleteDetailsNotice />
-        <AccountControls />
         <Toaster />
         <Analytics />
       </body>

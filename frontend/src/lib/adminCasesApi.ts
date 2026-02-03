@@ -36,7 +36,7 @@ const BACKEND_URL = BACKEND_BASE_URL;
  * Fetch claims table data directly from backend
  * Gets all non-admin, non-subadmin users with their cases and eligibility scores
  */
-export async function fetchAdminClaimsTable(limit: number = 200, offset: number = 0): Promise<ClaimsTableRow[]> {
+export async function fetchAdminClaimsTable(limit: number = 200, offset: number = 0): Promise<{ rows: ClaimsTableRow[]; total: number }> {
   try {
     const url = `${BACKEND_URL}/admin/users/cases?limit=${limit}&offset=${offset}`;
     
@@ -90,7 +90,7 @@ export async function fetchAdminClaimsTable(limit: number = 200, offset: number 
       updated_at: caseData.updated_at,
     }));
     
-    return rows;
+    return { rows, total: data.total || 0 };
   } catch (error) {
     console.error('Error fetching claims table:', error);
     throw error;
@@ -123,10 +123,10 @@ export function transformClaimsRowsToCaseData(rows: ClaimsTableRow[]): CaseData[
 /**
  * Fetch and transform claims data in one call
  */
-export async function fetchAdminCases(limit: number = 200, offset: number = 0): Promise<{ cases: CaseData[]; total: number }> {
-  const rows = await fetchAdminClaimsTable(limit, offset);
+export async function fetchAdminCases(limit: number = 8, offset: number = 0): Promise<{ cases: CaseData[]; total: number }> {
+  const { rows, total } = await fetchAdminClaimsTable(limit, offset);
   const cases = transformClaimsRowsToCaseData(rows);
-  return { cases, total: rows.length };
+  return { cases, total };
 }
 
 export async function fetchCaseDetail(caseId: string): Promise<CaseData> {

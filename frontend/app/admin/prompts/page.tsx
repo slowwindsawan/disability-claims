@@ -80,7 +80,7 @@ export default function AdminPromptsPage() {
       try {
         const token = localStorage.getItem('access_token')
         if (!token) {
-          router.push('/')
+          router.push('/admin/login')
           return
         }
 
@@ -90,7 +90,7 @@ export default function AdminPromptsPage() {
         const meData = await meResp.json()
 
         if (!meData.user) {
-          router.push('/')
+          router.push('/admin/login')
           return
         }
 
@@ -109,7 +109,7 @@ export default function AdminPromptsPage() {
         fetchAgents()
       } catch (err) {
         console.error('Authorization check failed:', err)
-        router.push('/')
+        router.push('/admin/login')
       }
     }
 
@@ -191,7 +191,7 @@ export default function AdminPromptsPage() {
 
   const handleLogout = () => {
     localStorage.removeItem('access_token')
-    router.push('/')
+    router.push('/admin/login')
   }
 
   if (!isAuthorized) {
