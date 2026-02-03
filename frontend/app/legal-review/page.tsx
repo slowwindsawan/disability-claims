@@ -748,7 +748,8 @@ export default function LegalReviewPage() {
           dob: formatDateToDDMMYYYY(dob),
           gender: form7801.gender || '',
           email: form7801.email || '',
-          phoneNumber: caseData.phone || form7801.phoneNumber || '',
+          // Priority: 1. Authenticated phone from user_profile, 2. Case phone, 3. Previous form data
+          phoneNumber: caseData.user_profile?.phone || caseData.phone || form7801.phoneNumber || '',
           otherPhoneNumber: form7801.otherPhoneNumber || '',
           maritalStatus: form7801.maritalStatus || '',
           submitFor: form7801.submitFor || '',

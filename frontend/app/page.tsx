@@ -1311,6 +1311,8 @@ export default function Home() {
                   exit={{ opacity: 0, x: -20 }}
                   transition={{ duration: 0.3 }}
                   className="text-center"
+                  dir="ltr"
+                  style={{ direction: 'ltr' }}
                 >
                   <h2 className="text-2xl font-bold text-slate-900 mb-2" style={{ direction: isRTL ? "rtl" : "ltr" }}>
                     {isRTL ? "הזן קוד אימות" : "Enter Verification Code"}
@@ -1341,6 +1343,7 @@ export default function Home() {
                         disabled={signupLoading}
                         autoFocus={index === 0}
                         dir="ltr"
+                        style={{ direction: 'ltr', unicodeBidi: 'bidi-override' }}
                       />
                     ))}
                   </div>
@@ -1884,7 +1887,7 @@ export default function Home() {
 
                 {otpState === "code" ? (
                   // OTP Entry Form
-                  <div className="space-y-4">
+                  <div className="space-y-4" dir="ltr" style={{ direction: 'ltr' }}>
                     <div className="flex justify-center gap-2" dir="ltr" style={{ direction: 'ltr' }}>
                       {otpCode.map((digit, index) => (
                         <input
@@ -1899,6 +1902,7 @@ export default function Home() {
                           className="w-12 h-12 text-center text-2xl font-bold border-2 border-slate-300 rounded-lg focus:border-blue-600 focus:outline-none"
                           autoFocus={index === 0}
                           dir="ltr"
+                          style={{ direction: 'ltr', unicodeBidi: 'bidi-override' }}
                         />
                       ))}
                     </div>
