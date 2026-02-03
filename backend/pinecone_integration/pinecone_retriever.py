@@ -42,9 +42,13 @@ class PineconeRetriever:
         self.index = None
         
         # Initialize OpenAI client for embeddings
-        openai_api_key = os.environ.get("OPENAI_API_KEY")
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from app.secrets_utils import get_openai_api_key
+        openai_api_key = get_openai_api_key()
         if not openai_api_key:
-            raise ValueError("OPENAI_API_KEY not set in environment")
+            raise ValueError("OPENAI_API_KEY not set in database or environment")
         self.openai_client = OpenAI(api_key=openai_api_key)
     
     def connect(self):

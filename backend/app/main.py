@@ -3446,9 +3446,11 @@ async def _execute_vapi_call_analysis(
     logger.info(f"[VAPI]   - call_dict has 'analysis': {'analysis' in call_dict}")
     
     # Check OPENAI_API_KEY
-    if not os.getenv("OPENAI_API_KEY"):
+    from .secrets_utils import get_openai_api_key as _get_openai_key
+    _openai_key = _get_openai_key()
+    if not _openai_key:
         logger.error(f"[VAPI] ❌ OPENAI_API_KEY is not set!")
-        raise ValueError("OPENAI_API_KEY not configured")
+        raise ValueError("OPENAI_API_KEY not configured in database or environment")
     else:
         logger.info(f"[VAPI] ✅ OPENAI_API_KEY is configured")
     
@@ -6352,9 +6354,12 @@ async def verify_otp_endpoint(payload: Dict[str, Any] = Body(...)):
             return JSONResponse(result)
         else:
             raise HTTPException(status_code=400, detail=result.get('message', 'Invalid OTP'))
+    except HTTPException:
+        # Re-raise HTTPException as-is
+        raise
     except Exception as e:
         logger.exception(f"Error verifying OTP: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post('/auth/phone-login')
@@ -6392,34 +6397,43 @@ async def phone_login(
         logger.info(f"Phone login attempt for {phone}, supabase_user_id={supabase_user_id}")
         
         # Check if user already exists in our database
-        # First try by supabase_user_id, then by phone
+        # IMPORTANT: Check by phone FIRST since phone is unique and user_id changes with each Supabase signup
         existing_profile = None
         
-        # Try to find by supabase_user_id first
+        # Try to find by phone number first (most reliable identifier)
         try:
-            profile_result = get_profile_by_user_id(supabase_user_id)
-            # Handle both list and dict returns
-            if isinstance(profile_result, list) and len(profile_result) > 0:
-                existing_profile = profile_result[0]
-            elif isinstance(profile_result, dict):
-                existing_profile = profile_result
-        except:
-            pass
+            from app.supabase_client import get_profile_by_phone
+            phone_profiles = get_profile_by_phone(phone)
+            if phone_profiles and len(phone_profiles) > 0:
+                existing_profile = phone_profiles[0]
+                old_user_id = existing_profile.get('user_id')
+                logger.info(f"Found existing profile by phone {phone}, old_user_id={old_user_id}, new_user_id={supabase_user_id}")
+                
+                # If the user_id changed (Supabase generated a new one), update it
+                if old_user_id != supabase_user_id:
+                    logger.info(f"Updating user_id from {old_user_id} to {supabase_user_id}")
+                    try:
+                        from app.supabase_client import delete_user_profile
+                        # Delete the old profile
+                        delete_user_profile(old_user_id)
+                        logger.info(f"Deleted old profile with user_id={old_user_id}")
+                        # Mark as not existing so we create a new one with correct user_id
+                        existing_profile = None
+                    except Exception as e:
+                        logger.warning(f"Could not delete old profile: {e}")
+        except Exception as e:
+            logger.warning(f"Could not fetch profile by phone: {e}")
         
-        # If not found, try to find by phone
+        # If not found by phone, try by supabase_user_id
         if not existing_profile:
             try:
-                # Query profiles by phone (custom query needed)
-                if _has_supabase_py and _supabase_admin:
-                    result = _supabase_admin.table('profiles').select('*').eq('phone', phone).execute()
-                    if result.data and len(result.data) > 0:
-                        existing_profile = result.data[0]
-                        # Update profile with supabase_user_id
-                        _supabase_admin.table('profiles').update({
-                            'user_id': supabase_user_id
-                        }).eq('id', existing_profile['id']).execute()
-            except:
-                pass
+                profile_result = get_profile_by_user_id(supabase_user_id)
+                if isinstance(profile_result, list) and len(profile_result) > 0:
+                    existing_profile = profile_result[0]
+                elif isinstance(profile_result, dict):
+                    existing_profile = profile_result
+            except Exception as e:
+                logger.warning(f"Could not fetch profile by user_id: {e}")
         
         # Existing user - return their data
         if existing_profile:
@@ -6454,7 +6468,7 @@ async def phone_login(
             profile_res = insert_user_profile(
                 user_id=supabase_user_id,
                 name=phone,  # Default name to phone number
-                email='',
+                email=None,
                 phone=phone,
                 identity_code='',
                 otp=None,
@@ -6518,7 +6532,11 @@ async def phone_login(
 
 @app.post('/user/logout')
 async def user_logout(token: Dict[str, Any] = Body(...), response: Response = None):
-    """Logout by revoking the provided access token. Expects {access_token}"""
+    """Logout by revoking the provided access token. Expects {access_token}
+    
+    Returns success even if the token is already expired/invalid, since the
+    user is effectively logged out regardless. Only fails on connection errors.
+    """
     access_token = token.get('access_token')
     if not access_token:
         raise HTTPException(status_code=400, detail='missing_access_token')

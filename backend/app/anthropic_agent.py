@@ -82,9 +82,10 @@ async def run_document_analysis_agent(
         Structured analysis result from the agent
     """
     try:
-        api_key = os.environ.get("OPENAI_API_KEY")
+        from .secrets_utils import get_openai_api_key
+        api_key = get_openai_api_key()
         if not api_key:
-            raise ValueError("OPENAI_API_KEY not set")
+            raise ValueError("OPENAI_API_KEY not set in database or environment")
         
         logger.info(f"🔵 Starting OpenAI agent analysis for case {case_id}")
         

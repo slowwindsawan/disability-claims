@@ -1326,7 +1326,7 @@ export default function Home() {
                     </div>
                   )}
 
-                  <div className="flex justify-center gap-3 mb-8" dir="ltr">
+                  <div className="flex justify-center gap-3 mb-8" dir="ltr" style={{ direction: 'ltr' }}>
                     {otpCode.map((digit, index) => (
                       <Input
                         key={index}
@@ -1340,6 +1340,7 @@ export default function Home() {
                         className="w-14 h-14 text-center text-2xl font-bold"
                         disabled={signupLoading}
                         autoFocus={index === 0}
+                        dir="ltr"
                       />
                     ))}
                   </div>
@@ -1884,7 +1885,7 @@ export default function Home() {
                 {otpState === "code" ? (
                   // OTP Entry Form
                   <div className="space-y-4">
-                    <div className="flex justify-center gap-2">
+                    <div className="flex justify-center gap-2" dir="ltr" style={{ direction: 'ltr' }}>
                       {otpCode.map((digit, index) => (
                         <input
                           key={index}
@@ -1897,6 +1898,7 @@ export default function Home() {
                           onKeyDown={(e) => handleOtpKeyDown(index, e)}
                           className="w-12 h-12 text-center text-2xl font-bold border-2 border-slate-300 rounded-lg focus:border-blue-600 focus:outline-none"
                           autoFocus={index === 0}
+                          dir="ltr"
                         />
                       ))}
                     </div>

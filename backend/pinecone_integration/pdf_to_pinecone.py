@@ -17,9 +17,15 @@ from openai import OpenAI
 
 load_dotenv()
 
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_HOST = "adhd-v2-vv6re86.svc.aped-4627-b74a.pinecone.io"
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from app.secrets_utils import get_openai_api_key
+
+PINCONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINCONE_INDEX_HOST = "adhd-v2-vv6re86.svc.aped-4627-b74a.pinecone.io"
+OPENAI_API_KEY = get_openai_api_key()
 
 PDF_DIRECTORY = Path(__file__).parent / "documents"
 STATE_FILE = Path(__file__).parent / "ingestion_state.json"

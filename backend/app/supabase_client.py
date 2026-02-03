@@ -1,5 +1,6 @@
 import os
 import requests
+from requests.exceptions import HTTPError
 import logging
 from datetime import datetime, timedelta
 import json
@@ -363,7 +364,11 @@ def get_user_from_token(access_token: str) -> dict:
 
 
 def logout_token(access_token: str) -> dict:
-    """Revoke a session token using Supabase auth logout endpoint."""
+    """Revoke a session token using Supabase auth logout endpoint.
+    
+    Returns {'status': 'ok'} on successful logout or if token is already invalid.
+    Only raises exceptions for actual server/connection errors.
+    """
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         raise RuntimeError('Supabase config missing')
     url = f"{SUPABASE_URL.rstrip('/')}/auth/v1/logout"
@@ -371,11 +376,27 @@ def logout_token(access_token: str) -> dict:
     try:
         resp = requests.post(url, headers=headers, timeout=10)
         logger.debug(f"Logout response status={resp.status_code} text={resp.text}")
+        
+        # 200-299: success
+        if 200 <= resp.status_code < 300:
+            return {'status': 'ok'}
+        
+        # 401/403: token already invalid/expired - treat as successful logout
+        # (user is already logged out if token is invalid)
+        if resp.status_code in (401, 403):
+            logger.info(f"Token already invalid/expired (status {resp.status_code}), treating logout as successful")
+            return {'status': 'ok'}
+        
+        # Other 4xx/5xx errors should fail
         resp.raise_for_status()
         return {'status': 'ok'}
-    except Exception:
-        logger.exception('Failed to logout')
-        raise
+    except requests.exceptions.RequestException as e:
+        # Network errors or actual HTTP errors should still be logged
+        logger.error(f"Failed to logout: {e}")
+        # Don't re-raise - allow logout to succeed even if the revocation fails
+        # (the token will expire naturally)
+        logger.info("Returning success for logout despite revocation error (token will expire naturally)")
+        return {'status': 'ok'}
 
 
 def refresh_session(refresh_token: str) -> dict:
@@ -616,6 +637,10 @@ def insert_user_profile(user_id: str, name: str, email: str, phone: str, identit
         raise RuntimeError('Supabase config missing')
 
     url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile"
+    # If email is empty string, convert to None to avoid unique constraint violation on empty strings
+    if not email:
+        email = None
+
     body = {
         'user_id': user_id,
         'full_name': name,
@@ -643,6 +668,70 @@ def insert_user_profile(user_id: str, name: str, email: str, phone: str, identit
         logger.debug(f"Inserting user_profile: url={url} body={body}")
         resp = requests.post(url, headers=_postgrest_headers(), json=body, timeout=15)
         logger.debug(f"Supabase response status={resp.status_code} text={resp.text}")
+        
+        # Handle 409 Conflict - phone or user_id already exists
+        if resp.status_code == 409:
+            logger.warning(f"Profile conflict for user_id={user_id}, phone={phone}. Response: {resp.text}")
+            try:
+                import time
+                # First, try to find profile by phone (most likely conflict)
+                existing_profiles = []
+                try:
+                    existing_profiles = get_profile_by_phone(phone)
+                    if existing_profiles:
+                        logger.info(f"Found {len(existing_profiles)} existing profile(s) with phone {phone}: {existing_profiles}")
+                    else:
+                        logger.warning(f"No profiles found with phone {phone}")
+                except Exception as e:
+                    logger.warning(f"Could not fetch profile by phone: {e}")
+                
+                # Also check by user_id
+                try:
+                    user_profiles = get_profile_by_user_id(user_id)
+                    if user_profiles:
+                        logger.info(f"Found {len(user_profiles)} existing profile(s) with user_id {user_id}: {user_profiles}")
+                        # Avoid duplicates
+                        for up in user_profiles:
+                            if up not in existing_profiles:
+                                existing_profiles.append(up)
+                    else:
+                        logger.warning(f"No profiles found with user_id {user_id}")
+                except Exception as e:
+                    logger.warning(f"Could not fetch profile by user_id: {e}")
+                
+                if not existing_profiles:
+                    logger.error(f"409 conflict but no profiles found by phone or user_id. Conflict response: {resp.text}")
+                    raise requests.exceptions.HTTPError(f"Profile conflict but cannot find conflicting record. Response: {resp.text}")
+                
+                # Delete all conflicting profiles
+                deleted_count = 0
+                for profile in existing_profiles:
+                    try:
+                        profile_user_id = profile.get('user_id')
+                        if profile_user_id:
+                            logger.info(f"Attempting to delete profile: {profile}")
+                            delete_user_profile(profile_user_id)
+                            deleted_count += 1
+                            logger.info(f"Deleted conflicting profile for user_id={profile_user_id}")
+                    except Exception as e:
+                        logger.error(f"Could not delete profile {profile.get('user_id')}: {e}")
+                
+                logger.info(f"Deleted {deleted_count} conflicting profile(s), waiting 1 second before retry")
+                time.sleep(1)  # Wait for deletion to propagate
+                
+                # Retry the insert after deletion
+                resp = requests.post(url, headers=_postgrest_headers(), json=body, timeout=15)
+                logger.debug(f"Retry insert response status={resp.status_code} text={resp.text}")
+                resp.raise_for_status()
+                logger.info(f"Successfully created new profile for user_id={user_id}")
+                try:
+                    return resp.json()
+                except Exception:
+                    return {'status_text': resp.text}
+            except Exception as e:
+                logger.exception(f"Failed to delete and recreate profile: {e}")
+                raise
+        
         resp.raise_for_status()
         logger.info(f"Inserted profile for user_id={user_id}")
         try:
@@ -663,6 +752,19 @@ def get_profile_by_email(email: str) -> list:
         return resp.json()
     except Exception:
         logger.exception('Failed to fetch profile by email')
+        raise
+
+
+def get_profile_by_phone(phone: str) -> list:
+    """Fetch user_profile rows matching a given phone number."""
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile"
+    params = {'phone': f'eq.{phone}'}
+    try:
+        resp = requests.get(url, headers=_postgrest_headers(), params=params, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        logger.exception('Failed to fetch profile by phone')
         raise
 
 
@@ -1335,15 +1437,17 @@ def delete_user_profile(user_id: str) -> dict:
         raise RuntimeError('Supabase config missing')
     url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?user_id=eq.{user_id}"
     try:
+        logger.info(f'Attempting to delete user profile for user_id={user_id} from {url}')
         resp = requests.delete(url, headers=_postgrest_headers(), timeout=15)
+        logger.info(f'Delete response: status={resp.status_code}, text={resp.text}')
         # 404 or 0 rows deleted is fine - just means user doesn't exist
         if resp.status_code in [200, 204, 404]:
             logger.info(f'User profile deleted for {user_id}')
-            return {'status': 'ok'}
+            return {'status': 'ok', 'status_code': resp.status_code}
         resp.raise_for_status()
-        return {'status': 'ok'}
-    except Exception:
-        logger.exception('Failed to delete user profile')
+        return {'status': 'ok', 'status_code': resp.status_code}
+    except Exception as e:
+        logger.exception(f'Failed to delete user profile {user_id}: {e}')
         raise
 
 
