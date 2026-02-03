@@ -280,6 +280,7 @@ async def run_workflow(workflow_input: WorkflowInput):
     model = agent_config.get('model', 'gpt-4o')
     
     logger.info(f"[AGENT] Using model from database: {model}")
+    # Note: OpenAI API key is already set in os.environ at application startup
     
     # Create agent with the configured model
     agent_instance = create_conversation_summary_agent(model)

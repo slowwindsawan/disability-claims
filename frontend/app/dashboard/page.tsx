@@ -1,5 +1,6 @@
 "use client";
 
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   FileText,
@@ -26,7 +27,6 @@ import {
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
-import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/lib/language-context";
 import ExtensionSyncWidget from "@/components/extension-sync-widget";
@@ -187,7 +187,28 @@ export default function DashboardPage() {
         }
 
         // Check if user has completed questionnaire but doesn't have call_summary - redirect to AI lawyer
-        if ((!callSummary || callSummary.trim() === '') && caseStatus !== 'Initial questionnaire') {
+        // Parse call_summary properly (it could be a JSON string or object)
+        let parsedCallSummary = null;
+        if (callSummary) {
+          if (typeof callSummary === "string") {
+            try {
+              parsedCallSummary = JSON.parse(callSummary);
+            } catch {
+              // If it's a non-empty string but not JSON, treat it as having content
+              if (callSummary.trim() !== '') {
+                parsedCallSummary = callSummary;
+              }
+            }
+          } else if (typeof callSummary === "object") {
+            parsedCallSummary = callSummary;
+          }
+        }
+        
+        // Only redirect if there's no valid call_summary content
+        const hasCallSummary = parsedCallSummary && 
+          (typeof parsedCallSummary === "string" || Object.keys(parsedCallSummary).length > 0);
+        
+        if (!hasCallSummary && caseStatus !== 'Initial questionnaire') {
           console.log('User completed questionnaire but has no call summary, redirecting to AI lawyer');
           router.push("/ai-lawyer");
           return;
@@ -618,47 +639,8 @@ export default function DashboardPage() {
               setRequiredDocuments(dbDocs);
             }
           } else {
-            // No cases found - user logged in but doesn't have a case yet
-            console.warn('⚠️ User has no cases. Creating a new case automatically...');
-            
-            // Create a new case for the user
-            try {
-              const token = localStorage.getItem('access_token');
-              if (token) {
-                const createCaseRes = await fetch(`${BACKEND_BASE_URL}/cases`, {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({
-                    title: 'תיק נכות חדש',
-                    description: 'תיק נוצר אוטומטית',
-                    metadata: { auto_created: true, created_from: 'dashboard' }
-                  }),
-                });
-                
-                if (createCaseRes.ok) {
-                  const newCaseData = await createCaseRes.json();
-                  const newCaseId = newCaseData?.case?.id;
-                  
-                  if (newCaseId) {
-                    localStorage.setItem('case_id', newCaseId);
-                    setUserCase(newCaseData.case);
-                    console.log('✅ Created new case:', newCaseId);
-                  }
-                } else {
-                  console.error('Failed to create case:', await createCaseRes.text());
-                }
-              }
-            } catch (createError) {
-              console.error('Error creating case:', createError);
-            }
-            
-            // Clear case_id from localStorage if creation failed
-            if (!localStorage.getItem('case_id')) {
-              localStorage.removeItem('case_id');
-            }
+            // No cases found - user needs to complete phone verification first
+            console.warn('⚠️ User has no cases. Case should be created after phone OTP verification.');
           }
         } catch (e: any) {
           console.error("failed to load case documents:", {
@@ -2048,15 +2030,15 @@ export default function DashboardPage() {
                           className="w-full bg-gradient-to-l from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-semibold"
                         >
                           {ocrAnalyzing ? (
-                            <>
+                            <React.Fragment key="analyzing">
                               <span className="inline-block w-5 h-5 border-2 border-white border-t-transparent rounded-full ml-2 animate-spin" />
                               מנתח מסמכים...
-                            </>
+                            </React.Fragment>
                           ) : (
-                            <>
+                            <React.Fragment key="ready">
                               <Sparkles className="w-5 h-5 ml-2" />
                               התחל ניתוח AI
-                            </>
+                            </React.Fragment>
                           )}
                         </Button>
                       </motion.div>

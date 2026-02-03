@@ -117,6 +117,26 @@ export default function LegalReviewPage() {
   const validateIdNumber = (id: string) => /^\d{9}$/.test(id)
   const validateDate = (date: string) => /^\d{2}\/\d{2}\/\d{4}$/.test(date)
   
+  // Helper to format phone number by removing +972 country code and limiting to 10 digits
+  const formatPhoneNumber = (phone: string): string => {
+    if (!phone) return ''
+    // Remove all non-digit characters except the leading +
+    let cleaned = phone.replace(/[^\d+]/g, '')
+    // Remove leading +972 and replace with 0
+    if (cleaned.startsWith('+972')) {
+      cleaned = '0' + cleaned.slice(4)
+    }
+    // Remove leading + if any
+    cleaned = cleaned.replace(/^\+/, '')
+    // Extract only digits for length check
+    const digitsOnly = cleaned.replace(/\D/g, '')
+    // If more than 10 digits, keep only the last 10
+    if (digitsOnly.length > 10) {
+      return digitsOnly.slice(-10)
+    }
+    return cleaned
+  }
+  
   // Helper to ensure date format is always DD/MM/YYYY
   const formatDateToDDMMYYYY = (date: string | undefined): string => {
     if (!date) return ''
@@ -477,7 +497,8 @@ export default function LegalReviewPage() {
     if (!validateDate(formData.dob)) errors.dob = "תאריך לידה חובה (DD/MM/YYYY)"
     if (!formData.maritalStatus) errors.maritalStatus = "מצב משפחתי חובה"
     if (!validatePhoneNumber(formData.phoneNumber)) errors.phoneNumber = "מספר טלפון חובה"
-    if (!validateEmail(formData.email)) errors.email = "כתובת אימייל לא תקינה"
+    if (!formData.email.trim()) errors.email = "כתובת אימייל חובה"
+    else if (!validateEmail(formData.email)) errors.email = "כתובת אימייל לא תקינה"
     
     // Bank Details - loaded from user_profile.payments, no form validation needed
     // If missing, user will see warning to fill payment details
@@ -604,7 +625,7 @@ export default function LegalReviewPage() {
     if (!formData.gender || !formData.firstName.trim() || !formData.lastName.trim() || 
         !validateIdNumber(formData.idNumber) || !validateDate(formData.dob) ||
         !formData.maritalStatus || !validatePhoneNumber(formData.phoneNumber) ||
-        !validateEmail(formData.email)) {
+        !formData.email.trim() || !validateEmail(formData.email)) {
       status.personal = false
     }
 
@@ -749,8 +770,9 @@ export default function LegalReviewPage() {
           gender: form7801.gender || '',
           email: form7801.email || '',
           // Priority: 1. Authenticated phone from user_profile, 2. Case phone, 3. Previous form data
-          phoneNumber: caseData.user_profile?.phone || caseData.phone || form7801.phoneNumber || '',
-          otherPhoneNumber: form7801.otherPhoneNumber || '',
+          // Format phone by removing +972 country code
+          phoneNumber: formatPhoneNumber(caseData.user_profile?.phone || caseData.phone || form7801.phoneNumber || ''),
+          otherPhoneNumber: formatPhoneNumber(form7801.otherPhoneNumber || ''),
           maritalStatus: form7801.maritalStatus || '',
           submitFor: form7801.submitFor || '',
           
@@ -1082,13 +1104,29 @@ export default function LegalReviewPage() {
                         <Input
                           value={formData.phoneNumber}
                           onChange={(e) => {
-                            const newValue = e.target.value
-                            setFormData({ ...formData, phoneNumber: newValue })
-                            // Validate on change
-                            if (newValue && !validateIsraeliPhone(newValue)) {
+                            // Get current digits count before formatting
+                            const currentDigits = formData.phoneNumber.replace(/\D/g, '').length
+                            const newInputDigits = e.target.value.replace(/\D/g, '').length
+                            
+                            // If already at 10 digits and trying to add more, ignore the change
+                            if (currentDigits >= 10 && newInputDigits > currentDigits) {
+                              return
+                            }
+                            
+                            // Auto-format by removing +972 country code and limiting to 10 digits
+                            let formatted = formatPhoneNumber(e.target.value)
+                            // Extract only digits to count them
+                            const digitsOnly = formatted.replace(/\D/g, '')
+                            // Limit to maximum 10 digits - truncate if pasted a longer number
+                            if (digitsOnly.length > 10) {
+                              formatted = digitsOnly.slice(-10)
+                            }
+                            setFormData({ ...formData, phoneNumber: formatted })
+                            // Validate on change - just check if not empty
+                            if (formatted && !validatePhoneNumber(formatted)) {
                               setPhoneErrors((prev) => ({
                                 ...prev,
-                                phoneNumber: "מספר טלפון חייב להיות בפורמט: 05XXXXXXXX (10 ספרות)"
+                                phoneNumber: "מספר טלפון חובה"
                               }))
                             } else {
                               setPhoneErrors((prev) => {
@@ -1106,9 +1144,13 @@ export default function LegalReviewPage() {
                           }}
                           onBlur={(e) => {
                             // Auto-format on blur
-                            const formatted = formatIsraeliPhone(e.target.value)
-                            if (formatted !== e.target.value) {
-                              setFormData({ ...formData, phoneNumber: formatted })
+                            const formatted = formatPhoneNumber(e.target.value)
+                            // Extract only digits
+                            const digitsOnly = formatted.replace(/\D/g, '')
+                            // Keep only last 10 digits if more were provided
+                            const truncated = digitsOnly.length > 10 ? digitsOnly.slice(-10) : formatted
+                            if (truncated !== e.target.value) {
+                              setFormData({ ...formData, phoneNumber: truncated })
                             }
                           }}
                           placeholder="050-1234567"
@@ -1119,13 +1161,12 @@ export default function LegalReviewPage() {
                       </div>
 
                       <div>
-                        <label className="text-sm font-medium text-slate-700 mb-2">כתובת דוא״ל</label>
+                        <label className="text-sm font-medium text-slate-700 mb-2">כתובת דוא״ל <span className="text-red-500">*</span></label>
                         <Input
                           value={formData.email}
-                          disabled
                           onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                           placeholder="email@example.com"
-                          className={`bg-slate-100 cursor-not-allowed ${getEmptyFieldClass(formData.email)} ${validationErrors.email ? "border-red-500" : ""}`}
+                          className={`${!sections.personal.isEditing ? "bg-slate-100" : ""} ${validationErrors.email ? "border-red-500" : ""}`}
                         />
                         {validationErrors.email && <p className="text-xs text-red-600 mt-1">{validationErrors.email}</p>}
                       </div>

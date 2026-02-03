@@ -3,6 +3,14 @@ import uuid
 import asyncio
 from dotenv import load_dotenv
 load_dotenv()
+
+# CRITICAL: Set OpenAI API key from database BEFORE importing any agents modules
+# The OpenAI Agents SDK reads the API key at import time, so we must set it early
+from .secrets_utils import get_openai_api_key
+_openai_key = get_openai_api_key()
+if _openai_key:
+    os.environ['OPENAI_API_KEY'] = _openai_key
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response, Request, Depends, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -67,10 +75,8 @@ from .openai_form7801_agent import analyze_documents_with_openai_agent
 from .job_queue import get_job_queue, JobStatus
 from aiohttp import web
 from openai import OpenAI
-from .secrets_utils import get_openai_api_key
 
-# Initialize OpenAI client with key from database
-_openai_key = get_openai_api_key()
+# Initialize OpenAI client with key from database (already set above)
 client = OpenAI(api_key=_openai_key) if _openai_key else None
 
 app = FastAPI(title="Eligibility Orchestrator")
@@ -5136,37 +5142,19 @@ async def eligibility_submit(
         logger.exception("Failed to score eligibility")
         raise HTTPException(status_code=500, detail='Eligibility scoring failed')
     
-    # Create case for the user (only if user_id is provided)
+    # Case creation removed - cases are now only created during phone OTP verification
+    case_id = None
     if user_id:
+        # Try to get existing case if user already has one
         try:
-            from .supabase_client import create_case
-            
-            case_title = f"Disability Claim - {scoring_result.get('eligibility_status', 'Under Review').title()}"
-            case_description = f"Work-related injury claim with eligibility score: {scoring_result.get('eligibility_score')}/100"
-            
-            case_metadata = {
-                'eligibility_score': scoring_result.get('eligibility_score'),
-                'eligibility_status': scoring_result.get('eligibility_status'),
-                'confidence': scoring_result.get('confidence'),
-                'injury_date': answers_obj.get('injury_date'),
-                'work_related': answers_obj.get('work_related'),
-                'has_document': bool(file)
-            }
-            
-            case = create_case(
-                user_id=user_id,
-                title=case_title,
-                description=case_description,
-                metadata=case_metadata
-            )
-            case_id = case.get('id') if isinstance(case, dict) else case[0].get('id') if isinstance(case, list) else None
-            logger.info(f"Created case: {case_id}")
-            
+            existing_cases = list_cases_for_user(str(user_id))
+            if existing_cases and len(existing_cases) > 0:
+                case_id = existing_cases[0].get('id')
+                logger.info(f"Using existing case {case_id} for eligibility data")
         except Exception:
-            logger.exception("Failed to create case (non-fatal)")
-            case_id = None
+            logger.exception("Failed to fetch existing cases (non-fatal)")
     else:
-        logger.info("No user_id provided - skipping case creation (user can create case after signup)")
+        logger.info("No user_id provided - eligibility stored without case link")
     
     # Save to database
     try:
@@ -5942,35 +5930,7 @@ async def user_register(payload: Dict[str, Any] = Body(...)):
                 send_otp_email(email, otp)
             except Exception:
                 logger.exception('send_otp_email failed; continuing')
-            # Create an initial case even when email verification is required so user can resume later
-            try:
-                # Check if user already has a case first
-                existing_cases = list_cases_for_user(str(user_id))
-                if existing_cases and len(existing_cases) > 0:
-                    logger.info(f"User {user_id} already has case, skipping creation")
-                    created_case = existing_cases
-                else:
-                    case_metadata = {'initial_eligibility': eligibility_payload}
-                    created_case = create_case(user_id=str(user_id), title=None, description='Initial case created at signup', metadata=case_metadata)
-                case_id = None
-                if isinstance(created_case, list) and len(created_case) > 0:
-                    case_id = created_case[0].get('id')
-                elif isinstance(created_case, dict):
-                    case_id = created_case.get('id')
-                try:
-                    if case_id:
-                        insert_user_eligibility(user_id=str(user_id), uploaded_file=None, eligibility=eligibility_payload, case_id=case_id)
-                except Exception:
-                    logger.exception('Failed to insert initial eligibility linked to created case (non-fatal)')
-                
-                # Link any existing eligibility documents uploaded before signup (anonymous scenario)
-                if case_id:
-                    try:
-                        _link_eligibility_documents_to_case(user_id=str(user_id), case_id=case_id)
-                    except Exception:
-                        logger.exception('Failed to link pre-signup documents to case (non-fatal)')
-            except Exception:
-                logger.exception('Failed to create initial case during signup (non-fatal)')
+            # Case creation removed - will be created during phone OTP verification
             # Response: do not include OTP in production responses. Include only in DEBUG.
             response = {'status': 'ok', 'user_id': user_id}
             if os.environ.get('LOG_LEVEL', '').upper() == 'DEBUG':
@@ -6022,7 +5982,6 @@ async def user_register(payload: Dict[str, Any] = Body(...)):
                         _link_eligibility_documents_to_case(user_id=str(user_id), case_id=case_id)
                     except Exception:
                         logger.exception('Failed to link pre-signup documents to case (non-fatal)')
-
             except Exception:
                 logger.exception('Failed to create initial case during signup (non-fatal)')
 
@@ -6251,33 +6210,16 @@ async def signup_with_case(payload: Dict[str, Any] = Body(...)):
         logger.exception(f'insert_user_profile failed: {e}')
         raise HTTPException(status_code=400, detail=f'profile_creation_failed: {str(e)}')
 
-    # Create initial case ONLY if user doesn't already have one
+    # Case creation removed - will be created during phone OTP verification
     case_id = None
     try:
         # Check if user already has a case
         existing_cases = list_cases_for_user(str(user_id))
         if existing_cases and len(existing_cases) > 0:
             case_id = existing_cases[0].get('id')
-            logger.info(f"User {user_id} already has case {case_id}, skipping creation")
-            created_case = existing_cases
-        else:
-            case_metadata = {}
-            created_case = create_case(
-                user_id=str(user_id),
-                title=None,
-                description='Initial case created at signup',
-                metadata=case_metadata
-            )
-        
-        # Extract case_id from response (can be list or dict)
-        if isinstance(created_case, list) and len(created_case) > 0:
-            case_id = created_case[0].get('id')
-        elif isinstance(created_case, dict):
-            case_id = created_case.get('id')
-        
-        logger.info(f"Created case {case_id} for user {user_id}")
+            logger.info(f"User {user_id} already has case {case_id}")
     except Exception as e:
-        logger.exception('Failed to create case (non-fatal)')
+        logger.exception('Failed to fetch existing cases (non-fatal)')
         # Don't fail signup if case creation fails - case_id will be None
 
     # Generate access token by signing in
@@ -6463,11 +6405,22 @@ async def phone_login(
         # New user - create profile and case
         logger.info(f"Creating new user for phone {phone}")
         
+        # Try to get full_name from Supabase auth user metadata if it was saved earlier
+        full_name = None
+        try:
+            # Get the Supabase auth user to check for full_name in metadata
+            user_metadata = user_data.get('user_metadata', {})
+            full_name = user_metadata.get('full_name') or user_metadata.get('name')
+            if full_name:
+                logger.info(f"Found full_name in user metadata: {full_name}")
+        except Exception as e:
+            logger.warning(f"Could not retrieve full_name from user metadata: {e}")
+        
         # Create user profile
         try:
             profile_res = insert_user_profile(
                 user_id=supabase_user_id,
-                name=phone,  # Default name to phone number
+                name=full_name or phone,  # Use full_name if available, otherwise default to phone
                 email=None,
                 phone=phone,
                 identity_code='',
@@ -6476,7 +6429,7 @@ async def phone_login(
                 eligibility=None,
                 verified=True  # Phone verified via Supabase OTP
             )
-            logger.info(f"Created profile for new user {supabase_user_id}")
+            logger.info(f"Created profile for new user {supabase_user_id} with name: {full_name or phone}")
         except Exception as e:
             logger.exception(f'insert_user_profile failed: {e}')
             raise HTTPException(status_code=400, detail=f'profile_creation_failed: {str(e)}')
@@ -7464,7 +7417,7 @@ async def boldsign_create_embed_link(
         if not email and user_id:
             email = f"user_{user_id}@temp.com"
         
-        # Get existing case or create one only if absolutely necessary
+        # Get existing case only - no automatic creation
         if not case_id:
             # Try to find an existing case for this user
             try:
@@ -7474,22 +7427,9 @@ async def boldsign_create_embed_link(
                     case_id = existing_cases[0].get('id')
                     logger.info(f'Using existing case {case_id} for e-signature')
                 else:
-                    # Only create a new case if none exists
-                    case_result = create_case(
-                        user_id=user_id,
-                        title=f"Disability Claim for {name}",
-                        description="E-signature pending",
-                        metadata={"source": "esignature_flow"}
-                    )
-                    # Extract case_id from result (can be array or dict)
-                    if isinstance(case_result, list) and len(case_result) > 0:
-                        case_id = case_result[0].get('id')
-                    elif isinstance(case_result, dict):
-                        case_id = case_result.get('id')
-                    
-                    logger.info(f'Created new case {case_id} for e-signature')
+                    logger.info(f'No case found for user {user_id} - proceeding without case link')
             except Exception as e:
-                logger.warning(f'Failed to get/create case for e-signature: {e}')
+                logger.warning(f'Failed to fetch existing cases for e-signature: {e}')
                 # Continue without case - we'll still create the signature
         
         # Create embedded signing link
