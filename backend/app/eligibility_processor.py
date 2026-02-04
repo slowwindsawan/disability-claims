@@ -6,8 +6,8 @@ and scoring based on BTL guidelines from btl.json.
 
 This version:
 - Loads OPENAI_API_KEY and optional OPENAI_MODEL from a .env file
-- Uses the OpenAI Responses REST endpoint (/v1/responses)
-- Defaults to model "gpt-5-nano" when OPENAI_MODEL not provided
+- Uses the OpenAI Chat Completions REST endpoint (/v1/chat/completions)
+- Defaults to model "gpt-4o" when OPENAI_MODEL not provided
 - Integrates BTL guidelines from btl.json for enhanced analysis
 """
 import os
@@ -102,7 +102,7 @@ load_dotenv()
 from .secrets_utils import get_openai_api_key
 OPENAI_API_KEY: Optional[str] = get_openai_api_key()
 # Default model used here; override via OPENAI_MODEL in .env
-OPENAI_MODEL: str = os.getenv('OPENAI_MODEL', 'gpt-5-nano')
+OPENAI_MODEL: str = os.getenv('OPENAI_MODEL', 'gpt-4o')
 
 # Chat completions endpoint
 _OPENAI_BASE = "https://api.openai.com/v1"
@@ -114,13 +114,13 @@ _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1"
 
 def _call_gpt(
     prompt: str,
-    model: Optional[str] = "gpt-5-nano",
+    model: Optional[str] = "gpt-4o",
     temperature: float = 0.2,
     max_output_tokens: int = 1024,
     timeout: int = 90,
 ) -> Dict[str, Any]:
     """
-    Internal helper: call OpenAI Responses API using gpt-5-nano
+    Internal helper: call OpenAI Chat Completions API
     and return parsed response JSON.
 
     Uses Authorization: Bearer <OPENAI_API_KEY>
@@ -129,7 +129,7 @@ def _call_gpt(
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured in environment")
 
-    endpoint = f"{_OPENAI_BASE}/responses"
+    endpoint = f"{_OPENAI_BASE}/chat/completions"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -137,13 +137,22 @@ def _call_gpt(
 
     body = {
         "model": model,
-        "input": prompt
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": temperature,
+        "max_tokens": max_output_tokens
     }
 
     logger.debug(
-        "POST %s (model=%s) payload size=%d",
+        "POST %s (model=%s) temperature=%s max_tokens=%d prompt_size=%d",
         endpoint,
         model,
+        temperature,
+        max_output_tokens,
         len(prompt),
     )
 
