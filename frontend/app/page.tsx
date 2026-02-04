@@ -420,7 +420,8 @@ export default function Home() {
                 console.log('User onboarding check:', {
                   userName,
                   caseStatus,
-                  needsOnboarding
+                  needsOnboarding,
+                  showLoginModal
                 })
                 
                 // Transition based on onboarding status
@@ -432,6 +433,13 @@ export default function Home() {
                   if (searchParams.get('redirect') === 'conversation') {
                      router.push('/conversation')
                      return
+                  }
+                  
+                  // If user is logging in via login modal, always go to dashboard
+                  if (showLoginModal) {
+                    console.log('User logged in via modal, redirecting to dashboard')
+                    router.push("/dashboard")
+                    return
                   }
                   
                   if (needsOnboarding) {
