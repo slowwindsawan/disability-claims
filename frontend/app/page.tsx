@@ -172,9 +172,9 @@ export default function Home() {
             const profileFullName = userData?.user?.profile?.full_name
             
             if (profileFullName && profileFullName.trim()) {
-              // User already has a name, skip to step 1
+              // User already has a name, populate it but stay at step 0 to show the input
               setFullName(profileFullName)
-              setWizardStep(1)
+              setWizardStep(0)
             } else {
               // No name, stay at step 0
               setWizardStep(0)
