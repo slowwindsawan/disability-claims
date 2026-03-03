@@ -21,13 +21,19 @@ import {
   Briefcase,
   Bell,
   Download,
+  XCircle,
+  ArrowLeft,
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useState, useEffect } from "react"
+import React from "react"
 import { useLanguage } from "@/lib/language-context"
 import ExtensionSyncWidget from "@/components/extension-sync-widget"
+import { BtlTimeline } from "@/components/btl-timeline"
+import { BACKEND_BASE_URL } from "@/variables"
 
 const requiredDocuments = [
   {
@@ -158,8 +164,8 @@ export default function DashboardPage() {
   const [disabilityPercentage, setDisabilityPercentage] = useState(45)
   const [caseStrength, setCaseStrength] = useState("חזק")
 
+  // Derived from caseObj.stage once the case loads — see fetchCaseStatus
   const [paymentDetailsCompleted, setPaymentDetailsCompleted] = useState(false)
-  // In a real app, this would come from user session/database
 
   // In a real app, this would come from user session/database based on claim maximization modal selections
   const [hasMobilityClaim, setHasMobilityClaim] = useState(false)
@@ -175,15 +181,29 @@ export default function DashboardPage() {
   // Case status and analysis data
   const [caseStatus, setCaseStatus] = useState<string>("")
   const [finalDocumentAnalysis, setFinalDocumentAnalysis] = useState<any>(null)
+  const [caseObj, setCaseObj] = useState<any>(null)
+  const router = useRouter()
 
   useEffect(() => {
-    // Check if extension is installed
-    const checkExtension = () => {
-      // In real app, check window.zerotouchExtension or similar
-      setExtensionInstalled(false)
+    // Detect extension by querying its sync status via postMessage
+    let extTimeout: ReturnType<typeof setTimeout>
+    const handleExtMsg = (event: MessageEvent) => {
+      if (event.data?.type !== 'BTL_EXTENSION_SYNC_STATUS') return
+      clearTimeout(extTimeout)
+      setExtensionInstalled(true)
     }
-    checkExtension()
+    window.addEventListener('message', handleExtMsg)
+    window.postMessage({ type: 'BTL_EXTENSION_GET_SYNC_STATUS' }, '*')
+    // No response in 2s → not installed
+    extTimeout = setTimeout(() => setExtensionInstalled(false), 2000)
 
+    return () => {
+      window.removeEventListener('message', handleExtMsg)
+      clearTimeout(extTimeout)
+    }
+  }, [])
+
+  useEffect(() => {
     if (hasCompletedPayment && !extensionInstalled && !localStorage.getItem("extensionModalDismissed")) {
       setShowExtensionModal(true)
     }
@@ -193,16 +213,33 @@ export default function DashboardPage() {
     // Fetch case status and final_document_analysis
     const fetchCaseStatus = async () => {
       try {
-        const casesResponse = await fetch(`/api/user/cases`)
+        const caseId = localStorage.getItem("case_id")
+        const token = localStorage.getItem("access_token")
+        if (!caseId || !token) return
+        const casesResponse = await fetch(`${BACKEND_BASE_URL}/cases/${caseId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
         if (!casesResponse.ok) return
         
         const casesData = await casesResponse.json()
-        const cases = casesData?.cases || []
+        const caseData = casesData?.case || casesData
         
-        if (cases.length > 0) {
-          const caseData = cases[0]
+        if (caseData?.id) {
           setCaseStatus(caseData.status || "")
           setFinalDocumentAnalysis(caseData.final_document_analysis || null)
+          setCaseObj(caseData)
+          // Suppress pre-BTL banners once the claim is confirmed filed with BTL
+          const POST_SUBMISSION_STAGES = [
+            'claim_submitted', 'medical_committee_scheduled',
+            'rehab', 'claim_approved', 'claim_accepted', 'claim_rejected', 'appeal_pending',
+            'form_270_submitted', 'submitted'
+          ]
+          if (
+            POST_SUBMISSION_STAGES.includes(caseData.stage || '') ||
+            POST_SUBMISSION_STAGES.includes(caseData.status || '')
+          ) {
+            setPaymentDetailsCompleted(true)
+          }
         }
       } catch (error) {
         console.error("Failed to fetch case status:", error)
@@ -294,6 +331,20 @@ export default function DashboardPage() {
   const uploadedCount = requiredDocuments.filter((doc) => doc.status === "uploaded").length
   const requiredCount = requiredDocuments.filter((doc) => doc.required).length
   const completionPercentage = Math.round((uploadedCount / requiredCount) * 100)
+
+  // Derived from DB stage — drives which sections are visible
+  const caseStage = caseObj?.stage || ''
+  const POST_SUBMISSION_VALUES = [
+    'claim_submitted', 'medical_committee_scheduled',
+    'rehab', 'claim_approved', 'claim_accepted', 'claim_rejected', 'appeal_pending',
+    'form_270_submitted', 'submitted'
+  ]
+  // Check both `stage` and `status` columns — backend writes to both, but older rows
+  // may only have one populated.
+  const isPostSubmission =
+    POST_SUBMISSION_VALUES.includes(caseStage) ||
+    POST_SUBMISSION_VALUES.includes(caseStatus) ||
+    POST_SUBMISSION_VALUES.includes(caseObj?.status || '')
 
   const mobilityUploadedCount = mobilityDocuments.filter((doc) => doc.status === "uploaded").length
   const mobilityRequiredCount = mobilityDocuments.filter((doc) => doc.required).length
@@ -610,6 +661,281 @@ export default function DashboardPage() {
         )}
 
         {/* Welcome Section */}
+
+        {/* BTL Status Banner — shown when BTL has sent a decision/update */}
+        {(() => {
+          const action = caseObj?.metadata?.btl_action || {}
+          const pct = action.disability_percentage
+          const amount = action.monthly_amount
+          const msg = action.department_message
+
+          const banners: Record<string, React.ReactElement> = {
+            claim_approved: (
+              <motion.div
+                initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+                className="mb-6 p-5 bg-gradient-to-l from-green-50 to-emerald-50 border border-green-300 rounded-xl shadow-sm"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <CheckCircle2 className="w-7 h-7 text-green-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-lg font-bold text-green-900 mb-1">התביעה אושרה! ♥</h4>
+                    <p className="text-sm text-slate-700 mb-1">{msg || 'ביטוח לאומי אישר את תביעת הנכות שלך.'}</p>
+                    {pct && <p className="text-sm font-semibold text-green-800">אחוז נכות: {pct}%</p>}
+                    {amount && <p className="text-sm font-semibold text-green-800">סכום חודשי: ₪{amount.toLocaleString()}</p>}
+                  </div>
+                  <Link href="/claim-approved">
+                    <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white">
+                      פרטים מלאים <ArrowLeft className="w-4 h-4 mr-1" />
+                    </Button>
+                  </Link>
+                </div>
+              </motion.div>
+            ),
+            claim_rejected: (
+              <motion.div
+                initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+                className="mb-6 p-5 bg-gradient-to-l from-red-50 to-rose-50 border border-red-300 rounded-xl shadow-sm"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <XCircle className="w-7 h-7 text-red-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-lg font-bold text-red-900 mb-1">התביעה נדחתה</h4>
+                    <p className="text-sm text-slate-700 mb-1">{msg || 'ביטוח לאומי דחה את תביעתך. ניתן לערער.'}</p>
+                  </div>
+                  <Link href="/claim-rejected">
+                    <Button size="sm" className="bg-red-600 hover:bg-red-700 text-white">
+                      ערעור <ArrowLeft className="w-4 h-4 mr-1" />
+                    </Button>
+                  </Link>
+                </div>
+              </motion.div>
+            ),
+            appeal_pending: (
+              <motion.div
+                initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+                className="mb-6 p-5 bg-gradient-to-l from-blue-50 to-indigo-50 border border-blue-300 rounded-xl shadow-sm"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <TrendingUp className="w-7 h-7 text-blue-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-lg font-bold text-blue-900 mb-1">ערעור בתהליך</h4>
+                    <p className="text-sm text-slate-700 mb-1">המסמכים שהגשת מעובדים לצורך הערעור. נעדכן אותך בהתקדמות.</p>
+                  </div>
+                  <Link href="/claim-rejected">
+                    <Button size="sm" variant="outline" className="border-blue-400 text-blue-700 bg-transparent">
+                      הוסף מסמכים <ArrowLeft className="w-4 h-4 mr-1" />
+                    </Button>
+                  </Link>
+                </div>
+              </motion.div>
+            ),
+            rehab_approved: (
+              <motion.div
+                initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+                className="mb-6 p-5 bg-gradient-to-l from-teal-50 to-cyan-50 border border-teal-300 rounded-xl shadow-sm"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 bg-teal-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <Briefcase className="w-7 h-7 text-teal-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-lg font-bold text-teal-900 mb-1">שיקום מקצועי אושר!</h4>
+                    <p className="text-sm text-slate-700 mb-1">{msg || 'אושרת לך זכאות לשיקום מקצועי מביטוח לאומי.'}</p>
+                  </div>
+                  <Link href="/rehab-claims">
+                    <Button size="sm" className="bg-teal-600 hover:bg-teal-700 text-white">
+                      לפרטי השיקום <ArrowLeft className="w-4 h-4 mr-1" />
+                    </Button>
+                  </Link>
+                </div>
+              </motion.div>
+            ),
+            rehab_payment_update: (
+              <motion.div
+                initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+                className="mb-6 p-5 bg-gradient-to-l from-blue-50 to-sky-50 border border-blue-300 rounded-xl shadow-sm"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <TrendingUp className="w-7 h-7 text-blue-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-lg font-bold text-blue-900 mb-1">עדכון תשלום שיקום</h4>
+                    <p className="text-sm text-slate-700 mb-1">{msg || 'התקבל עדכון לגבי תשלומי השיקום שלך.'}</p>
+                    {action.reimbursement_amount
+                      ? <p className="text-sm font-semibold text-blue-800">הוחזר: ₪{Number(action.reimbursement_amount).toLocaleString()}{action.reimbursement_period ? ` (${action.reimbursement_period})` : ''}</p>
+                      : amount ? <p className="text-sm font-semibold text-blue-800">סכום חודשי: ₪{amount.toLocaleString()}</p> : null}
+                  </div>
+                  <Link href="/rehab-claims">
+                    <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white">
+                      פרטים <ArrowLeft className="w-4 h-4 mr-1" />
+                    </Button>
+                  </Link>
+                </div>
+              </motion.div>
+            ),
+            waiting_for_docs: (
+              <motion.div
+                initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+                className="mb-6 p-5 bg-gradient-to-l from-yellow-50 to-amber-50 border border-yellow-300 rounded-xl shadow-sm"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 bg-yellow-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <AlertCircle className="w-7 h-7 text-yellow-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-lg font-bold text-yellow-900 mb-1">ביטוח לאומי מבקש מסמכים</h4>
+                    <p className="text-sm text-slate-700 mb-1">{msg || 'נדרשים מסמכים נוספים להמשך הטיפול בתביעה.'}</p>
+                    {action.required_documents?.length > 0 && (
+                      <ul className="text-sm text-slate-700 list-disc list-inside mt-1">
+                        {action.required_documents.map((d: string, i: number) => <li key={i}>{d}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            ),
+            submitted: (
+              <motion.div
+                initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+                className="mb-6 p-5 bg-gradient-to-l from-blue-50 to-sky-50 border border-blue-300 rounded-xl shadow-sm"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <FileText className="w-7 h-7 text-blue-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-lg font-bold text-blue-900 mb-1">טופס 7801 הוגש בביטוח לאומי</h4>
+                    <p className="text-sm text-slate-700 mb-1">{msg || 'הטופס שלך בדרך לבדיקה. ביטוח לאומי יצרור עמך בקרוב.'}</p>
+                    <p className="text-xs text-slate-500">הערכה עיונית בדרך כלל לוקחת 7-10 ימים עבודה.</p>
+                  </div>
+                  <Link href="/committee-prep">
+                    <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white shrink-0">
+                      הכן לוועדה <ArrowLeft className="w-4 h-4 mr-1" />
+                    </Button>
+                  </Link>
+                </div>
+              </motion.div>
+            ),
+            form_pending: (
+              <motion.div
+                initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+                className="mb-6 p-5 bg-gradient-to-l from-purple-50 to-violet-50 border border-purple-300 rounded-xl shadow-sm"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <FileText className="w-7 h-7 text-purple-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-lg font-bold text-purple-900 mb-1">נדרש טופס {action.form_type || ''}</h4>
+                    <p className="text-sm text-slate-700">{msg || 'ביטוח לאומי מבקש למלא טופס. הפנייה לצוות.'}</p>
+                  </div>
+                  {action.form_type === '270' && (
+                    <Link href="/rehab-form-270">
+                      <Button size="sm" className="bg-purple-600 hover:bg-purple-700 text-white">
+                        מלא טופס <ArrowLeft className="w-4 h-4 mr-1" />
+                      </Button>
+                    </Link>
+                  )}
+                </div>
+              </motion.div>
+            ),
+            form_270_submitted: (
+              <motion.div
+                initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+                className="mb-6 p-5 bg-gradient-to-l from-teal-50 to-cyan-50 border border-teal-300 rounded-xl shadow-sm"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 bg-teal-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <FileText className="w-7 h-7 text-teal-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-lg font-bold text-teal-900 mb-1">טופס 270 הוגש – בבדיקה</h4>
+                    <p className="text-sm text-slate-700 mb-1">{msg || 'בקשת השיקום המקצועי שלך הוגשה לביטוח לאומי ונמצאת בבדיקה.'}</p>
+                    <p className="text-xs text-slate-500">תוכל להתכונן לוועדת שיקום בצ'אטבוט המיוחד שלנו.</p>
+                  </div>
+                  <Link href="/committee-prep">
+                    <Button size="sm" className="bg-teal-600 hover:bg-teal-700 text-white">
+                      הכן לוועדה <ArrowLeft className="w-4 h-4 mr-1" />
+                    </Button>
+                  </Link>
+                </div>
+              </motion.div>
+            ),
+            appointment_scheduled: (() => {
+              const appt = caseObj?.metadata?.committee_appointment || {}
+              const gcDate = appt.appointment_date ? `${appt.appointment_date}T${(appt.appointment_time || '09:00').replace(':', '')}00` : ''
+              const gcLink = appt.appointment_date
+                ? `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent('ועדה רפואית - ביטוח לאומי')}&dates=${gcDate}/${gcDate}&location=${encodeURIComponent(appt.appointment_place || '')}`
+                : null
+              return (
+                <motion.div
+                  initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+                  className="mb-6 p-5 bg-gradient-to-l from-cyan-50 to-indigo-50 border border-cyan-300 rounded-xl shadow-sm"
+                >
+                  <div className="flex items-start gap-4">
+                    <div className="w-12 h-12 bg-cyan-100 rounded-full flex items-center justify-center shrink-0">
+                      <Bell className="w-7 h-7 text-cyan-600" />
+                    </div>
+                    <div className="flex-1">
+                      <h4 className="text-lg font-bold text-cyan-900 mb-1">הזמנה לוועדה רפואית</h4>
+                      {appt.appointment_specialty && <p className="text-sm font-semibold text-slate-800 mb-1">{appt.appointment_specialty}</p>}
+                      {appt.appointment_date && (
+                        <p className="text-sm text-slate-700">📅 {appt.appointment_date}{appt.appointment_time ? ` בשעה ${appt.appointment_time}` : ''}</p>
+                      )}
+                      {appt.appointment_place && (
+                        <p className="text-sm text-slate-700">📍 {appt.appointment_place}</p>
+                      )}
+                      {(appt.department_message || (!appt.appointment_date && msg)) && (
+                        <p className="text-sm text-slate-600 mt-1">{appt.department_message || msg}</p>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-2 shrink-0">
+                      {gcLink && (
+                        <a href={gcLink} target="_blank" rel="noreferrer">
+                          <Button size="sm" variant="outline" className="text-xs bg-transparent">📆 הוסף ליומן</Button>
+                        </a>
+                      )}
+                      <Link href="/medical-committee-prep">
+                        <Button size="sm" className="bg-cyan-600 hover:bg-cyan-700 text-white text-xs">הכנה לוועדה</Button>
+                      </Link>
+                    </div>
+                  </div>
+                </motion.div>
+              )
+            })(),
+          }
+
+          return banners[caseStatus] ?? null
+        })()}
+
+        {/* BTL Letter Trail */}
+        {(() => {
+          const timeline = caseObj?.metadata?.btl_timeline || []
+          if (!timeline.length) return null
+          return (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.15 }}
+              className="mb-6"
+            >
+              <div className="flex items-center gap-2 mb-3">
+                <h3 className="text-base font-bold text-slate-800">עדכונים מביטוח לאומי</h3>
+                <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{timeline.length}</span>
+              </div>
+              <Card className="p-4 bg-white shadow-sm">
+                <BtlTimeline events={timeline} collapseAfter={3} />
+              </Card>
+            </motion.div>
+          )
+        })()}
+
         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="mb-6">
           <h2 className="text-3xl font-bold text-slate-900 mb-2">שלום, יוחאי</h2>
           <p className="text-lg text-slate-600">על בסיס שיחת ההיכרות והשאלון, זיהינו את המסמכים הדרושים לתיק שלך</p>
@@ -645,8 +971,31 @@ export default function DashboardPage() {
           </Card>
         </motion.div>
 
-        {/* Document Checklist Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Claim-filed status card — replaces doc checklist once BTL confirmed the claim */}
+        {isPostSubmission && (
+          <motion.div
+            initial={{ y: 10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+            transition={{ delay: 0.2 }}
+            className="mb-8"
+          >
+            <Card className="p-6 bg-gradient-to-l from-green-50 to-teal-50 border border-green-300 shadow-sm">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center shrink-0">
+                  <CheckCircle2 className="w-6 h-6 text-green-600" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-green-900 mb-1">התביעה הוגשה לביטוח לאומי</h3>
+                  <p className="text-slate-700 text-sm leading-relaxed">
+                    ביטוח לאומי קיבל את התביעה ומטפל בה. עדכונים על כל מכתב שמתקבל מופיעים בחלק “עדכונים מביטוח לאומי” למעלה.
+                  </p>
+                </div>
+              </div>
+            </Card>
+          </motion.div>
+        )}
+
+        {/* Document Checklist Section — hidden once claim is filed with BTL */}
+        <div className={isPostSubmission ? 'hidden' : 'grid grid-cols-1 lg:grid-cols-3 gap-6'}>
           {/* Main Documents List */}
           <motion.div
             initial={{ y: 20, opacity: 0 }}

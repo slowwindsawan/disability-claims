@@ -1,5 +1,6 @@
 import os
 import uuid
+import base64
 import asyncio
 from dotenv import load_dotenv
 load_dotenv()
@@ -15,7 +16,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response, Re
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from .schemas import EligibilityRequest, EligibilityResult, CaseFilterRequest
-from .ocr import extract_text_from_document
+from .ocr import extract_text_from_document, extract_text_from_pdf_bytes
 from .legal import load_legal_document_chunks
 from .gemini_client import call_gemini, analyze_document_questions
 from typing import Dict, Any, Optional, List
@@ -209,6 +210,533 @@ def require_superadmin(user = Depends(get_current_user)):
     raise HTTPException(status_code=403, detail='forbidden')
 
 
+def _merge_letter_records(existing_letters: Dict[str, Any], incoming_records: List[Dict[str, Any]], synced_at: str, source: str):
+    """Merge incoming letter records into the persisted case letters structure.
+
+    The letters blob is shaped as:
+    {
+        "dates": {
+            "2026-02-25": {
+                "items": [ {"index": 0, "date": "2026-02-25", "category": "...", ...} ],
+                "seen_indices": [0, 1],
+                "last_updated_at": "..."
+            }
+        },
+        "history": [ {"synced_at": "...", "source": "extension", "added": 2, "total_items": 5, "seen": 5} ],
+        "last_synced_at": "...",
+        "last_sync_source": "extension",
+        "total_items": 5,
+        "last_seen_count": 5,
+        "last_snapshot": {"record_count": 5, "synced_at": "..."}
+    }
+    """
+    letters = existing_letters if isinstance(existing_letters, dict) else {}
+    dates = letters.get('dates') or {}
+    history = letters.get('history') or []
+
+    added = 0
+    seen_total = 0
+
+    for rec in incoming_records or []:
+        try:
+            idx = int(rec.get('index'))
+        except Exception:
+            continue
+
+        date_raw = rec.get('date') or rec.get('letter_date') or rec.get('display_date') or 'unknown'
+        date_key = str(date_raw).strip() or 'unknown'
+
+        entry = dates.get(date_key) or {'items': [], 'seen_indices': []}
+        seen_set = set(entry.get('seen_indices') or [])
+        seen_set.add(idx)
+        seen_total += 1
+
+        # Sanitize download_url; drop Angular call strings so we don't persist functions
+        def _clean_download_url(u: Any):
+            if not u:
+                return None
+            try:
+                us = str(u)
+            except Exception:
+                return None
+            if 'downloadLetter(' in us:
+                return None
+            if us.startswith('/'):
+                # keep relative; can be resolved client-side or overwritten by stored URL later
+                return us
+            return us
+
+        existing_item = next((i for i in entry.get('items', []) if i.get('index') == idx), None)
+        if not existing_item:
+            new_item = {
+                'index': idx,
+                'date': date_key,
+                'category': rec.get('category') or rec.get('category_text') or rec.get('type'),
+                'title': rec.get('title') or rec.get('subject') or rec.get('name') or rec.get('description'),
+                'download_url': _clean_download_url(rec.get('download_url') or rec.get('href') or rec.get('url')),
+                'captured_at': rec.get('captured_at') or synced_at,
+                'row_text': rec.get('row_text'),
+                'analyzed': False,  # PDF not yet analyzed; set True by POST /letters/document
+            }
+            entry.setdefault('items', []).append(new_item)
+            added += 1
+
+        entry['seen_indices'] = sorted(seen_set)
+        entry['last_updated_at'] = synced_at
+        dates[date_key] = entry
+
+    total_items = sum(len((v.get('items') or [])) for v in dates.values())
+
+    # keep short history (last 10)
+    history = (history or [])[-9:]
+    history.append({
+        'synced_at': synced_at,
+        'source': source,
+        'added': added,
+        'total_items': total_items,
+        'seen': seen_total
+    })
+
+    merged = {
+        'dates': dates,
+        'history': history,
+        'last_synced_at': synced_at,
+        'last_sync_source': source,
+        'total_items': total_items,
+        'last_seen_count': seen_total,
+        'last_snapshot': {
+            'record_count': len(incoming_records or []),
+            'synced_at': synced_at,
+            'source': source
+        }
+    }
+    return merged, added, total_items
+
+
+def _summarize_letter_document(text: str, file_name: str = "letter.pdf", document_type: str = "letter") -> Dict[str, Any]:
+    """Summarize letter text using existing dashboard summarizer (OpenAI-based).
+
+    Returns dict with keys: document_summary, key_points, is_relevant, relevance_score, relevance_reason, structured_data.
+    """
+    if not text or len(text.strip()) < 20:
+        return {
+            'document_summary': 'No extractable text',
+            'key_points': [],
+            'is_relevant': False,
+            'relevance_score': 0,
+            'relevance_reason': 'Empty or unreadable document',
+            'structured_data': {}
+        }
+
+    try:
+        from .dashboard_document_summarizer import summarize_dashboard_document
+        summary = summarize_dashboard_document(text, document_name=file_name, document_type=document_type)
+        return {
+            'document_summary': summary.get('document_summary'),
+            'key_points': summary.get('key_points', []),
+            'is_relevant': summary.get('is_relevant', True),
+            'relevance_score': summary.get('relevance_score', 0),
+            'relevance_reason': summary.get('relevance_reason'),
+            'structured_data': summary.get('structured_data', {}),
+            'document_type': summary.get('document_type', document_type)
+        }
+    except Exception:
+        logger.exception('Letter summarization failed')
+        return {
+            'document_summary': 'Summarization failed',
+            'key_points': [],
+            'is_relevant': False,
+            'relevance_score': 0,
+            'relevance_reason': 'Summarization error',
+            'structured_data': {},
+            'document_type': document_type
+        }
+
+
+# ─── BTL Letter Action Agent ───────────────────────────────────────────────────
+
+_BTL_ACTION_AGENT_FALLBACK_PROMPT = """
+You are an automation copilot that processes Israeli BTL (Bituach Leumi / National Insurance Institute) letters and classifies each into exactly one action trigger.
+
+Valid action_type values (pick exactly one, or null):
+- claim_submitted        : Letter confirming the claim was received and is being processed (3 stages: documents → medical assessment → decision)
+- appointment_scheduled  : Invitation/summons to a medical committee with a date, time and location
+- claim_approved         : Decision letter explicitly approving the disability pension
+- claim_rejected         : Decision letter explicitly rejecting/denying the disability pension
+- rehab_approved         : Letter approving vocational rehabilitation
+- rehab_payment_update   : Breakdown of rehabilitation payments (tuition, travel, etc.)
+- waiting_for_docs       : Letter requesting the claimant to submit documents
+- form_pending           : Letter requesting the claimant to fill and submit a specific form
+- informational          : General administrative notices, contact information, scheduling reminders, medical committee reports, or explanatory material that do not require immediate action
+
+Classification rules (highest priority first when multiple apply):
+1. claim_approved    — only if the disability pension is explicitly APPROVED
+2. claim_rejected    — only if explicitly REJECTED / DENIED; a percentage below threshold counts as rejection
+3. appointment_scheduled — summons to medical committee with date+time+place (e.g. "ועדות רפואיות" invitation)
+4. rehab_approved    — vocational rehabilitation explicitly approved
+5. rehab_payment_update — contains payment amounts or breakdowns for rehab benefits (tuition, travel, equipment)
+6. claim_submitted   — first acknowledgement that claim was filed; mentions 3 processing stages
+7. waiting_for_docs  — requests documents; or lists required documents
+8. form_pending      — requests a specific named form (e.g. form 7810)
+9. informational     — everything else, including medical committee reports (diagnoses + percentages without a pension decision)
+
+Important field rules:
+- rehab_payment_update with travel/equipment/one-time amounts: populate reimbursement_amount + payment_breakdown; set monthly_amount to null
+- rehab_payment_update with recurring monthly stipend: populate monthly_amount; set reimbursement_amount to null
+- claim_rejected: always extract disability_percentages_by_period if present; always extract appeal_form_type and appeal_deadline_days
+- appointment_scheduled: always extract appointment_time and appointment_specialty if present
+- informational medical committee reports: put diagnoses array in extracted_data.diagnoses
+
+If the document is unclear or data is missing, set action_type to null and needs_human_review to true.
+Never guess or invent data. Extract only fields relevant to the chosen trigger.
+
+Return ONLY valid JSON matching this EXACT schema (no markdown, no text outside JSON):
+{
+  "action_type": "<one of the valid values above or null>",
+  "status_update": "<same as action_type, or empty string if null>",
+  "disability_percentage": <integer 0-100 or null>,
+  "monthly_amount": <number in ILS or null — ONLY for recurring monthly stipends>,
+  "reimbursement_amount": <number in ILS or null — total one-time reimbursement (travel/equipment/tuition batch)>,
+  "reimbursement_period": "<human-readable period string, e.g. '10/2025–12/2025' or null>",
+  "payment_breakdown": [{"period": "<e.g. 12/2025>", "amount": <number>}],
+  "approved_benefits": [<string>],
+  "required_documents": [<string>],
+  "registered_email": "<email from letter or null>",
+  "department_message": "<key human-readable message from bureau in Hebrew, one sentence>",
+  "is_form": <true if letter asks claimant to fill/submit a form>,
+  "form_type": "<form number or type name or null>",
+  "appeal_form_type": "<appeal form number e.g. '7810' or null>",
+  "appeal_deadline_days": <integer days from letter date to appeal deadline, or null>,
+  "disability_percentages_by_period": [{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "percentage": <int>, "reason": "<Hebrew>"}],
+  "appointment_date": "<ISO date string YYYY-MM-DD or null>",
+  "appointment_time": "<HH:MM 24h or null>",
+  "appointment_place": "<full location string including address and room, or null>",
+  "appointment_specialty": "<medical specialty in English, e.g. 'Neurology' or null>",
+  "urgency": "<low | medium | high>",
+  "needs_human_review": <true if unclear or data missing, else false>,
+  "extracted_data": {}
+}
+"""
+
+
+def _run_btl_action_agent(
+    case_id: str,
+    text: str,
+    analysis: Dict[str, Any],
+    letter_meta: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Classify a BTL letter and update case status + metadata.
+
+    Returns the action dict (never raises — errors are swallowed and logged).
+    """
+    try:
+        import json as _json
+        from openai import OpenAI as _OpenAI
+        from .secrets_utils import get_openai_api_key
+        from .supabase_client import get_agent_prompt, update_case
+
+        ai_key = get_openai_api_key()
+        if not ai_key:
+            logger.warning('[BTL_ACTION] No OpenAI key — skipping action agent')
+            return {}
+
+        # Fetch prompt from Supabase agents table (with fallback)
+        agent_cfg = get_agent_prompt('btl_letter_action_agent', fallback_prompt=_BTL_ACTION_AGENT_FALLBACK_PROMPT)
+        prompt = (agent_cfg.get('prompt') or '').strip() or _BTL_ACTION_AGENT_FALLBACK_PROMPT
+        model = agent_cfg.get('model') or 'gpt-4o'
+
+        summary = analysis.get('document_summary') or ''
+        key_points = analysis.get('key_points') or []
+        doc_text_block = (
+            f"FILE NAME: {letter_meta.get('title') or letter_meta.get('row_text') or 'Unknown'}\n"
+            f"DATE: {letter_meta.get('date') or letter_meta.get('letter_date') or 'Unknown'}\n"
+            f"SUMMARY: {summary}\n"
+            f"KEY POINTS:\n" + '\n'.join(f'- {p}' for p in key_points) +
+            f"\n\nRAW TEXT (first 3000 chars):\n{text[:3000]}"
+        )
+
+        _oai = _OpenAI(api_key=ai_key)
+        completion = _oai.chat.completions.create(
+            model=model,
+            response_format={'type': 'json_object'},
+            messages=[
+                {'role': 'system', 'content': prompt},
+                {'role': 'user', 'content': doc_text_block}
+            ],
+            temperature=0,
+            max_tokens=1000
+        )
+        raw = completion.choices[0].message.content or '{}'
+        action = _json.loads(raw)
+        logger.info('[BTL_ACTION] case=%s action_type=%s status_update=%s', case_id, action.get('action_type'), action.get('status_update'))
+
+        # Update case status + metadata if agent returned a meaningful status
+        action_type = (action.get('action_type') or '').strip()
+        new_status = (action.get('status_update') or '').strip()
+        needs_review = action.get('needs_human_review', False)
+
+        VALID_STATUSES = {
+            'claim_submitted', 'claim_approved', 'claim_rejected', 'waiting_for_docs',
+            'rehab_approved', 'rehab_payment_update', 'form_pending',
+            'appointment_scheduled', 'informational'
+        }
+        # Only promote status — don't overwrite terminal states with weak ones.
+        # Statuses set externally (not by this agent) must be listed here so their
+        # priority is respected and weaker letter classifications cannot overwrite them.
+        PRIORITY = {
+            'claim_approved': 90, 'claim_rejected': 90,
+            'rehab_approved': 80,
+            # form_270_submitted is set externally when the user submits form 270;
+            # only rehab_approved / terminal decisions should be able to supersede it.
+            'form_270_submitted': 75,
+            'form_pending': 70,
+            'rehab_payment_update': 60, 'waiting_for_docs': 50,
+            'appointment_scheduled': 40, 'claim_submitted': 30, 'informational': 10
+        }
+        case_update: Dict[str, Any] = {}
+        from .supabase_client import get_case as _gc
+        existing_rows = _gc(case_id)
+        existing_obj = (existing_rows[0] if isinstance(existing_rows, list) else existing_rows) if existing_rows else {}
+        existing_status = (existing_obj.get('status') or '')
+        existing_meta = dict(existing_obj.get('metadata') or {})
+
+        # Skip status update if agent flagged human review or returned null action_type
+        should_update_status = (
+            not needs_review
+            and action_type not in ('null', '', None)
+            and new_status in VALID_STATUSES
+        )
+        if should_update_status:
+            existing_priority = PRIORITY.get(existing_status, -1)
+            new_priority = PRIORITY.get(new_status, 0)
+            if new_priority >= existing_priority:
+                case_update['status'] = new_status
+
+        # Always store btl_action data in metadata
+        existing_meta['btl_action'] = action
+        case_update['metadata'] = existing_meta
+        case_update['updated_at'] = __import__('datetime').datetime.utcnow().isoformat()
+
+        # ── Map action_type → dashboard-visible fields ──────────────────────────
+        # The dashboard drives UI from case.committee_decision + case.stage (not
+        # case.status), so we must populate those fields explicitly.
+        _letter_date = (letter_meta or {}).get('date') or (letter_meta or {}).get('letter_date')
+
+        if action_type == 'claim_submitted':
+            # First acknowledgement letter — advance stage only if still in pre-submission state
+            existing_stage = existing_obj.get('stage') or ''
+            if existing_stage in ('', 'initial_questionnaire', None):
+                case_update['stage'] = 'claim_submitted'
+
+        if action_type == 'claim_approved':
+            # Don't overwrite an existing committee_decision if it already has a
+            # terminal outcome (approved/rejected).
+            existing_cd = existing_obj.get('committee_decision') or {}
+            if existing_cd.get('status') not in ('approved', 'rejected'):
+                case_update['committee_decision'] = {
+                    'status': 'approved',
+                    'disability_percentage': action.get('disability_percentage'),
+                    'monthly_amount': action.get('monthly_amount'),
+                    'approved_benefits': action.get('approved_benefits') or [],
+                    'source': 'btl_letter_agent',
+                    'letter_date': _letter_date,
+                    'department_message': action.get('department_message'),
+                }
+            case_update['stage'] = 'claim_approved'
+
+        elif action_type == 'claim_rejected':
+            existing_cd = existing_obj.get('committee_decision') or {}
+            if existing_cd.get('status') not in ('approved', 'rejected'):
+                case_update['committee_decision'] = {
+                    'status': 'rejected',
+                    'disability_percentage': action.get('disability_percentage'),
+                    'disability_percentages_by_period': action.get('disability_percentages_by_period') or [],
+                    'appeal_form_type': action.get('appeal_form_type'),
+                    'appeal_deadline_days': action.get('appeal_deadline_days'),
+                    'source': 'btl_letter_agent',
+                    'letter_date': _letter_date,
+                    'department_message': action.get('department_message'),
+                }
+            case_update['stage'] = 'claim_rejected'
+
+            # ── Merge appeal required_documents into call_summary.documents_requested_list ──
+            # The agent may extract a list of documents the letter says are needed for appeal.
+            # We append them to the standard checklist so the upload flow can track them.
+            appeal_required_docs = action.get('required_documents') or []
+            if appeal_required_docs:
+                import uuid as _uuid
+                call_summary = dict(existing_obj.get('call_summary') or {})
+                doc_list = list(call_summary.get('documents_requested_list') or [])
+                existing_names = {(d.get('name') or '').strip().lower() for d in doc_list}
+                for doc_name in appeal_required_docs:
+                    doc_name = (doc_name or '').strip()
+                    if not doc_name:
+                        continue
+                    if doc_name.lower() in existing_names:
+                        continue  # already in list — skip duplicate
+                    doc_list.append({
+                        'id': str(_uuid.uuid4()),
+                        'name': doc_name,
+                        'reason': f'נדרש לערעור על פי מכתב ביטוח לאומי מ-{_letter_date or "תאריך לא ידוע"}',
+                        'source': 'appeal_rejection_letter',
+                        'status': 'missing',
+                        'required': True,
+                        'category': 'general',
+                    })
+                    existing_names.add(doc_name.lower())
+                call_summary['documents_requested_list'] = doc_list
+                case_update['call_summary'] = call_summary
+                logger.info('[BTL_ACTION] case=%s merged %d appeal docs into documents_requested_list', case_id, len(appeal_required_docs))
+
+        elif action_type == 'appointment_scheduled':
+            # Only advance to medical_committee_scheduled if we don't already have
+            # a terminal decision.
+            existing_cd = existing_obj.get('committee_decision') or {}
+            if existing_cd.get('status') not in ('approved', 'rejected', 'ineligible'):
+                existing_meta['committee_appointment'] = {
+                    'appointment_date': action.get('appointment_date'),
+                    'appointment_time': action.get('appointment_time'),
+                    'appointment_place': action.get('appointment_place'),
+                    'appointment_specialty': action.get('appointment_specialty'),
+                    'urgency': action.get('urgency'),
+                    'department_message': action.get('department_message'),
+                    'source': 'btl_letter_agent',
+                    'letter_date': _letter_date,
+                }
+                case_update['metadata'] = existing_meta
+                case_update['stage'] = 'medical_committee_scheduled'
+
+        elif action_type in ('rehab_approved', 'rehab_payment_update'):
+            rehab_existing = existing_meta.get('rehab') or {}
+            payment_history = list(rehab_existing.get('payment_history') or [])
+            _now_iso = __import__('datetime').datetime.utcnow().isoformat()
+
+            if action_type == 'rehab_approved' or action.get('monthly_amount'):
+                # Recurring stipend — update master monthly_amount
+                if action.get('monthly_amount'):
+                    rehab_existing['monthly_amount'] = action['monthly_amount']
+                    payment_history.append({
+                        'type': 'monthly',
+                        'amount': action['monthly_amount'],
+                        'letter_date': _letter_date,
+                        'recorded_at': _now_iso,
+                    })
+
+            if action.get('reimbursement_amount'):
+                # One-time reimbursement (travel, equipment, tuition batch)
+                payment_history.append({
+                    'type': 'reimbursement',
+                    'amount': action['reimbursement_amount'],
+                    'period': action.get('reimbursement_period'),
+                    'breakdown': action.get('payment_breakdown') or [],
+                    'letter_date': _letter_date,
+                    'recorded_at': _now_iso,
+                })
+
+            rehab_existing.update({
+                'approved_benefits': action.get('approved_benefits') or rehab_existing.get('approved_benefits') or [],
+                'payment_history': payment_history,
+                'source': 'btl_letter_agent',
+                'letter_date': _letter_date,
+                'department_message': action.get('department_message'),
+            })
+            existing_meta['rehab'] = rehab_existing
+            case_update['metadata'] = existing_meta
+            # Only set rehab stage if not already in a terminal state
+            existing_stage = existing_obj.get('stage') or ''
+            if existing_stage not in ('claim_approved', 'claim_rejected'):
+                case_update['stage'] = 'rehab'
+
+        logger.info(
+            '[BTL_ACTION] case=%s action_type=%s → stage=%s committee_decision=%s',
+            case_id, action_type,
+            case_update.get('stage', '(unchanged)'),
+            case_update.get('committee_decision', {}).get('status', '(unchanged)')
+        )
+
+        # ── Append to btl_timeline (append-only event log) ───────────────────
+        _TIMELINE_TITLES = {
+            'claim_submitted':    'תביעה הוגשה לביטוח לאומי',
+            'appointment_scheduled': 'הזמנה לוועדה רפואית',
+            'claim_approved':     'התביעה אושרה',
+            'claim_rejected':     'התביעה נדחתה',
+            'rehab_approved':     'שיקום מקצועי אושר',
+            'rehab_payment_update': 'עדכון תשלומי שיקום',
+            'waiting_for_docs':   'נדרשים מסמכים',
+            'form_pending':       'נדרש טופס',
+            'informational':      'הודעה מביטוח לאומי',
+        }
+        _timeline_key_data: Dict[str, Any] = {}
+        if action_type == 'appointment_scheduled':
+            _timeline_key_data = {
+                'appointment_date': action.get('appointment_date'),
+                'appointment_time': action.get('appointment_time'),
+                'appointment_place': action.get('appointment_place'),
+                'appointment_specialty': action.get('appointment_specialty'),
+            }
+        elif action_type == 'claim_rejected':
+            _timeline_key_data = {
+                'disability_percentages_by_period': action.get('disability_percentages_by_period') or [],
+                'appeal_form_type': action.get('appeal_form_type'),
+                'appeal_deadline_days': action.get('appeal_deadline_days'),
+            }
+        elif action_type == 'claim_approved':
+            _timeline_key_data = {
+                'disability_percentage': action.get('disability_percentage'),
+                'monthly_amount': action.get('monthly_amount'),
+                'approved_benefits': action.get('approved_benefits') or [],
+            }
+        elif action_type == 'rehab_payment_update':
+            _timeline_key_data = {
+                'monthly_amount': action.get('monthly_amount'),
+                'reimbursement_amount': action.get('reimbursement_amount'),
+                'reimbursement_period': action.get('reimbursement_period'),
+                'payment_breakdown': action.get('payment_breakdown') or [],
+            }
+        elif action_type == 'rehab_approved':
+            _timeline_key_data = {
+                'monthly_amount': action.get('monthly_amount'),
+                'approved_benefits': action.get('approved_benefits') or [],
+            }
+        elif action_type == 'informational':
+            _timeline_key_data = {'extracted_data': action.get('extracted_data') or {}}
+
+        _timeline_event = {
+            'ts': __import__('datetime').datetime.utcnow().isoformat(),
+            'letter_date': _letter_date,
+            'action_type': action_type or 'informational',
+            'title_he': _TIMELINE_TITLES.get(action_type or '', 'עדכון מביטוח לאומי'),
+            'summary': (action.get('department_message') or '').strip(),
+            'key_data': {k: v for k, v in _timeline_key_data.items() if v not in (None, '', [], {})},
+        }
+        _btl_timeline = list(existing_meta.get('btl_timeline') or [])
+        _btl_timeline.insert(0, _timeline_event)  # prepend — latest first
+        existing_meta['btl_timeline'] = _btl_timeline
+        case_update['metadata'] = existing_meta
+        # ── End timeline append ───────────────────────────────────────────────
+
+        if case_update:
+            update_case(case_id, case_update)
+
+        # Write extracted email back to user_profile if present
+        registered_email = (action.get('registered_email') or '').strip()
+        if registered_email and existing_obj.get('user_id'):
+            try:
+                from .supabase_client import update_user_profile_fields
+                update_user_profile_fields(
+                    existing_obj['user_id'],
+                    {'email': registered_email}
+                )
+                logger.info('[BTL_ACTION] Updated user_profile email for user_id=%s', existing_obj['user_id'])
+            except Exception:
+                logger.warning('[BTL_ACTION] Could not update user_profile email for case=%s', case_id, exc_info=True)
+
+        return action
+    except Exception:
+        logger.exception('[BTL_ACTION] Action agent failed for case=%s', case_id)
+        return {}
+
+
 @app.get('/admin/stats')
 async def admin_stats(user = Depends(require_admin)):
     """Return aggregate statistics and recent rows used by the admin dashboard.
@@ -271,6 +799,25 @@ async def admin_stats(user = Depends(require_admin)):
     except Exception:
         logger.exception('admin_stats failed')
         raise HTTPException(status_code=500, detail='admin_error')
+
+
+@app.get('/api/admin/cases')
+async def admin_list_cases_by_status(status: str = None, user = Depends(require_admin)):
+    """Admin endpoint to list cases filtered by status (comma-separated). E.g. ?status=form_pending,waiting_for_docs"""
+    try:
+        if not _has_supabase_py or not _supabase_admin:
+            return JSONResponse({'status': 'ok', 'cases': []})
+        q = _supabase_admin.table('cases').select('id,title,status,metadata,updated_at')
+        if status:
+            statuses = [s.strip() for s in status.split(',') if s.strip()]
+            if statuses:
+                q = q.in_('status', statuses)
+        q = q.order('updated_at', desc=True).limit(100)
+        resp = q.execute()
+        return JSONResponse({'status': 'ok', 'cases': resp.data or []})
+    except Exception:
+        logger.exception('admin_list_cases_by_status failed')
+        return JSONResponse({'status': 'ok', 'cases': []})
 
 
 @app.get('/admin/users')
@@ -4449,6 +4996,189 @@ async def _execute_form7801_analysis(case_id: str, documents_with_metadata: list
         raise
 
 
+@app.post('/cases/{case_id}/analyze-documents-form270')
+async def analyze_documents_form270(case_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Generate Form 270 (T270 – Professional Rehabilitation) payload by gathering data from DB
+    and mapping it to the phase2.js step2ExamplePayload structure.
+    Saves the result to cases."207_form" (jsonb column).
+
+    This endpoint:
+    1. Gathers data from case_documents, user_eligibility, user_profile, call_details
+    2. Uses the OpenAI Form 270 agent to construct the payload
+    3. Saves payload to cases."207_form" column (jsonb)
+
+    Returns the generated payload directly (synchronous execution).
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Authentication required')
+
+    try:
+        from .supabase_client import get_case, _supabase_admin
+
+        logger.info(f"🔵 Starting Form 270 analysis for case {case_id}")
+
+        case_list = get_case(case_id)
+        if not case_list:
+            raise HTTPException(status_code=404, detail='Case not found')
+
+        case = case_list[0]
+        if current_user['role'] != 'admin' and case.get('user_id') != current_user['id']:
+            raise HTTPException(status_code=403, detail='Access denied')
+
+        call_summary = case.get('call_summary', {})
+        if isinstance(call_summary, str):
+            try:
+                call_summary = json.loads(call_summary)
+            except:
+                call_summary = {}
+
+        call_details = case.get('call_details', {})
+        if isinstance(call_details, str):
+            try:
+                call_details = json.loads(call_details)
+            except:
+                call_details = {}
+
+        documents_requested = call_summary.get('documents_requested_list', [])
+        logger.info(f"📄 [FORM270] Found {len(documents_requested)} documents in call_summary")
+
+        documents_with_metadata = []
+        if _supabase_admin and documents_requested:
+            for doc_req in documents_requested:
+                doc_id = doc_req.get('document_id')
+                if not doc_id:
+                    continue
+                try:
+                    result = _supabase_admin.table('case_documents').select('*').eq('id', doc_id).execute()
+                    if result.data and len(result.data) > 0:
+                        documents_with_metadata.append(result.data[0])
+                except Exception as e:
+                    logger.warning(f"⚠️ [FORM270] Failed to fetch document {doc_id}: {e}")
+
+        logger.info(f"🤖 [FORM270] Executing Form 270 analysis for case {case_id}")
+        result = await _execute_form270_analysis(
+            case_id,
+            documents_with_metadata,
+            call_summary,
+            call_details,
+        )
+
+        logger.info(f"✅ Form 270 analysis completed for case {case_id}")
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f'❌ Error running Form 270 analysis: {e}')
+        raise HTTPException(status_code=500, detail=f'Failed to run Form 270 analysis: {str(e)}')
+
+
+async def _execute_form270_analysis(
+    case_id: str,
+    documents_with_metadata: list,
+    call_summary: dict,
+    call_details: dict | None = None,
+):
+    """
+    Execute Form 270 payload generation synchronously.
+
+    Steps:
+    1. Gather data from DB (case_documents, user_eligibility, user_profile, call_details)
+    2. Call Form 270 OpenAI agent to map and fill payload
+    3. Save to cases."207_form" column
+    4. Return results
+    """
+    from .supabase_client import update_case, _supabase_admin, SUPABASE_URL
+    from .openai_form270_agent import generate_form270_payload
+
+    logger.info(f"📊 [FORM270] Starting Form 270 payload generation for case {case_id}")
+
+    try:
+        # Step 1: Fetch case data to get user_id
+        case_response = _supabase_admin.table('cases').select('*').eq('id', case_id).execute()
+        if not case_response.data:
+            raise ValueError(f"Case {case_id} not found")
+
+        case_data = case_response.data[0]
+        user_id = case_data.get('user_id')
+        if not user_id:
+            raise ValueError(f"Case {case_id} has no user_id")
+
+        logger.info(f"📋 [FORM270] Case user_id: {user_id}")
+
+        # Step 2: Fetch all documents for this case (not just the requested ones)
+        docs_response = _supabase_admin.table('case_documents').select('*').eq('case_id', case_id).execute()
+        documents = docs_response.data or []
+
+        documents_with_urls = []
+        for doc in documents:
+            file_path = doc.get('file_path', '')
+            if file_path:
+                full_url = f"{SUPABASE_URL}/storage/v1/object/public/case-documents/{file_path}"
+                doc['file_url'] = full_url
+            documents_with_urls.append(doc)
+
+        logger.info(f"📄 [FORM270] Found {len(documents_with_urls)} documents")
+
+        # Step 3: Fetch eligibility_raw
+        eligibility_response = _supabase_admin.table('user_eligibility').select('eligibility_raw').eq('user_id', user_id).execute()
+        eligibility_raw = {}
+        if eligibility_response.data:
+            eligibility_raw = eligibility_response.data[0].get('eligibility_raw', {}) or {}
+
+        # Step 4: Fetch user profile
+        profile_response = _supabase_admin.table('user_profile').select('email, phone, full_name, contact_details').eq('user_id', user_id).execute()
+        user_profile = {}
+        if profile_response.data:
+            user_profile = profile_response.data[0]
+
+        logger.info(f"👤 [FORM270] User profile: {user_profile.get('email', 'N/A')}")
+
+        # Step 5: Build agent input
+        # Include 7801_form (the pre-parsed call-intake form) as the highest-priority
+        # source for personal details, ID number, bank info, etc.
+        form_7801_data = case_data.get('7801_form') or {}
+        if isinstance(form_7801_data, str):
+            try:
+                form_7801_data = json.loads(form_7801_data)
+            except Exception:
+                form_7801_data = {}
+
+        agent_input_data = {
+            'case_id': case_id,
+            'documents': documents_with_urls,
+            'eligibility_raw': eligibility_raw,
+            'user_profile': user_profile,
+            'call_details': call_details or {},
+            'call_summary': call_summary or {},
+            'form_7801_data': form_7801_data,
+        }
+
+        logger.info(f"🤖 [FORM270] Calling Form 270 agent...")
+
+        # Step 6: Run agent
+        form270_payload = await generate_form270_payload(agent_input_data)
+
+        logger.info(f"✅ [FORM270] Payload generation completed")
+
+        # Step 7: Save to cases."207_form" column
+        update_case(case_id, {'207_form': form270_payload})
+
+        logger.info(f"✅ [FORM270] Form 270 payload saved to cases.\"207_form\" column")
+
+        return {
+            'case_id': case_id,
+            'form_270_payload': form270_payload,
+            'documents_processed': len(documents_with_urls),
+            'timestamp': datetime.utcnow().isoformat(),
+        }
+
+    except Exception as e:
+        logger.exception(f"❌ [FORM270] Error generating Form 270 payload: {e}")
+        raise
+
+
 @app.post('/cases/{case_id}/process-documents')
 async def process_case_documents(case_id: str, current_user: dict = Depends(get_current_user)):
     """
@@ -7061,6 +7791,792 @@ async def save_7801_submission(payload: Dict[str, Any] = Body(...)):
         logger.exception('[7801-SUBMISSION] Error saving submission')
         raise HTTPException(status_code=500, detail=f'Failed to save submission: {str(e)}')
 
+
+@app.options('/api/cases/{case_id}/letters')
+async def options_case_letters(case_id: str):
+    """CORS preflight for letters sync endpoints."""
+    response = JSONResponse(content={})
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return response
+
+
+@app.get('/api/cases/{case_id}/letters')
+async def get_case_letters(case_id: str):
+    """Return stored letters snapshot for a case (used by extension/frontend to decide if sync is needed)."""
+    try:
+        rows = get_case(case_id)
+        case_row = rows[0] if rows else None
+        if not case_row:
+            raise HTTPException(status_code=404, detail='case_not_found')
+
+        letters = case_row.get('letters') or {}
+        response = JSONResponse({'status': 'ok', 'case_id': case_id, 'letters': letters})
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('Failed to fetch case letters')
+        raise HTTPException(status_code=500, detail='letters_fetch_failed')
+
+
+@app.post('/api/cases/{case_id}/letters')
+async def upsert_case_letters(case_id: str, payload: Dict[str, Any] = Body(...)):
+    """
+    Public endpoint used by the browser extension to store daily letter snapshots.
+    Expects payload: { records: [...], synced_at?: iso, source?: "extension" }
+    """
+    try:
+        records = payload.get('records') or []
+        synced_at = payload.get('synced_at') or datetime.utcnow().isoformat()
+        source = payload.get('source') or 'extension'
+
+        rows = get_case(case_id)
+        case_row = rows[0] if rows else None
+        if not case_row:
+            raise HTTPException(status_code=404, detail='case_not_found')
+
+        existing_letters = case_row.get('letters') or {}
+        merged_letters, added, total_items = _merge_letter_records(existing_letters, records, synced_at, source)
+
+        update_case(case_id, {
+            'letters': merged_letters,
+            'updated_at': datetime.utcnow().isoformat()
+        })
+
+        response = JSONResponse({
+            'status': 'ok',
+            'case_id': case_id,
+            'added': added,
+            'total_items': total_items,
+            'letters': merged_letters
+        })
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('Failed to upsert case letters')
+        raise HTTPException(status_code=500, detail='letters_sync_failed')
+
+
+@app.post('/api/cases/{case_id}/letters/document')
+async def upload_letter_document(case_id: str, payload: Dict[str, Any] = Body(...)):
+    """
+    Public endpoint for the extension to upload and analyze letter PDFs captured from ps.btl.gov.il.
+
+    Expected payload:
+    {
+        "file_name": "letter.pdf",
+        "file_type": "application/pdf",
+        "file_size": 12345,
+        "base64_data": "...",
+        "meta": {"date": "2026-02-25", "category": "", "index": 0, "row_text": "..."}
+    }
+    """
+    try:
+        from datetime import datetime
+        from .supabase_client import get_case, storage_upload_file, insert_case_document, update_case
+        from .utils import sanitize_filename
+
+        def skip_response(reason: str, error: str = None, analysis: Dict[str, Any] = None):
+            resp = JSONResponse({
+                'status': 'skipped',
+                'reason': reason,
+                'error': error,
+                'analysis': analysis or {}
+            }, status_code=200)
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            return resp
+
+        def decode_bytes(data: Any) -> bytes:
+            if data is None:
+                return b''
+            if isinstance(data, bytes):
+                return data
+            if isinstance(data, list):
+                try:
+                    return bytes(data)
+                except Exception:
+                    return b''
+            if isinstance(data, dict):
+                # common shapes: {"data": [...]}, {"type": "Buffer", "data": [...]}
+                if 'data' in data:
+                    try:
+                        return bytes(data.get('data') or [])
+                    except Exception:
+                        return b''
+                # fallback to first array-like value
+                for v in data.values():
+                    if isinstance(v, (list, dict)):
+                        attempt = decode_bytes(v)
+                        if attempt:
+                            return attempt
+                return b''
+            if isinstance(data, str):
+                # support data URLs and plain base64 strings
+                try:
+                    cleaned = data
+                    if cleaned.startswith('data:') and ',' in cleaned:
+                        cleaned = cleaned.split(',', 1)[1]
+                    return base64.b64decode(cleaned)
+                except Exception:
+                    return b''
+            return b''
+
+        raw_base64 = payload.get('base64_data')
+        file_bytes = decode_bytes(raw_base64)
+
+        # Fallback: some clients might send bytes under alternate keys
+        if not file_bytes:
+            for alt_key in ['file_bytes', 'buffer', 'arrayBuffer', 'data']:
+                if alt_key in payload:
+                    file_bytes = decode_bytes(payload.get(alt_key))
+                    if file_bytes:
+                        break
+
+        if raw_base64 is None and not file_bytes:
+            raise HTTPException(status_code=400, detail='base64_data is required')
+        if not file_bytes:
+            logger.warning(
+                "[LETTER_UPLOAD] decode_failed: type=%s len=%s first80=%r",
+                type(raw_base64).__name__,
+                len(raw_base64) if isinstance(raw_base64, str) else None,
+                raw_base64[:80] if isinstance(raw_base64, str) else None
+                )
+
+        # Verify case exists
+        case_rows = get_case(case_id)
+        if not case_rows:
+            raise HTTPException(status_code=404, detail='case_not_found')
+
+        # Resolve uploader — payload wins, fall back to case owner so uploaded_by is never null
+        case_obj = case_rows[0] if isinstance(case_rows, list) and case_rows else case_rows
+        uploaded_by_id = (
+            payload.get('user_id')
+            or payload.get('userId')
+            or (case_obj or {}).get('user_id')
+            or None
+        )
+
+        if not file_bytes or len(file_bytes) == 0:
+            logger.warning('[LETTER_UPLOAD] Empty file bytes received; skipping')
+            return skip_response('empty_file')
+
+        file_name = payload.get('file_name') or f"letter_{uuid.uuid4()}.pdf"
+        file_type = payload.get('file_type') or 'application/pdf'
+        file_size = payload.get('file_size') or len(file_bytes)
+        letter_meta = payload.get('meta') or {}
+
+        try:
+            logger.info(
+                '[LETTER_UPLOAD] incoming letter: case=%s name=%s type=%s size=%s b64_len=%s bytes_len=%s meta_keys=%s',
+                case_id,
+                file_name,
+                file_type,
+                file_size,
+                len(raw_base64) if isinstance(raw_base64, str) else None,
+                len(file_bytes) if file_bytes else 0,
+                list(letter_meta.keys()) if isinstance(letter_meta, dict) else None
+            )
+        except Exception:
+            logger.exception('[LETTER_UPLOAD] failed to log payload summary')
+
+        # Analyze with Vision OCR then summarize with OpenAI
+        text = ''
+        try:
+            try:
+                text, _ = extract_text_from_document(file_bytes, file_name)
+            except Exception:
+                logger.exception('[LETTER_UPLOAD] Vision OCR failed; attempting PDF text fallback')
+                text, success_pdf = extract_text_from_pdf_bytes(file_bytes)
+                if not success_pdf:
+                    text = text or ''
+            analysis = _summarize_letter_document(text, file_name=file_name, document_type='letter')
+        except Exception as e:
+            logger.exception('[LETTER_UPLOAD] Analysis failed')
+            return skip_response('analysis_failed', str(e))
+
+        is_relevant = analysis.get('is_relevant', False)
+        relevance_score = analysis.get('relevance_score', 0)
+
+        # All BTL documents are saved — they are sources of truth for the claim.
+        # We classify by relevance: medical/relevant → 'letter', admin/low-score → 'btl_admin_letter'
+        inferred_doc_type = 'letter' if (is_relevant and relevance_score >= 40) else 'btl_admin_letter'
+
+        # Upload to storage bucket
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        safe_filename = sanitize_filename(file_name) or f"letter_{uuid.uuid4()}.pdf"
+        storage_path = f"cases/{case_id}/letters/{timestamp}_{safe_filename}"
+
+        try:
+            upload_result = storage_upload_file(
+                bucket='case-documents',
+                path=storage_path,
+                file_bytes=file_bytes,
+                content_type=file_type,
+                upsert=True
+            )
+            storage_url = upload_result.get('public_url')
+        except Exception as e:
+            logger.exception('[LETTER_UPLOAD] Storage upload failed')
+            return skip_response('storage_failed', str(e), analysis)
+
+        _letter_doc_meta = {
+            'upload_source': 'extension_michtavim',
+            'letter_meta': letter_meta,
+            'document_summary': analysis.get('document_summary'),
+            'key_points': analysis.get('key_points', []),
+            'is_relevant': is_relevant,
+            'relevance_score': relevance_score,
+            'relevance_reason': analysis.get('relevance_reason'),
+            'structured_data': analysis.get('structured_data', {})
+        }
+        try:
+            doc_record = insert_case_document(
+                case_id=case_id,
+                file_path=storage_path,
+                file_name=file_name,
+                file_type=file_type,
+                file_size=file_size,
+                document_type=inferred_doc_type,
+                uploaded_by=uploaded_by_id,
+                metadata=_letter_doc_meta
+            )
+        except Exception as e:
+            # A 409 here is almost always the FK violation on uploaded_by (code 23503):
+            # the user_id exists in auth.users but not in user_profile.
+            # Retry with uploaded_by=None — case_id already establishes ownership.
+            _err_str = str(e)
+            if '409' in _err_str:
+                logger.warning('[LETTER_UPLOAD] uploaded_by FK violation (%s) — retrying with uploaded_by=None', uploaded_by_id)
+                try:
+                    doc_record = insert_case_document(
+                        case_id=case_id,
+                        file_path=storage_path,
+                        file_name=file_name,
+                        file_type=file_type,
+                        file_size=file_size,
+                        document_type=inferred_doc_type,
+                        uploaded_by=None,
+                        metadata=_letter_doc_meta
+                    )
+                except Exception as e2:
+                    logger.exception('[LETTER_UPLOAD] DB insert failed even with uploaded_by=None')
+                    return skip_response('db_failed', str(e2), analysis)
+            else:
+                logger.exception('[LETTER_UPLOAD] DB insert failed')
+                return skip_response('db_failed', _err_str, analysis)
+
+        # Attempt to update the letters registry so download_url points to Supabase
+        try:
+            letters_state = (case_obj or {}).get('letters') or {}
+            dates = letters_state.get('dates') or {}
+            date_key = str((letter_meta or {}).get('date') or (letter_meta or {}).get('letter_date') or 'unknown').strip() or 'unknown'
+            idx = None
+            try:
+                idx = int((letter_meta or {}).get('index'))
+            except Exception:
+                idx = None
+
+            entry = dates.get(date_key) or {'items': [], 'seen_indices': []}
+            updated = False
+            if idx is not None:
+                entry['seen_indices'] = sorted(set(entry.get('seen_indices') or []) | {idx})
+                for item in entry.get('items', []):
+                    if item.get('index') == idx:
+                        item['download_url'] = storage_url
+                        item['stored_path'] = storage_path
+                        item['analyzed'] = True
+                        updated = True
+                        break
+                if not updated:
+                    new_item = {
+                        'index': idx,
+                        'date': date_key,
+                        'download_url': storage_url,
+                        'stored_path': storage_path,
+                        'analyzed': True,
+                        'title': letter_meta.get('title'),
+                        'category': letter_meta.get('category'),
+                        'row_text': letter_meta.get('row_text'),
+                        'captured_at': letter_meta.get('captured_at') or datetime.utcnow().isoformat()
+                    }
+                    entry.setdefault('items', []).append(new_item)
+            entry['last_updated_at'] = datetime.utcnow().isoformat()
+            dates[date_key] = entry
+            letters_state['dates'] = dates
+            update_case(case_id, {'letters': letters_state, 'updated_at': datetime.utcnow().isoformat()})
+        except Exception:
+            logger.exception('[LETTER_UPLOAD] Failed to attach storage URL to letters state')
+
+        # Run BTL action agent to classify the letter and update case status
+        action = {}
+        try:
+            action = _run_btl_action_agent(case_id, text, analysis, letter_meta)
+        except Exception:
+            logger.exception('[LETTER_UPLOAD] Action agent call failed')
+
+        response = JSONResponse({
+            'status': 'ok',
+            'case_id': case_id,
+            'document': doc_record,
+            'public_url': storage_url,
+            'storage_path': storage_path,
+            'letter_meta': { **(letter_meta or {}), 'download_url': storage_url },
+            'analysis': analysis,
+            'action': action,
+            'document_type': inferred_doc_type
+        })
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('[LETTER_UPLOAD] Failed to upload/analyze letter')
+        raise HTTPException(status_code=500, detail='letter_upload_failed')
+
+
+# ─── Case Status & Action Endpoints ───────────────────────────────────────────
+
+# ─── BTL Lab (dev/test control panel) endpoints ──────────────────────────────
+
+@app.get('/api/btl-lab/{case_id}')
+async def btl_lab_state(case_id: str):
+    """Return the full BTL Lab state: documents list + current btl_action + test_config."""
+    try:
+        from .supabase_client import get_case, get_case_documents
+        case_rows = get_case(case_id)
+        if not case_rows:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        case_obj = case_rows[0] if isinstance(case_rows, list) else case_rows
+        meta = dict(case_obj.get('metadata') or {})
+        btl_action = meta.get('btl_action') or {}
+        test_config = meta.get('btl_test_config') or {'daily_enabled': True, 'auto_mark': True}
+
+        docs = get_case_documents(case_id)
+        # Only surface letter-type documents — these are what the agent processes
+        letter_docs = [
+            {
+                'id': d.get('id'),
+                'file_name': d.get('file_name'),
+                'document_type': d.get('document_type'),
+                'uploaded_at': d.get('uploaded_at'),
+                'btl_analyzed': bool((d.get('metadata') or {}).get('btl_analyzed')),
+                'summary': (d.get('metadata') or {}).get('document_summary', ''),
+                'key_points': (d.get('metadata') or {}).get('key_points', []),
+                'is_relevant': (d.get('metadata') or {}).get('is_relevant', False),
+                'relevance_score': (d.get('metadata') or {}).get('relevance_score', 0),
+                'letter_meta': (d.get('metadata') or {}).get('letter_meta', {}),
+                'action_type': ((d.get('metadata') or {}).get('btl_action_result') or {}).get('action_type'),
+            }
+            for d in docs
+            if d.get('document_type') in ('letter', 'btl_admin_letter')
+        ]
+        # Sort oldest first
+        letter_docs.sort(key=lambda x: x.get('uploaded_at') or '')
+
+        resp = JSONResponse({
+            'case_id': case_id,
+            'status': case_obj.get('status'),
+            'btl_action': btl_action,
+            'test_config': test_config,
+            'documents': letter_docs,
+            'total': len(letter_docs),
+            'analyzed_count': sum(1 for d in letter_docs if d['btl_analyzed']),
+            'pending_count': sum(1 for d in letter_docs if not d['btl_analyzed']),
+        })
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('[BTL_LAB] Failed to get state case=%s', case_id)
+        raise HTTPException(status_code=500, detail='btl_lab_state_failed')
+
+
+@app.post('/api/btl-lab/{case_id}/run')
+async def btl_lab_run(case_id: str, payload: Dict[str, Any] = Body(...)):
+    """Run BTL action agent for up to `limit` oldest unanalyzed letter documents.
+
+    Body: { "limit": 1, "mark_analyzed": true, "doc_ids": ["..."] }
+    - limit: max docs to analyze (default 1)
+    - mark_analyzed: whether to flag them as done (default true)
+    - doc_ids: optional — if set, analyze exactly these IDs regardless of analyzed flag
+    """
+    try:
+        from .supabase_client import get_case, get_case_documents, patch_case_document_metadata
+        limit = int(payload.get('limit') or 1)
+        mark_analyzed = payload.get('mark_analyzed', True)
+        forced_ids = set(payload.get('doc_ids') or [])
+
+        case_rows = get_case(case_id)
+        if not case_rows:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        case_obj = case_rows[0] if isinstance(case_rows, list) else case_rows
+        meta_before = dict((case_obj.get('metadata') or {}))
+        btl_action_before = meta_before.get('btl_action') or {}
+
+        docs = get_case_documents(case_id)
+        letter_docs = [
+            d for d in docs
+            if d.get('document_type') in ('letter', 'btl_admin_letter')
+        ]
+        # Sort oldest first
+        letter_docs.sort(key=lambda d: d.get('uploaded_at') or '')
+
+        if forced_ids:
+            candidates = [d for d in letter_docs if str(d.get('id')) in forced_ids]
+        else:
+            candidates = [d for d in letter_docs if not (d.get('metadata') or {}).get('btl_analyzed')]
+
+        to_process = candidates[:limit]
+        if not to_process:
+            resp = JSONResponse({'status': 'nothing_to_process', 'case_id': case_id,
+                                  'btl_action_before': btl_action_before, 'btl_action_after': btl_action_before,
+                                  'processed': [], 'message': 'All documents already analyzed. Reset to re-run.'})
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            return resp
+
+        results = []
+        for doc in to_process:
+            doc_meta = doc.get('metadata') or {}
+            analysis = {
+                'document_summary': doc_meta.get('document_summary', ''),
+                'key_points': doc_meta.get('key_points', []),
+                'is_relevant': doc_meta.get('is_relevant', False),
+                'relevance_score': doc_meta.get('relevance_score', 0),
+            }
+            letter_meta = doc_meta.get('letter_meta') or {
+                'title': doc.get('file_name'),
+                'date': (doc.get('uploaded_at') or '')[:10],
+            }
+            text = doc_meta.get('document_summary') or ''
+
+            action = _run_btl_action_agent(case_id, text, analysis, letter_meta)
+
+            if mark_analyzed:
+                try:
+                    patch_case_document_metadata(str(doc['id']), {
+                        'btl_analyzed': True,
+                        'btl_action_result': action,
+                        'btl_analyzed_at': __import__('datetime').datetime.utcnow().isoformat(),
+                    })
+                except Exception:
+                    logger.warning('[BTL_LAB] Could not mark doc %s as analyzed', doc.get('id'))
+
+            results.append({
+                'id': str(doc.get('id')),
+                'file_name': doc.get('file_name'),
+                'action': action,
+            })
+
+        # Re-read updated case to get new btl_action
+        from .supabase_client import get_case as _gc
+        updated_rows = _gc(case_id)
+        updated_obj = (updated_rows[0] if isinstance(updated_rows, list) else updated_rows) if updated_rows else {}
+        btl_action_after = dict((updated_obj.get('metadata') or {})).get('btl_action') or {}
+
+        resp = JSONResponse({
+            'status': 'ok',
+            'case_id': case_id,
+            'processed_count': len(results),
+            'processed': results,
+            'btl_action_before': btl_action_before,
+            'btl_action_after': btl_action_after,
+        })
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('[BTL_LAB] Run failed case=%s', case_id)
+        raise HTTPException(status_code=500, detail='btl_lab_run_failed')
+
+
+@app.post('/api/btl-lab/{case_id}/reset')
+async def btl_lab_reset(case_id: str, payload: Dict[str, Any] = Body({})):
+    """Clear btl_analyzed flag on documents so they can be re-processed.
+
+    Body: { "doc_ids": ["..."] }  — omit or pass empty list to reset ALL letters.
+    """
+    try:
+        from .supabase_client import get_case, get_case_documents, patch_case_document_metadata
+        case_rows = get_case(case_id)
+        if not case_rows:
+            raise HTTPException(status_code=404, detail='case_not_found')
+
+        doc_ids = set(payload.get('doc_ids') or [])
+        docs = get_case_documents(case_id)
+        letter_docs = [
+            d for d in docs
+            if d.get('document_type') in ('letter', 'btl_admin_letter')
+        ]
+        targets = [d for d in letter_docs if (not doc_ids or str(d.get('id')) in doc_ids)]
+
+        reset_ids = []
+        for doc in targets:
+            try:
+                patch_case_document_metadata(str(doc['id']), {
+                    'btl_analyzed': False,
+                    'btl_action_result': None,
+                    'btl_analyzed_at': None,
+                })
+                reset_ids.append(str(doc['id']))
+            except Exception:
+                logger.warning('[BTL_LAB] Could not reset doc %s', doc.get('id'))
+
+        resp = JSONResponse({'status': 'ok', 'case_id': case_id, 'reset_count': len(reset_ids), 'reset_ids': reset_ids})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('[BTL_LAB] Reset failed case=%s', case_id)
+        raise HTTPException(status_code=500, detail='btl_lab_reset_failed')
+
+
+@app.patch('/api/btl-lab/{case_id}/config')
+async def btl_lab_config(case_id: str, payload: Dict[str, Any] = Body(...)):
+    """Save test config into cases.metadata.btl_test_config.
+
+    Body: { "daily_enabled": true, "auto_mark": true }
+    """
+    try:
+        from .supabase_client import get_case, update_case
+        case_rows = get_case(case_id)
+        if not case_rows:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        case_obj = case_rows[0] if isinstance(case_rows, list) else case_rows
+        meta = dict(case_obj.get('metadata') or {})
+        meta['btl_test_config'] = {**(meta.get('btl_test_config') or {}), **payload}
+        update_case(case_id, {'metadata': meta, 'updated_at': __import__('datetime').datetime.utcnow().isoformat()})
+        resp = JSONResponse({'status': 'ok', 'test_config': meta['btl_test_config']})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('[BTL_LAB] Config save failed case=%s', case_id)
+        raise HTTPException(status_code=500, detail='btl_lab_config_failed')
+
+
+@app.patch('/api/cases/{case_id}/status')
+async def update_case_status_endpoint(case_id: str, payload: Dict[str, Any] = Body(...)):
+    """Update a case's status. Body: {status: string, metadata_patch: dict?}"""
+    try:
+        from .supabase_client import update_case, get_case
+        new_status = (payload.get('status') or '').strip()
+        if not new_status:
+            raise HTTPException(status_code=400, detail='status is required')
+        rows = get_case(case_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        case_obj = rows[0] if isinstance(rows, list) else rows
+        meta = dict(case_obj.get('metadata') or {})
+        if payload.get('metadata_patch'):
+            meta.update(payload['metadata_patch'])
+        update_case(case_id, {'status': new_status, 'metadata': meta, 'updated_at': __import__('datetime').datetime.utcnow().isoformat()})
+        resp = JSONResponse({'status': 'ok', 'case_id': case_id, 'new_status': new_status})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('[STATUS_UPDATE] Failed case=%s', case_id)
+        raise HTTPException(status_code=500, detail='status_update_failed')
+
+
+@app.post('/api/cases/{case_id}/rehab-agreement')
+async def submit_rehab_agreement(case_id: str, payload: Dict[str, Any] = Body(...)):
+    """Record a signed rehabilitation agreement. Body: {signature_data_url, attendance_data, signed_at}"""
+    try:
+        from .supabase_client import update_case, get_case
+        rows = get_case(case_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        case_obj = rows[0] if isinstance(rows, list) else rows
+        meta = dict(case_obj.get('metadata') or {})
+        meta['rehab_agreement'] = {
+            'signed': True,
+            'signed_at': payload.get('signed_at') or __import__('datetime').datetime.utcnow().isoformat(),
+            'attendance_data': payload.get('attendance_data'),
+            'has_signature': bool(payload.get('signature_data_url'))
+        }
+        update_case(case_id, {'status': 'rehab_agreement_signed', 'metadata': meta, 'updated_at': __import__('datetime').datetime.utcnow().isoformat()})
+        resp = JSONResponse({'status': 'ok', 'case_id': case_id})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('[REHAB_AGREEMENT] Failed case=%s', case_id)
+        raise HTTPException(status_code=500, detail='rehab_agreement_failed')
+
+
+@app.post('/api/cases/{case_id}/form-270')
+async def submit_form_270(case_id: str, payload: Dict[str, Any] = Body(...)):
+    """Submit a completed Form 270 (rehabilitation entitlement). Body: all form fields."""
+    try:
+        from .supabase_client import update_case, get_case
+        rows = get_case(case_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        case_obj = rows[0] if isinstance(rows, list) else rows
+        meta = dict(case_obj.get('metadata') or {})
+        meta['form_270'] = {
+            'submitted': True,
+            'submitted_at': __import__('datetime').datetime.utcnow().isoformat(),
+            'form_data': payload
+        }
+        update_case(case_id, {'status': 'form_270_submitted', 'metadata': meta, 'updated_at': __import__('datetime').datetime.utcnow().isoformat()})
+        resp = JSONResponse({'status': 'ok', 'case_id': case_id})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('[FORM_270] Failed case=%s', case_id)
+        raise HTTPException(status_code=500, detail='form_270_failed')
+
+
+@app.options('/api/cases/form-270-submission')
+async def options_270_submission():
+    """CORS preflight handler for form-270 submission endpoint"""
+    response = JSONResponse(content={})
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
+
+@app.post('/api/cases/form-270-submission')
+async def save_270_submission(payload: Dict[str, Any] = Body(...)):
+    """
+    Public endpoint (no authentication required) to save form 270 submission data.
+    Called by browser extension after successful T270 government form submission.
+
+    Expected payload:
+    {
+        "user_id": "uuid",
+        "case_id": "uuid",
+        "application_number": "458462",
+        "page_content": "<html>...</html>",
+        "submitted_at": "2026-01-25T12:00:00Z"
+    }
+    """
+    try:
+        logger.info('[270-SUBMISSION] Received submission request')
+        logger.info(f'[270-SUBMISSION] Case ID: {payload.get("case_id")}')
+        logger.info(f'[270-SUBMISSION] Application Number: {payload.get("application_number")}')
+
+        case_id = payload.get('case_id')
+        application_number = payload.get('application_number')
+        page_content = payload.get('page_content')
+        submitted_at = payload.get('submitted_at')
+
+        if not case_id:
+            logger.error('[270-SUBMISSION] Missing case_id')
+            raise HTTPException(status_code=400, detail='case_id is required')
+
+        update_data = {
+            '207_application': {
+                'application_number': application_number,
+                'page_content': page_content,
+                'submitted_at': submitted_at
+            },
+            'status': 'form_270_submitted'
+        }
+
+        result = update_case(case_id, update_data)
+        logger.info(f'[270-SUBMISSION] ✓ Case updated successfully: {case_id}')
+
+        response = JSONResponse({
+            'status': 'ok',
+            'message': 'Form 270 submission saved successfully',
+            'case': result
+        })
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    except Exception as e:
+        logger.exception('[270-SUBMISSION] Error saving submission')
+        raise HTTPException(status_code=500, detail=f'Failed to save 270 submission: {str(e)}')
+
+
+@app.post('/api/cases/{case_id}/appeal-letter')
+async def request_appeal_letter(case_id: str, payload: Dict[str, Any] = Body(...)):
+    """Mark the case as starting an appeal (document re-submission stage).
+    Body: {rejection_reason?, appeal_notes?}
+    Sets stage='appeal_pending' and resets all appeal documents back to 'missing'
+    so the user is prompted to re-upload them.
+    """
+    try:
+        import datetime as _dt
+        from .supabase_client import update_case, get_case
+        rows = get_case(case_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        case_obj = rows[0] if isinstance(rows, list) else rows
+        meta = dict(case_obj.get('metadata') or {})
+        now_iso = _dt.datetime.utcnow().isoformat()
+        meta['appeal'] = {
+            'requested': True,
+            'requested_at': now_iso,
+            'rejection_reason': payload.get('rejection_reason'),
+            'appeal_notes': payload.get('appeal_notes'),
+        }
+        # Reset any appeal docs back to missing so user can re-upload for the appeal
+        call_summary = dict(case_obj.get('call_summary') or {})
+        doc_list = list(call_summary.get('documents_requested_list') or [])
+        for doc in doc_list:
+            if (doc.get('source') == 'appeal_rejection_letter') or (doc.get('status') == 'uploaded' and doc.get('category') == 'general'):
+                doc['status'] = 'missing'
+        call_summary['documents_requested_list'] = doc_list
+        update_case(case_id, {
+            'status': 'appeal_pending',
+            'stage': 'appeal_pending',
+            'call_summary': call_summary,
+            'metadata': meta,
+            'updated_at': now_iso,
+        })
+        resp = JSONResponse({'status': 'ok', 'case_id': case_id})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('[APPEAL_LETTER] Failed case=%s', case_id)
+        raise HTTPException(status_code=500, detail='appeal_letter_failed')
+
+
+@app.patch('/api/cases/{case_id}/rehab-payment-sent')
+async def mark_rehab_payment_sent(case_id: str, payload: Dict[str, Any] = Body(default={})):
+    """Mark that the rehab payment request email was sent by the user."""
+    try:
+        from .supabase_client import update_case, get_case
+        rows = get_case(case_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        case_obj = rows[0] if isinstance(rows, list) else rows
+        meta = dict(case_obj.get('metadata') or {})
+        meta['rehab_payment_sent'] = {
+            'sent': True,
+            'sent_at': __import__('datetime').datetime.utcnow().isoformat()
+        }
+        update_case(case_id, {'status': 'rehab_payment_pending', 'metadata': meta, 'updated_at': __import__('datetime').datetime.utcnow().isoformat()})
+        resp = JSONResponse({'status': 'ok', 'case_id': case_id})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('[REHAB_PAYMENT_SENT] Failed case=%s', case_id)
+        raise HTTPException(status_code=500, detail='rehab_payment_sent_failed')
+
+
 @app.post('/cases')
 async def create_case_endpoint(payload: Dict[str, Any] = Body(...), request: Request = None):
     """Create a new case for the authenticated user. Expects JSON {title, description, metadata}, Authorization header required."""
@@ -8514,6 +10030,86 @@ Use this information to guide your interview questions and address the identifie
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Medical Committee Preparation Chat
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post('/api/cases/{case_id}/committee-prep/chat', response_model=dict)
+async def committee_prep_chat(
+    case_id: str,
+    chat_request: dict = Body(...),
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Conversational coaching endpoint to prepare claimants for their BTL medical committee.
+
+    Request body:
+        message: str          — "__INIT__" for opening greeting, or user's chat message
+        chat_history: list    — previous messages [{role, content}]
+        language: str         — "he" | "en"  (default "he")
+
+    Response:
+        { message: str, done: bool }
+    """
+    try:
+        from .committee_prep_agent import (
+            process_committee_prep_message,
+            generate_initial_greeting,
+            CommitteePrepMessage,
+        )
+        from .supabase_client import get_case as _get_case
+
+        message = (chat_request.get('message') or '').strip()
+        chat_history_raw = chat_request.get('chat_history') or []
+        language = chat_request.get('language') or 'he'
+
+        if not case_id:
+            raise HTTPException(status_code=400, detail='case_id is required')
+
+        case_rows = _get_case(case_id)
+        if not case_rows:
+            raise HTTPException(status_code=404, detail='case_not_found')
+        case_data = case_rows[0] if isinstance(case_rows, list) and case_rows else case_rows
+
+        # Build chat history objects
+        chat_history = []
+        for m in chat_history_raw:
+            if isinstance(m, dict) and m.get('role') in ('user', 'assistant'):
+                chat_history.append(CommitteePrepMessage(role=m['role'], content=m.get('content', '')))
+
+        if message == '__INIT__':
+            result = await generate_initial_greeting(case_data=case_data, language=language)
+        else:
+            if not message:
+                raise HTTPException(status_code=400, detail='message is required')
+            result = await process_committee_prep_message(
+                message=message,
+                chat_history=chat_history,
+                case_data=case_data,
+                language=language
+            )
+
+        response = JSONResponse(result)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception('[COMMITTEE_PREP_CHAT] Unhandled error case=%s', case_id)
+        raise HTTPException(status_code=500, detail='committee_prep_failed')
+
+
+@app.options('/api/cases/{case_id}/committee-prep/chat')
+async def committee_prep_chat_options(case_id: str):
+    from fastapi.responses import Response as _Response
+    r = _Response()
+    r.headers['Access-Control-Allow-Origin'] = '*'
+    r.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+    r.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return r
 
 
 @app.post('/api/interview/chat', response_model=dict)

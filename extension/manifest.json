@@ -6,7 +6,9 @@
   "permissions": [
     "activeTab",
     "scripting",
-    "tabs"
+    "tabs",
+    "storage",
+    "notifications"
   ],
   "host_permissions": [
     "https://ps.btl.gov.il/*", 
@@ -14,7 +16,10 @@
     "https://*/*",
     "http://localhost:*/*",
     "http://127.0.0.1:*/*",
-    "https://darling-melomakarona-6cd11d.netlify.app/"
+    "https://localhost:*/*",
+    "https://127.0.0.1:*/*",
+    "https://darling-melomakarona-6cd11d.netlify.app/",
+    "https://app.adhdeal.com/*"
   ],
   "externally_connectable": {
     "matches": [
@@ -22,7 +27,8 @@
       "http://127.0.0.1:*/*",
       "https://*.vercel.app/*",
       "https://*.netlify.app/*",
-      "https://*.trycloudflare.com/*"
+      "https://*.trycloudflare.com/*",
+      "https://app.adhdeal.com/*"
     ]
   },
   "background": {
@@ -35,23 +41,33 @@
   "content_scripts": [
     {
       "matches": [
+        "https://ps.btl.gov.il/*"
+      ],
+      "js": ["checkStatus.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://govforms.gov.il/*",
         "https://darling-melomakarona-6cd11d.netlify.app/*",
         "https://*.netlify.app/*",
         "https://*.vercel.app/*",
-        "https://*.trycloudflare.com/*"
+        "https://*.trycloudflare.com/*",
+        "https://app.adhdeal.com/*"
       ],
-      "js": ["config.js", "content.js"],
+      "js": ["config.js", "content.js", "phase2.js"],
       "run_at": "document_start"
     },
     {
       "matches": [
         "http://localhost:*/*",
-        "http://127.0.0.1:*/*"
+        "http://127.0.0.1:*/*",
+        "https://localhost:*/*",
+        "https://127.0.0.1:*/*"
       ],
-      "js": ["config.js", "content.js"],
+      "js": ["config.js", "content.js", "phase2.js"],
       "run_at": "document_start",
-      "all_frames": false
+      "all_frames": true
     }
   ]
 }

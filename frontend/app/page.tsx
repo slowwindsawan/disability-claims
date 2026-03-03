@@ -72,6 +72,7 @@ export default function Home() {
   const [eligibilityAnswers, setEligibilityAnswers] = useState<Record<string, string>>({})
   const [userId, setUserId] = useState<string | null>(null)
   const [caseId, setCaseId] = useState<string | null>(null)
+  const [hasAskedExtension, setHasAskedExtension] = useState(false)
   const [wizardStep, setWizardStep] = useState(0)
   const [isReturningUser, setIsReturningUser] = useState(false)
   const [answers, setAnswers] = useState<boolean[]>([])
@@ -93,6 +94,40 @@ export default function Home() {
     window.addEventListener('storage', check)
     return () => window.removeEventListener('storage', check)
   }, [])
+
+  // Ask user to allow extension to sync letters once we have case/user context
+  React.useEffect(() => {
+    if (hasAskedExtension) return
+    const prompted = sessionStorage.getItem('extension_letters_prompted') === 'yes'
+    if (prompted) {
+      setHasAskedExtension(true)
+      return
+    }
+
+    const cid = caseId || (typeof window !== 'undefined' ? localStorage.getItem('case_id') : null)
+    const uid = userId || (typeof window !== 'undefined' ? localStorage.getItem('user_id') : null)
+    if (!cid || !uid) return
+
+    // const accepted = window.confirm('Allow the browser extension to check and upload BTL letters for this case?')
+    // sessionStorage.setItem('extension_letters_prompted', 'yes')
+    // setHasAskedExtension(true)
+    // if (!accepted) return
+
+    window.postMessage({
+      type: 'BTL_EXTENSION_STORE_PAYLOAD',
+      payload: {
+        user_id: uid,
+        case_id: cid,
+        source: 'frontend-auto-sync',
+        prompted_at: new Date().toISOString()
+      }
+    }, '*')
+
+    // Kick off letters sync after payload is stored
+    setTimeout(() => {
+      window.postMessage({ type: 'BTL_EXTENSION_START_LETTERS_SYNC' }, '*')
+    }, 300)
+  }, [caseId, userId, hasAskedExtension])
 
   // Handle redirects when NOT logged in
   React.useEffect(() => {

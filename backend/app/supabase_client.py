@@ -629,6 +629,29 @@ def update_onboarding_state(user_id: str, onboarding_state: dict) -> dict:
         raise
 
 
+def update_user_profile_fields(user_id: str, fields: dict) -> dict:
+    """Patch arbitrary columns on user_profile for the given user_id.
+
+    Example:
+        update_user_profile_fields(uid, {'email': 'user@example.com'})
+    """
+    if not user_id or not fields:
+        return {}
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/user_profile?user_id=eq.{user_id}"
+    try:
+        logger.debug(f"Patching user_profile for user_id={user_id} fields={list(fields.keys())}")
+        resp = requests.patch(url, headers=_postgrest_headers(), json=fields, timeout=10)
+        logger.debug(f"update_user_profile_fields response: status={resp.status_code} text={resp.text}")
+        resp.raise_for_status()
+        try:
+            return resp.json()
+        except Exception:
+            return {'status_text': resp.text}
+    except Exception:
+        logger.exception('Failed to update user_profile fields for user_id=%s', user_id)
+        raise
+
+
 def insert_user_profile(user_id: str, name: str, email: str, phone: str, identity_code: str, otp: str = None, otp_expires_at: datetime = None, eligibility: dict = None, verified: bool = False) -> dict:
     """Insert a record into user_profile table via PostgREST.
     Optional `eligibility` dict can include rating/title/message/confidence/raw.
@@ -1785,6 +1808,31 @@ def get_case_documents(case_id: str) -> list:
         return []
 
 
+def patch_case_document_metadata(document_id: str, meta_patch: dict) -> dict:
+    """Merge meta_patch into the metadata JSONB column of a case_documents row."""
+    if not document_id or not meta_patch:
+        return {}
+    # First read current metadata
+    url_get = f"{SUPABASE_URL.rstrip('/')}/rest/v1/case_documents?id=eq.{document_id}&select=metadata"
+    try:
+        resp = requests.get(url_get, headers=_postgrest_headers(), timeout=10)
+        resp.raise_for_status()
+        rows = resp.json()
+        current_meta = (rows[0].get('metadata') or {}) if rows else {}
+    except Exception:
+        logger.warning('patch_case_document_metadata: failed to read current metadata for %s', document_id)
+        current_meta = {}
+    merged = {**current_meta, **meta_patch}
+    url_patch = f"{SUPABASE_URL.rstrip('/')}/rest/v1/case_documents?id=eq.{document_id}"
+    try:
+        r = requests.patch(url_patch, headers=_postgrest_headers(), json={'metadata': merged}, timeout=10)
+        r.raise_for_status()
+        return {'status': 'ok', 'document_id': document_id}
+    except Exception:
+        logger.exception('patch_case_document_metadata failed for %s', document_id)
+        raise
+
+
 def delete_case_document(document_id: str) -> dict:
     """
     Delete a document record from case_documents table.
@@ -1862,23 +1910,14 @@ def update_subadmin_permissions(user_id: str, permissions: dict) -> dict:
         raise
 
 
-# Agent prompt management
-_agent_cache = {}  # Cache for agent prompts to reduce DB calls
+# Agent prompt management — no caching, always fetch live from DB
 
 def get_agent_prompt(agent_name: str, fallback_prompt: str = None) -> dict:
     """
     Fetch agent configuration from database by name.
-    Returns dict with: prompt, model, output_schema
-    Uses in-memory cache to reduce DB calls.
-    Falls back to provided fallback_prompt if agent not found or DB unavailable.
-    Implements retry logic for network failures.
+    Always queries the DB directly — no caching — so prompt edits take effect immediately.
+    Falls back to fallback_prompt if agent not found or DB unavailable.
     """
-    
-    # Check cache first
-    if agent_name in _agent_cache:
-        logger.debug(f"[DB] ✅ Returning cached agent config for '{agent_name}'")
-        return _agent_cache[agent_name]
-    
     try:
         if not _has_supabase_py or not _supabase_admin:
             logger.warning(f"Supabase not configured, using fallback prompt for {agent_name}")
@@ -1887,51 +1926,35 @@ def get_agent_prompt(agent_name: str, fallback_prompt: str = None) -> dict:
                 'model': 'gpt-4o',
                 'output_schema': None
             }
-        
-        # Define the query function with retry capability
-        def _query_agent():
-            logger.info(f"[DB] 🔍 Querying agents table for name='{agent_name}', is_active=True")
-            response = _supabase_admin.table('agents').select('*').eq('name', agent_name).eq('is_active', True).execute()
-            logger.info(f"[DB] 📊 Query returned {len(response.data) if response.data else 0} results")
-            return response
-        
-        # Execute with retry
-        response = _retry_with_backoff(_query_agent, max_retries=3, base_delay=0.5, max_delay=5.0)
-        
-        if response.data and len(response.data) > 0:
-            agent = response.data[0]
-            logger.info(f"[DB] 📋 Agent data keys: {list(agent.keys())}")
-            logger.info(f"[DB] 📝 Prompt length: {len(agent.get('prompt', '')) if agent.get('prompt') else 0} chars")
-            
-            result = {
+
+        logger.info(f"[DB] 🔍 Fetching agent prompt for name='{agent_name}'")
+        # Query by name only — is_active=NULL won't match .eq('is_active', True) in Postgres
+        # so we filter in Python instead to support NULL/True both being "active"
+        response = _supabase_admin.table('agents').select('*').eq('name', agent_name).execute()
+        print(f"[DB] Raw query result for '{agent_name}': {response.data}", flush=True)
+
+        # Accept rows where is_active is True or NULL (not explicitly False)
+        rows = [r for r in (response.data or []) if r.get('is_active') is not False]
+
+        if rows:
+            agent = rows[0]
+            print(f"[DB] ✅ Found agent '{agent_name}' | is_active={agent.get('is_active')} | prompt_len={len(agent.get('prompt') or '')}", flush=True)
+            return {
                 'prompt': agent.get('prompt'),
                 'model': agent.get('model', 'gpt-4o'),
                 'output_schema': agent.get('output_schema'),
                 'meta_data': agent.get('meta_data')
             }
-            # Cache the result
-            _agent_cache[agent_name] = result
-            logger.info(f"[DB] ✅ Loaded agent '{agent_name}' from database (model: {result['model']})")
-            return result
         else:
-            logger.warning(f"[DB] ⚠️  Agent '{agent_name}' not found in database (check name and is_active=true), using fallback")
-            # Try to see if agent exists with different criteria
-            try:
-                def _list_agents():
-                    return _supabase_admin.table('agents').select('name, is_active').execute()
-                all_agents = _retry_with_backoff(_list_agents, max_retries=2, base_delay=0.5, max_delay=3.0)
-                if all_agents.data:
-                    agent_names = [(a.get('name'), a.get('is_active')) for a in all_agents.data]
-                    logger.info(f"[DB] 📋 Available agents in DB: {agent_names}")
-            except Exception as e:
-                logger.warning(f"[DB] Could not list available agents: {e}")
+            print(f"[DB] ⚠️ Agent '{agent_name}' not found or is_active=false. All rows returned: {response.data}", flush=True)
+            logger.warning(f"[DB] ⚠️  Agent '{agent_name}' not found (check name and is_active), using fallback")
             return {
                 'prompt': fallback_prompt,
                 'model': 'gpt-4o',
                 'output_schema': None
             }
     except Exception as e:
-        logger.exception(f"[DB] ❌ Failed to fetch agent '{agent_name}' from database after retries: {e}")
+        logger.exception(f"[DB] ❌ Failed to fetch agent '{agent_name}': {e}")
         return {
             'prompt': fallback_prompt,
             'model': 'gpt-4o',
@@ -1940,10 +1963,8 @@ def get_agent_prompt(agent_name: str, fallback_prompt: str = None) -> dict:
 
 
 def clear_agent_cache():
-    """Clear the agent prompt cache. Useful after updating agents in the database."""
-    global _agent_cache
-    _agent_cache = {}
-    logger.info("Agent prompt cache cleared")
+    """No-op — caching removed. Kept for backwards compatibility."""
+    logger.info("clear_agent_cache called (no-op, caching is disabled)")
 
 
 def send_phone_otp(phone: str):

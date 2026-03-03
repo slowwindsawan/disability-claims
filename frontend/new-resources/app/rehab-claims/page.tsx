@@ -12,14 +12,16 @@ import {
   Wallet,
   AlertCircle,
   Home,
+  Receipt,
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { fetchUserCase, markRehabPaymentSent } from "@/lib/caseApi"
 
 interface DocumentSection {
   id: string
@@ -44,6 +46,20 @@ export default function RehabClaimsPage() {
   const router = useRouter()
   const [totalEstimate, setTotalEstimate] = useState(0)
   const [distanceFromUniversity, setDistanceFromUniversity] = useState<string>("")
+  const [caseObj, setCaseObj] = useState<any>(null)
+  const [showEmailModal, setShowEmailModal] = useState(false)
+  const [paymentSentLoading, setPaymentSentLoading] = useState(false)
+  const [paymentSentDone, setPaymentSentDone] = useState(false)
+
+  useEffect(() => {
+    fetchUserCase().then((c) => setCaseObj(c))
+  }, [])
+
+  const registeredEmail: string = caseObj?.metadata?.btl_action?.registered_email || ''
+  const rehab = caseObj?.metadata?.rehab || {}
+  const monthlyAmount: number = rehab.monthly_amount || caseObj?.metadata?.btl_action?.monthly_amount || 0
+  const paymentHistory: Array<{ type: string; amount: number; period?: string; breakdown?: Array<{period: string; amount: number}>; letter_date?: string }> =
+    rehab.payment_history || []
   const [sections, setSections] = useState<DocumentSection[]>([
     {
       id: "subsistence",
@@ -124,11 +140,50 @@ export default function RehabClaimsPage() {
   const allSectionsComplete = sections.every((section) => section.documents.every((doc) => doc.uploaded))
 
   const handleSubmit = () => {
-    router.push("/dashboard")
+    setShowEmailModal(true)
   }
 
   return (
     <div className="min-h-screen bg-slate-50" dir="rtl">
+      {/* Email Send Modal */}
+      {showEmailModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8">
+            <h3 className="text-xl font-bold text-slate-900 mb-2">שלח דרישת תשלום</h3>
+            <p className="text-slate-600 mb-4 text-sm">כדי לקבל את התשלומים, שלח אימייל לנציג המחלקה בביטוח לאומי עם בקשת התשלום והקבלות שצירפת.</p>
+            {registeredEmail ? (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                <p className="text-xs text-slate-500 mb-1">כתובת האימייל מהמכתב:</p>
+                <p className="font-mono font-semibold text-blue-800 text-lg select-all">{registeredEmail}</p>
+              </div>
+            ) : (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
+                <p className="text-sm text-amber-800">לא נמצאה כתובת אימייל במכתב — פנה לסניף השיקום בביטוח לאומי או שלח ל: ntz.shicom@btl.gov.il</p>
+              </div>
+            )}
+            <p className="text-xs text-slate-500 mb-6">לאחר ששלחת את האימייל, לחץ על "סמן כנשלח" לעדכון את סטאטוס התיק.</p>
+            <div className="flex gap-3">
+              <Button
+                className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                disabled={paymentSentLoading || paymentSentDone}
+                onClick={async () => {
+                  if (!caseObj?.id) return
+                  setPaymentSentLoading(true)
+                  await markRehabPaymentSent(caseObj.id)
+                  setPaymentSentLoading(false)
+                  setPaymentSentDone(true)
+                  setTimeout(() => { setShowEmailModal(false); router.push('/dashboard') }, 1200)
+                }}
+              >
+                {paymentSentDone ? 'נשלח ✓' : paymentSentLoading ? 'שומר...' : 'סמן כנשלח'}
+              </Button>
+              <Button variant="outline" className="flex-1 bg-transparent" onClick={() => setShowEmailModal(false)}>
+                סגור
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 py-4">
@@ -166,6 +221,49 @@ export default function RehabClaimsPage() {
             המסך הזה רלוונטי רק אחרי קבלת אישור דמי השיקום מביטוח לאומי. אם עדיין לא קיבלת אישור, המתן להודעה.
           </AlertDescription>
         </Alert>
+
+        {/* Received payments from BTL */}
+        {(monthlyAmount > 0 || paymentHistory.some(p => p.type === 'reimbursement')) && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            {/* Monthly stipend */}
+            {monthlyAmount > 0 && (
+              <Card className="p-5 bg-teal-50 border border-teal-300">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="w-9 h-9 bg-teal-100 rounded-full flex items-center justify-center">
+                    <CreditCard className="w-5 h-5 text-teal-600" />
+                  </div>
+                  <h3 className="font-bold text-teal-900">דמי מחיה חודשיים</h3>
+                </div>
+                <p className="text-3xl font-bold text-teal-700">₪{monthlyAmount.toLocaleString()}</p>
+                <p className="text-xs text-teal-600 mt-1">מאושר מביטוח לאומי – סכום חודשי</p>
+              </Card>
+            )}
+
+            {/* Reimbursements received */}
+            {paymentHistory.filter(p => p.type === 'reimbursement').length > 0 && (
+              <Card className="p-5 bg-blue-50 border border-blue-300">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="w-9 h-9 bg-blue-100 rounded-full flex items-center justify-center">
+                    <Receipt className="w-5 h-5 text-blue-600" />
+                  </div>
+                  <h3 className="font-bold text-blue-900">החזרים שהתקבלו</h3>
+                </div>
+                <div className="space-y-2">
+                  {paymentHistory.filter(p => p.type === 'reimbursement').map((p, i) => (
+                    <div key={i} className="flex justify-between text-sm">
+                      <span className="text-slate-600">{p.period || (p.letter_date || '').slice(0, 7)}</span>
+                      <span className="font-semibold text-blue-800">₪{Number(p.amount).toLocaleString()}</span>
+                    </div>
+                  ))}
+                  <div className="pt-2 border-t border-blue-200 flex justify-between text-sm font-bold">
+                    <span className="text-slate-700">סה"k</span>
+                    <span className="text-blue-900">₪{paymentHistory.filter(p => p.type === 'reimbursement').reduce((s, p) => s + Number(p.amount), 0).toLocaleString()}</span>
+                  </div>
+                </div>
+              </Card>
+            )}
+          </div>
+        )}
 
         <div className="space-y-6">
           {sections.map((section, idx) => {

@@ -7,9 +7,10 @@ import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import SignaturePad from "@/components/signature-pad"
+import { fetchUserCase, submitRehabAgreement } from "@/lib/caseApi"
 
 interface AttendanceDay {
   day: number
@@ -28,8 +29,14 @@ export default function RehabAgreementPage() {
   const [attendance, setAttendance] = useState<AttendanceDay[]>([])
   const [scheduleFile, setScheduleFile] = useState<File | null>(null)
   const [schedulePreview, setSchedulePreview] = useState<string | null>(null)
+  const [caseObj, setCaseObj] = useState<any>(null)
+  const [submitting, setSubmitting] = useState(false)
   const termsRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    fetchUserCase().then((c) => setCaseObj(c))
+  }, [])
 
   const handleScheduleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -93,8 +100,19 @@ export default function RehabAgreementPage() {
   const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
   const canSubmit = hasAgreed && signatureDate && signature && attendance.length > 0
 
-  const handleSubmit = () => {
-    router.push("/dashboard")
+  const handleSubmit = async () => {
+    if (!caseObj?.id) {
+      router.push('/dashboard')
+      return
+    }
+    setSubmitting(true)
+    await submitRehabAgreement(caseObj.id, {
+      signature_data_url: signature,
+      attendance_data: attendance,
+      signed_at: signatureDate,
+    })
+    setSubmitting(false)
+    router.push('/dashboard')
   }
 
   return (
@@ -392,10 +410,10 @@ export default function RehabAgreementPage() {
         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.3 }}>
           <Button
             onClick={handleSubmit}
-            disabled={!canSubmit}
+            disabled={!canSubmit || submitting}
             className="w-full h-14 text-lg font-bold bg-gradient-to-l from-blue-600 to-slate-900 hover:from-blue-700 hover:to-slate-950 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            שלח דיווח ואישור
+            {submitting ? 'שולח...' : 'שלח דיווח ואישור'}
           </Button>
         </motion.div>
       </main>

@@ -31,9 +31,15 @@ create table public.cases (
   call_summary jsonb null,
   document_summaries jsonb null,
   followups jsonb null,
+  letters jsonb null,
+  "7801_form" jsonb null,
+  "270_form" jsonb null,
   constraint cases_pkey primary key (id),
   constraint cases_user_id_fkey foreign KEY (user_id) references user_profile (user_id) on delete CASCADE
 ) TABLESPACE pg_default;
+
+-- Migration: add 270_form column (run once in Supabase SQL editor)
+-- ALTER TABLE public.cases ADD COLUMN IF NOT EXISTS "270_form" jsonb;
 
 create table public.notifications (
   id uuid not null default gen_random_uuid (),

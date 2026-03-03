@@ -5,40 +5,41 @@ import { CheckCircle2, AlertCircle, GraduationCap, FileText, ArrowLeft } from "l
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { BACKEND_BASE_URL } from "@/variables"
 
-export default function ClaimApprovedPage() {
-  const [confettiShown] = useState(false)
-  const disabilityPercentage = 35
+interface Props { initialCaseObj?: any }
+
+export default function ClaimApprovedPage({ initialCaseObj }: Props = {}) {
+  const [caseObj, setCaseObj] = useState<any>(initialCaseObj ?? null)
+
+  // Sync when dashboard's currentCase loads/updates
+  useEffect(() => {
+    if (initialCaseObj) setCaseObj(initialCaseObj)
+  }, [initialCaseObj])
+
+  // Standalone fallback for direct route access
+  useEffect(() => {
+    if (initialCaseObj) return
+    const caseId = localStorage.getItem("case_id")
+    const token = localStorage.getItem("access_token")
+    if (!caseId || !token) return
+    fetch(`${BACKEND_BASE_URL}/cases/${caseId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.json())
+      .then((data) => setCaseObj(data?.case || data))
+      .catch(() => {})
+  }, [])
+
+  const action = caseObj?.metadata?.btl_action || {}
+  const disabilityPercentage = action.disability_percentage ?? "—"
+  const approvedBenefits: string[] = action.approved_benefits || []
+  const departmentMessage: string = action.department_message || ""
+  const monthlyAmount: number | null = action.monthly_amount ?? null
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-emerald-50 via-white to-slate-50">
-      {/* Confetti Effect */}
-      {confettiShown && (
-        <div className="fixed inset-0 pointer-events-none z-50">
-          {[...Array(50)].map((_, i) => (
-            <motion.div
-              key={i}
-              className="absolute w-3 h-3 bg-emerald-500 rounded-full"
-              initial={{
-                x: Math.random() * window.innerWidth,
-                y: -20,
-                opacity: 1,
-              }}
-              animate={{
-                y: window.innerHeight + 20,
-                opacity: 0,
-              }}
-              transition={{
-                duration: 2 + Math.random() * 2,
-                ease: "linear",
-                delay: Math.random() * 0.5,
-              }}
-            />
-          ))}
-        </div>
-      )}
-
       {/* Main Content */}
       <main className="max-w-4xl mx-auto px-4 py-12">
         {/* Success Badge */}
@@ -62,7 +63,21 @@ export default function ClaimApprovedPage() {
         >
           <h1 className="text-5xl font-bold text-slate-900 mb-4">מזל טוב!</h1>
           <p className="text-2xl text-slate-700 mb-2">אושרה נכות של {disabilityPercentage}%</p>
-          <p className="text-lg text-slate-600">המוסד לביטוח לאומי אישר שיש לך נכות רפואית</p>
+          {monthlyAmount !== null && (
+            <p className="text-xl font-semibold text-emerald-700 mb-2">
+              סכום חודשי: ₪{monthlyAmount.toLocaleString()}
+            </p>
+          )}
+          <p className="text-lg text-slate-600">{departmentMessage || "המוסד לביטוח לאומי אישר שיש לך נכות רפואית"}</p>
+          {approvedBenefits.length > 0 && (
+            <ul className="mt-3 space-y-1">
+              {approvedBenefits.map((b, i) => (
+                <li key={i} className="inline-flex items-center gap-1 text-sm bg-green-100 text-green-800 px-3 py-1 rounded-full mx-1">
+                  <CheckCircle2 className="w-3 h-3" /> {b}
+                </li>
+              ))}
+            </ul>
+          )}
         </motion.div>
 
         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.3 }}>

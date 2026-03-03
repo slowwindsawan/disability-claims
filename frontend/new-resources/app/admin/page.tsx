@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import {
   Users,
@@ -302,6 +302,24 @@ export default function AdminDashboard() {
   const [newDocumentWhere, setNewDocumentWhere] = useState("")
   const [newDocumentReason, setNewDocumentReason] = useState("")
   const [customMessage, setCustomMessage] = useState("")
+  const [pendingForms, setPendingForms] = useState<any[]>([])
+  const [pendingFormsLoading, setPendingFormsLoading] = useState(false)
+
+  useEffect(() => {
+    // Load cases with form_pending or waiting_for_docs status from admin API
+    setPendingFormsLoading(true)
+    fetch('/api/admin/cases?status=form_pending,waiting_for_docs,appointment_scheduled', {
+      headers: { 'Content-Type': 'application/json' }
+    })
+      .then((r) => r.ok ? r.json() : { cases: [] })
+      .then((data) => {
+        const list = Array.isArray(data.cases) ? data.cases :
+                      Array.isArray(data) ? data : []
+        setPendingForms(list)
+      })
+      .catch(() => setPendingForms([]))
+      .finally(() => setPendingFormsLoading(false))
+  }, [])
 
   const totalClients = mockClients.length
   const totalRevenue = mockClients.reduce((sum, c) => sum + c.potentialFee, 0)
@@ -1055,11 +1073,12 @@ export default function AdminDashboard() {
               <ScrollArea className="flex-1">
                 <div className="p-6">
                   <Tabs defaultValue="timeline" className="w-full">
-                    <TabsList className="w-full grid grid-cols-4">
+                    <TabsList className="w-full grid grid-cols-5">
                       <TabsTrigger value="timeline">ציר זמן</TabsTrigger>
                       <TabsTrigger value="documents">מסמכים</TabsTrigger>
                       <TabsTrigger value="form7801">טופס 7801</TabsTrigger>
                       <TabsTrigger value="rescue">פעולות</TabsTrigger>
+                      <TabsTrigger value="pending_forms">טופסים פתוחים</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="timeline" className="space-y-4">
@@ -1471,6 +1490,88 @@ export default function AdminDashboard() {
                             הפעל מצב Rescue
                           </Button>
                         </Card>
+                      )}
+                    </TabsContent>
+
+                    {/* Pending Forms Tab */}
+                    <TabsContent value="pending_forms" className="space-y-4">
+                      <h4 className="font-semibold text-slate-900 mb-3">טפסים וטיפולים ממתינים</h4>
+                      <p className="text-sm text-slate-600 mb-4">
+                        מקרים שביטוח לאומי שלח מכתב המחייב פעולה — טופס, מסמך, או תיאום. יש לטפל בהם ידנית.
+                      </p>
+
+                      {pendingFormsLoading ? (
+                        <div className="text-center py-8 text-slate-500">טוען...</div>
+                      ) : pendingForms.length === 0 ? (
+                        <Card className="p-6 text-center text-slate-500">
+                          <CheckCircle2 className="w-8 h-8 text-green-500 mx-auto mb-2" />
+                          <p>אין טפסים ממתינים כרגע</p>
+                        </Card>
+                      ) : (
+                        <div className="space-y-4">
+                          {pendingForms.map((c: any) => {
+                            const action = c?.metadata?.btl_action || {}
+                            return (
+                              <Card key={c.id} className="p-4 border border-amber-200 bg-amber-50">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className="font-semibold text-slate-900">{c.title || c.id}</span>
+                                      <Badge className="bg-amber-100 text-amber-800 text-xs">{c.status}</Badge>
+                                      {action.urgency === 'high' && (
+                                        <Badge className="bg-red-100 text-red-700 text-xs">דחוף</Badge>
+                                      )}
+                                    </div>
+                                    {action.department_message && (
+                                      <p className="text-sm text-slate-700 mb-2">{action.department_message}</p>
+                                    )}
+                                    {action.form_type && (
+                                      <p className="text-xs text-slate-500">
+                                        טופס: <span className="font-semibold">{action.form_type}</span>
+                                      </p>
+                                    )}
+                                    {action.required_documents?.length > 0 && (
+                                      <div className="mt-1">
+                                        <p className="text-xs text-slate-500 font-semibold mb-1">מסמכים נדרשים:</p>
+                                        <ul className="text-xs text-slate-600 list-disc list-inside space-y-0.5">
+                                          {action.required_documents.map((d: string, i: number) => (
+                                            <li key={i}>{d}</li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="flex flex-col gap-2">
+                                    <Button
+                                      size="sm"
+                                      className="bg-blue-600 hover:bg-blue-700 text-white text-xs"
+                                      onClick={async () => {
+                                        const newStatus = prompt('הכנס סטטוס חדש (למשל: form_handled, waiting_for_docs):')
+                                        if (!newStatus) return
+                                        await fetch(`/api/cases/${c.id}/status`, {
+                                          method: 'PATCH',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ status: newStatus })
+                                        })
+                                        setPendingForms((prev) => prev.filter((x) => x.id !== c.id))
+                                      }}
+                                    >
+                                      עדכן סטטוס
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="text-xs bg-transparent"
+                                      onClick={() => window.open(`/admin/cases/${c.id}`, '_blank')}
+                                    >
+                                      פתח תיק
+                                    </Button>
+                                  </div>
+                                </div>
+                              </Card>
+                            )
+                          })}
+                        </div>
                       )}
                     </TabsContent>
                   </Tabs>

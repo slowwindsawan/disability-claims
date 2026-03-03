@@ -23,6 +23,9 @@ import {
   Bell,
   Download,
   Loader2,
+  RefreshCw,
+  Calendar,
+  ClipboardList,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -39,6 +42,9 @@ import NotEligiblePage from "@/new-resources/app/not-eligible/page";
 import useCurrentCase from "@/lib/useCurrentCase";
 import { BACKEND_BASE_URL } from "@/variables";
 import { DocumentRelevanceDialog } from "@/components/DocumentRelevanceDialog";
+import CommitteePrepChat from "@/components/committee-prep-chat";
+import { LettersTimeline } from "@/new-resources/components/letters-timeline";
+import { deriveCaseLetters } from "@/new-resources/lib/caseApi";
 import { LogoutButton } from "@/components/logout-button";
 
 interface RequiredDocument {
@@ -93,6 +99,16 @@ export default function DashboardPage() {
   const [extensionInstalled, setExtensionInstalled] = useState(false);
   const [hasCompletedPayment, setHasCompletedPayment] = useState(true); // Check if user completed payment/checkout
   const [showNotifications, setShowNotifications] = useState(false);
+  const [hasAskedExtension, setHasAskedExtension] = useState(false);
+  const [showExtensionConsentModal, setShowExtensionConsentModal] = useState(false);
+  const [extensionActionLoading, setExtensionActionLoading] = useState(false);
+  const [extensionSyncCompletedToday, setExtensionSyncCompletedToday] = useState(false);
+  const [showCommitteePrepChat, setShowCommitteePrepChat] = useState(false);
+  // BTL credential modal state: 'checking' | 'need-creds' | 'has-creds' | 'edit-creds'
+  type CredModalState = 'checking' | 'need-creds' | 'has-creds' | 'edit-creds';
+  const [credModalState, setCredModalState] = useState<CredModalState>('checking');
+  const [btlCreds, setBtlCreds] = useState({ id: '', username: '', password: '' });
+  const [credsSaving, setCredsSaving] = useState(false);
 
   // Notification store
   const {
@@ -687,6 +703,152 @@ export default function DashboardPage() {
     fetchNotifications,
   ]);
 
+  // Track if extension sync already succeeded today
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const successDate =
+      typeof window !== 'undefined'
+        ? localStorage.getItem('extension_letters_success_date')
+        : null;
+    if (successDate === today) {
+      setExtensionSyncCompletedToday(true);
+    }
+  }, []);
+
+  // Listen for extension results to mark completion
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (!event?.data?.type) return;
+      if (event.data.type === 'BTL_EXTENSION_START_LETTERS_SYNC_RESULT' || event.data.type === 'BTL_EXTENSION_RUN_CHECK_STATUS_RESULT') {
+        if (event.data.success) {
+          const today = new Date().toISOString().slice(0, 10);
+          localStorage.setItem('extension_letters_success_date', today);
+          setExtensionSyncCompletedToday(true);
+          setShowExtensionConsentModal(false);
+          setExtensionActionLoading(false);
+        } else {
+          setExtensionActionLoading(false);
+        }
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  // Daily prompt to allow extension to sync letters once we know case/user
+  useEffect(() => {
+    if (extensionSyncCompletedToday) return;
+    if (showExtensionConsentModal) return;
+    if (hasAskedExtension) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const promptedDate =
+      typeof window !== 'undefined'
+        ? localStorage.getItem('extension_letters_prompted_date')
+        : null;
+    if (promptedDate === today) return;
+
+    const cid =
+      currentCase?.id ||
+      currentCase?.case_id ||
+      (currentCase as any)?.case?.id ||
+      userCase?.id ||
+      (typeof window !== 'undefined' ? localStorage.getItem('case_id') : null);
+    const uid =
+      profile?.user_id ||
+      profile?.id ||
+      (typeof window !== 'undefined' ? localStorage.getItem('user_id') : null);
+
+    if (!cid || !uid) return;
+
+    setHasAskedExtension(true);
+    localStorage.setItem('extension_letters_prompted_date', today);
+    setShowExtensionConsentModal(true);
+  }, [currentCase, userCase, profile, hasAskedExtension, showExtensionConsentModal, extensionSyncCompletedToday]);
+
+  // When the consent modal opens, check whether BTL credentials are already stored in localStorage
+  useEffect(() => {
+    if (!showExtensionConsentModal) return;
+    try {
+      const raw = localStorage.getItem('btl_credentials');
+      if (raw) {
+        const creds = JSON.parse(raw);
+        if (creds?.id && creds?.username && creds?.password) {
+          setBtlCreds({ id: creds.id, username: creds.username, password: creds.password });
+          setCredModalState('has-creds');
+          return;
+        }
+      }
+    } catch {}
+    setBtlCreds({ id: '', username: '', password: '' });
+    setCredModalState('need-creds');
+  }, [showExtensionConsentModal]);
+
+  const saveCredentials = () => {
+    if (!btlCreds.id.trim() || !btlCreds.username.trim() || !btlCreds.password.trim()) return;
+    setCredsSaving(true);
+    // Save directly to localStorage — instant, works regardless of extension state
+    const credsObj = { id: btlCreds.id.trim(), username: btlCreds.username.trim(), password: btlCreds.password.trim() };
+    localStorage.setItem('btl_credentials', JSON.stringify(credsObj));
+    // Also sync to chrome.storage.local so checkStatus.js (content script on ps.btl.gov.il) can use them
+    window.postMessage({ type: 'BTL_EXTENSION_SAVE_CREDENTIALS', credentials: credsObj }, '*');
+    setCredsSaving(false);
+    setCredModalState('has-creds');
+  };
+
+  const triggerExtensionSync = () => {
+    setHasAskedExtension(true);
+    setExtensionActionLoading(true);
+
+    const cid =
+      currentCase?.id ||
+      currentCase?.case_id ||
+      (currentCase as any)?.case?.id ||
+      userCase?.id ||
+      (typeof window !== 'undefined' ? localStorage.getItem('case_id') : null);
+    const uid =
+      profile?.user_id ||
+      profile?.id ||
+      (typeof window !== 'undefined' ? localStorage.getItem('user_id') : null);
+
+    if (cid && uid) {
+      // Read credentials from localStorage and include in payload so extension storage stays in sync
+      let btlCredsPayload: Record<string, string> | null = null;
+      try {
+        const raw = localStorage.getItem('btl_credentials');
+        if (raw) btlCredsPayload = JSON.parse(raw);
+      } catch {}
+
+      window.postMessage(
+        {
+          type: 'BTL_EXTENSION_STORE_PAYLOAD',
+          payload: {
+            user_id: uid,
+            case_id: cid,
+            source: 'frontend-dashboard-auto-sync',
+            prompted_at: new Date().toISOString(),
+            ...(btlCredsPayload ? { btl_credentials: btlCredsPayload } : {}),
+          },
+        },
+        '*'
+      );
+
+      setTimeout(() => {
+        window.postMessage({ type: 'BTL_EXTENSION_START_LETTERS_SYNC' }, '*');
+        window.postMessage({ type: 'BTL_EXTENSION_RUN_CHECK_STATUS' }, '*');
+      }, 250);
+    }
+
+    // Do not mark success here; wait for extension result events
+    setTimeout(() => {
+      setExtensionActionLoading(false);
+    }, 800);
+  };
+
+  const dismissExtensionPrompt = () => {
+    setHasAskedExtension(true);
+    setShowExtensionConsentModal(false);
+  };
+
   const handleDismissExtensionModal = () => {
     setShowExtensionModal(false);
     localStorage.setItem("extensionModalDismissed", "true");
@@ -1087,6 +1249,161 @@ export default function DashboardPage() {
       className="min-h-screen bg-slate-50 flex flex-col"
       dir={isRTL ? "rtl" : "ltr"}
     >
+      {showExtensionConsentModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm px-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 space-y-4 border border-slate-200" dir="rtl">
+
+            {/* ── CHECKING STATE ── */}
+            {credModalState === 'checking' && (
+              <div className="flex flex-col items-center gap-4 py-6">
+                <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+                <p className="text-slate-600 text-sm">בודק נתונים שמורים...</p>
+              </div>
+            )}
+
+            {/* ── NEED CREDS / EDIT CREDS STATE ── */}
+            {(credModalState === 'need-creds' || credModalState === 'edit-creds') && (
+              <>
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center flex-shrink-0">
+                    <RefreshCw className="w-6 h-6 text-orange-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-semibold text-slate-900">
+                      {credModalState === 'edit-creds' ? 'עדכון פרטי כניסה לביטוח לאומי' : 'פרטי כניסה לביטוח לאומי'}
+                    </h3>
+                    <p className="text-slate-500 text-sm mt-0.5">
+                      {credModalState === 'edit-creds'
+                        ? 'שנה את הפרטים ולחץ שמור.'
+                        : 'הזן פעם אחת — נשמר בצורה מאובטחת בתוסף.'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">תעודת זהות</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="123456789"
+                      value={btlCreds.id}
+                      onChange={e => setBtlCreds(c => ({ ...c, id: e.target.value }))}
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">שם משתמש</label>
+                    <input
+                      type="text"
+                      placeholder="שם משתמש"
+                      value={btlCreds.username}
+                      onChange={e => setBtlCreds(c => ({ ...c, username: e.target.value }))}
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">סיסמה</label>
+                    <input
+                      type="password"
+                      placeholder="סיסמה"
+                      value={btlCreds.password}
+                      onChange={e => setBtlCreds(c => ({ ...c, password: e.target.value }))}
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row sm:justify-end gap-3 pt-1">
+                  <Button
+                    variant="ghost"
+                    className="text-slate-600 hover:text-slate-800"
+                    onClick={credModalState === 'edit-creds' ? () => setCredModalState('has-creds') : dismissExtensionPrompt}
+                    disabled={credsSaving}
+                  >
+                    ביטול
+                  </Button>
+                  <Button
+                    onClick={saveCredentials}
+                    disabled={credsSaving || !btlCreds.id.trim() || !btlCreds.username.trim() || !btlCreds.password.trim()}
+                    className="bg-blue-600 hover:bg-blue-700 text-white"
+                  >
+                    {credsSaving
+                      ? <span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> שומר...</span>
+                      : 'שמור ותמשיך'}
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {/* ── HAS CREDS STATE — normal consent view ── */}
+            {credModalState === 'has-creds' && (
+              <>
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                    <RefreshCw className="w-6 h-6 text-blue-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-semibold text-slate-900">בדיקה אוטומטית למכתבים חדשים</h3>
+                    <p className="text-slate-600 text-sm mt-1">
+                      אנחנו נבדוק עבורך את האתר של ביטוח לאומי ונהעלה אוטומטית כל מכתב חדש לתיקך.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 rounded-xl p-4 space-y-2 border border-slate-100">
+                  <div className="flex items-start gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5" />
+                    <p className="text-sm text-slate-700">אדם הביטוח שלנו יבדוק את ביטוח לאומי כל יום בעבורך.</p>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5" />
+                    <p className="text-sm text-slate-700">מכתבים חדשים יופיעו כאן באופן אוטומטי — אין צורך לבדוק בעצמך.</p>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5" />
+                    <p className="text-sm text-slate-700">אתה תקבל הודעה כאשר משהו חדש יופיע בתיקך.</p>
+                  </div>
+                </div>
+
+                {/* Change credentials link */}
+                <p className="text-xs text-slate-400 text-center">
+                  פרטי הכניסה שמורים.{' '}
+                  <button
+                    type="button"
+                    className="text-blue-500 hover:underline"
+                    onClick={() => setCredModalState('edit-creds')}
+                  >
+                    שנה פרטי כניסה
+                  </button>
+                </p>
+
+                <div className="flex flex-col sm:flex-row sm:justify-end sm:items-center gap-3 pt-1">
+                  <Button
+                    variant="ghost"
+                    className="text-slate-600 hover:text-slate-800"
+                    onClick={dismissExtensionPrompt}
+                    disabled={extensionActionLoading}
+                  >
+                    עדיין לא עכשיו
+                  </Button>
+                  <Button
+                    onClick={triggerExtensionSync}
+                    disabled={extensionActionLoading}
+                    className="bg-blue-600 hover:bg-blue-700 text-white"
+                  >
+                    {extensionActionLoading
+                      ? <span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> מתחיל...</span>
+                      : 'כן, בדוק עבורי'}
+                  </Button>
+                </div>
+              </>
+            )}
+
+          </div>
+        </div>
+      )}
+
       {/* Hidden file input for document upload */}
       <input
         ref={fileInputRef}
@@ -1111,6 +1428,17 @@ export default function DashboardPage() {
               <div className="hidden md:block">
                 <ExtensionSyncWidget />
               </div>
+
+              {/* Force-update button */}
+              <button
+                onClick={triggerExtensionSync}
+                disabled={extensionActionLoading}
+                title="Force sync BTL letters now"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-300 disabled:opacity-50 transition"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${extensionActionLoading ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">עדכן עכשיו</span>
+              </button>
 
               <Link href="/referral">
                 <Button variant="ghost" className="flex items-center gap-2">
@@ -1667,13 +1995,183 @@ export default function DashboardPage() {
             transition={{ delay: 0.2 }}
             className="lg:col-span-2 space-y-6"
           >
-            {currentCase?.case?.status &&
-            currentCase?.case?.status.toLowerCase() === "submitted" &&
-            (!currentCase?.case?.stage ||
-              currentCase?.case?.stage === "initial_questionnaire") &&
-            !currentCase.case.committee_decision?.status ? (
+            {/* BTL Letters Slider — hidden during initial questionnaire / document submission stages */}
+            {(() => {
+              const caseStatus = currentCase?.case?.status || ""
+              const caseStage  = currentCase?.case?.stage  || ""
+              const earlyStages = ["Initial questionnaire", "new", "Submission Pending", "strategy_generated", ""]
+              if (earlyStages.includes(caseStatus) && earlyStages.includes(caseStage)) return null
+              const letters = deriveCaseLetters(currentCase?.case || {})
+              const letterDate = currentCase?.case?.metadata?.btl_action?.letter_date || null
+              if (!letters.length) return null
+              return (
+                <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}>
+                  <LettersTimeline letters={letters} activeDateKey={letterDate} />
+                </motion.div>
+              )
+            })()}
+
+            {/* ── Terminal outcomes (highest priority) ─────────────────────── */}
+            {(currentCase?.case?.committee_decision?.status === "approved" ||
+              currentCase?.case?.status === "claim_approved" ||
+              currentCase?.case?.status === "claim_accepted" ||
+              currentCase?.case?.stage === "claim_approved" ||
+              currentCase?.case?.stage === "claim_accepted") ? (
+              <ClaimApprovedPage initialCaseObj={(currentCase as any)?.case} />
+            ) : (currentCase?.case?.committee_decision?.status === "rejected" ||
+              currentCase?.case?.status === "claim_rejected" ||
+              currentCase?.case?.stage === "claim_rejected") ? (
+              <ClaimRejectedPage initialCaseObj={(currentCase as any)?.case} />
+            ) : (currentCase?.case?.committee_decision?.status === "ineligible" ||
+              currentCase?.case?.status === "claim_ineligible" ||
+              currentCase?.case?.stage === "claim_ineligible") ? (
+              <NotEligiblePage />
+
+            ) : /* ── Medical committee scheduled ──────────────────────────────── */
+            (currentCase?.case?.stage === "medical_committee_scheduled" ||
+             currentCase?.case?.status === "medical_committee_scheduled" ||
+             currentCase?.case?.status === "appointment_scheduled") ? (
+              <div className="space-y-4">
+                {/* Appointment banner */}
+                <motion.div
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="rounded-2xl bg-gradient-to-r from-indigo-600 to-blue-600 p-6 text-white shadow-lg"
+                >
+                  <div className="flex items-start gap-4">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/20">
+                      <Calendar className="w-6 h-6" />
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-lg font-bold mb-1">הוזמנת לוועדה רפואית</h3>
+                      {currentCase.case.metadata?.committee_appointment?.appointment_date && (
+                        <p className="text-sm text-blue-100">
+                          📅 {currentCase.case.metadata.committee_appointment.appointment_date}
+                          {currentCase.case.metadata.committee_appointment.appointment_time &&
+                            ` בשעה ${currentCase.case.metadata.committee_appointment.appointment_time}`}
+                        </p>
+                      )}
+                      {currentCase.case.metadata?.committee_appointment?.appointment_place && (
+                        <p className="text-sm text-blue-100 mt-0.5">
+                          📍 {currentCase.case.metadata.committee_appointment.appointment_place}
+                        </p>
+                      )}
+                      {currentCase.case.metadata?.committee_appointment?.appointment_specialty && (
+                        <p className="text-sm text-blue-100 mt-0.5">
+                          🏥 {currentCase.case.metadata.committee_appointment.appointment_specialty}
+                        </p>
+                      )}
+                      <p className="text-sm text-blue-100 mt-2">
+                        {currentCase.case.metadata?.committee_appointment?.department_message || "כדאי להתכונן מראש לוועדה."}
+                      </p>
+                    </div>
+                  </div>
+                </motion.div>
+
+                {/* Committee prep coach card */}
+                <motion.div
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.1 }}
+                  className="rounded-2xl bg-white border border-slate-200 p-6 shadow-sm"
+                >
+                  <div className="flex items-start gap-4">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-indigo-100">
+                      <ClipboardList className="w-6 h-6 text-indigo-600" />
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-lg font-bold text-slate-900">מאמן הכנה לוועדה רפואית</h3>
+                      <p className="text-sm text-slate-600 mt-1">
+                        הסוכן שלנו יסביר לך מה לצפות בוועדה, יתרגל איתך תשובות לשאלות הרופאים, ויעזור לך לתאר את מצבך בצורה הטובה ביותר.
+                      </p>
+                      <Button
+                        onClick={() => setShowCommitteePrepChat(true)}
+                        className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl px-5 py-2 text-sm"
+                      >
+                        <ClipboardList className="w-4 h-4 mr-2" />
+                        פתח מאמן הכנה לוועדה
+                      </Button>
+                    </div>
+                  </div>
+                </motion.div>
+
+                {/* Checklist of what to bring */}
+                <motion.div
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 }}
+                  className="rounded-2xl bg-amber-50 border border-amber-200 p-5"
+                >
+                  <h4 className="font-semibold text-amber-800 mb-3 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4" />
+                    מה להביא לוועדה
+                  </h4>
+                  <ul className="space-y-2 text-sm text-amber-900">
+                    {["תעודת זהות", "כל מסמך רפואי שלא הוגש עדיין", "תקצירי בדיקות (MRI, CT, נוירופסיכולוגי)", "רשימת תרופות ומינונים", "דיסקים עם צילומים רפואיים"].map((item) => (
+                      <li key={item} className="flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </motion.div>
+              </div>
+
+            ) : /* ── Waiting / claim submitted / initial stage ────────────────── */
+            (currentCase?.case?.status === "claim_submitted" ||
+             currentCase?.case?.stage === "claim_submitted" ||
+             (currentCase?.case?.status?.toLowerCase() === "submitted" &&
+              (!currentCase?.case?.stage ||
+                currentCase?.case?.stage === "initial_questionnaire" ||
+                currentCase?.case?.stage === "claim_submitted"))) ? (
               <WaitingForResponsePage callSummary={callSummary} />
-            ) : (!currentCase?.case?.agreement_signed ||
+
+            ) : /* ── Form 270 submitted — waiting for rehab committee ────────── */
+            (currentCase?.case?.status === "form_270_submitted" ||
+             currentCase?.case?.stage === "form_270_submitted") ? (
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-4"
+              >
+                <div className="rounded-2xl bg-gradient-to-r from-teal-600 to-cyan-600 p-6 text-white shadow-lg">
+                  <div className="flex items-start gap-4">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/20">
+                      <CheckCircle2 className="w-6 h-6" />
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-lg font-bold mb-1">טופס 270 הוגש בהצלחה!</h3>
+                      <p className="text-sm text-teal-100 mt-1">
+                        {currentCase?.case?.metadata?.btl_action?.department_message ||
+                          "בקשת השיקום המקצועי שלך הוגשה לביטוח לאומי ונמצאת בבדיקה. נעדכן אותך בכל התקדמות."}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-2xl bg-white border border-slate-200 p-6 shadow-sm">
+                  <div className="flex items-start gap-4">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-teal-100">
+                      <ClipboardList className="w-6 h-6 text-teal-600" />
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-lg font-bold text-slate-900 mb-1">הכנה לוועדת שיקום</h3>
+                      <p className="text-sm text-slate-600 mb-4">
+                        ביטוח לאומי בדרך כלל מזמן לוועדת שיקום לאחר הגשת הטופס. הסוכן שלנו יעזור לך להתכונן.
+                      </p>
+                      <Button
+                        onClick={() => router.push("/committee-prep")}
+                        className="bg-teal-600 hover:bg-teal-700 text-white rounded-xl px-5 py-2 text-sm"
+                      >
+                        <ClipboardList className="w-4 h-4 mr-2" />
+                        הכן לוועדת שיקום
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+
+            ) : /* ── Agreement not signed ────────────────────────────────────── */
+            (!currentCase?.case?.agreement_signed ||
                 currentCase?.case?.agreement_signed == null) ? (
                 <>
                   <div className="max-w-md rounded-xl border border-yellow-300 bg-yellow-50 p-6 shadow-sm">
@@ -1701,16 +2199,10 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 </>
-              ) : currentCase?.case?.committee_decision ? (
-              currentCase.case.committee_decision?.status === "approved" ? (
-                <ClaimApprovedPage />
-              ) : currentCase.case.committee_decision?.status === "rejected" ? (
-                <ClaimRejectedPage />
-              ) : currentCase.case.committee_decision?.status ===
-                "ineligible" ? (
-                <NotEligiblePage />
-              ) : (
-                <Card className="p-6 bg-white shadow-md">
+
+            ) : /* ── Document checklist (default active state) ───────────────── */
+            currentCase?.case?.committee_decision ? (
+              <Card className="p-6 bg-white shadow-md">
                   <div className="flex items-center justify-between mb-6">
                     <div>
                       <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2">
@@ -1908,7 +2400,7 @@ export default function DashboardPage() {
                   </AnimatePresence>
                 </Card>
               )
-            ) : (
+            : (
               <>
                 <Card className="p-6 bg-white shadow-md">
                   <div className="flex items-center justify-between mb-6">
@@ -2557,6 +3049,34 @@ export default function DashboardPage() {
                   ניתן להמשיך בהגשה גם ללא המסמכים הנוספים, אך זה עלול להקטין את סיכויי האישור
                 </p>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Committee Prep Chat Modal ──────────────────────────────────────── */}
+      <AnimatePresence>
+        {showCommitteePrepChat && currentCase?.case?.id && (
+          <motion.div
+            key="committee-prep-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+            onClick={(e) => { if (e.target === e.currentTarget) setShowCommitteePrepChat(false); }}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              transition={{ type: "spring", duration: 0.4 }}
+              className="w-full max-w-2xl h-[80vh] flex flex-col"
+            >
+              <CommitteePrepChat
+                caseId={currentCase.case.id}
+                language={isRTL ? "he" : "en"}
+                onClose={() => setShowCommitteePrepChat(false)}
+              />
             </motion.div>
           </motion.div>
         )}

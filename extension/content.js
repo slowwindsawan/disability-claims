@@ -12,9 +12,14 @@
 console.log("[CONTENT.JS] Script loaded at:", window.location.href);
 console.log("[CONTENT.JS] Backend URL:", typeof BACKEND_BASE_URL !== 'undefined' ? BACKEND_BASE_URL : 'NOT LOADED');
 
-// If on localhost, set up postMessage relay to extension and exit
-if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname === 'darling-melomakarona-6cd11d.netlify.app') {
-  console.log("[CONTENT.JS] On localhost - setting up postMessage relay");
+// If on localhost or production frontend, set up postMessage relay to extension and exit
+if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname === 'darling-melomakarona-6cd11d.netlify.app' || window.location.hostname === 'app.adhdeal.com') {
+  console.log("[CONTENT.JS] On frontend domain - setting up postMessage relay");
+  console.log('[CONTENT.JS] Current hostname:', window.location.hostname);
+  console.log('[CONTENT.JS] Chrome available:', typeof chrome !== 'undefined');
+  if (typeof chrome !== 'undefined') {
+    console.log('[CONTENT.JS] Chrome.runtime available:', !!chrome.runtime);
+  }
   
   window.addEventListener('message', (event) => {
     // Only accept messages from same origin
@@ -28,40 +33,192 @@ if (window.location.hostname === 'localhost' || window.location.hostname === '12
       // Check if chrome.runtime is available
       if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
         console.log('[CONTENT.JS] Chrome runtime available, relaying to background script...');
-        
-        // Forward to background script
-        chrome.runtime.sendMessage({
-          action: 'STORE_PAYLOAD',
-          payload: event.data.payload,
-          source: 'frontend'
-        }, (response) => {
-          console.log('[CONTENT.JS] Background response:', response);
-          
-          // Send confirmation back to page
+        try {
+          // Forward to background script
+          chrome.runtime.sendMessage({
+            action: 'STORE_PAYLOAD',
+            payload: event.data.payload,
+            source: 'frontend'
+          }, (response) => {
+            console.log('[CONTENT.JS] Background response:', response);
+            
+            // Send confirmation back to page
+            window.postMessage({
+              type: 'BTL_EXTENSION_PAYLOAD_STORED',
+              success: response?.success || false,
+              message: response?.message || 'Payload stored successfully'
+            }, '*');
+          });
+        } catch (err) {
+          console.error('[CONTENT.JS] Error sending message to background:', err);
           window.postMessage({
             type: 'BTL_EXTENSION_PAYLOAD_STORED',
-            success: response?.success || false,
-            message: response?.message || 'Payload stored successfully'
+            success: false,
+            message: 'Error communicating with extension'
           }, '*');
-        });
+        }
       } else {
-        console.error('[CONTENT.JS] ❌ Chrome runtime not available - extension may not be loaded');
-        
+        console.error('[CONTENT.JS] ❌ Chrome runtime not available');
+        console.error('[CONTENT.JS] Chrome type:', typeof chrome);
+        console.error('[CONTENT.JS] Chrome.runtime:', chrome?.runtime);
         // Send error back to page
         window.postMessage({
           type: 'BTL_EXTENSION_PAYLOAD_STORED',
           success: false,
-          message: 'Extension not loaded or chrome.runtime unavailable'
+          message: 'Extension not available. Please reload the page or check your extension installation.'
         }, '*');
+      }
+    }
+
+    if (event.data && event.data.type === 'BTL_EXTENSION_STORE_PHASE2_PAYLOAD') {
+      console.log('[CONTENT.JS] ✓ Received BTL_EXTENSION_STORE_PHASE2_PAYLOAD from frontend');
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        try {
+          chrome.runtime.sendMessage({
+            action: 'STORE_PHASE2_PAYLOAD',
+            payload: event.data.payload,
+            source: 'frontend'
+          }, (response) => {
+            console.log('[CONTENT.JS] Background response (phase2):', response);
+            window.postMessage({
+              type: 'BTL_EXTENSION_PHASE2_PAYLOAD_STORED',
+              success: response?.success || false,
+              message: response?.message || 'Phase 2 payload stored'
+            }, '*');
+          });
+        } catch (err) {
+          console.error('[CONTENT.JS] Error storing Phase 2 payload:', err);
+          window.postMessage({
+            type: 'BTL_EXTENSION_PHASE2_PAYLOAD_STORED',
+            success: false,
+            message: 'Error communicating with extension'
+          }, '*');
+        }
+      } else {
+        window.postMessage({
+          type: 'BTL_EXTENSION_PHASE2_PAYLOAD_STORED',
+          success: false,
+          message: 'Extension not available'
+        }, '*');
+      }
+    }
+
+    if (event.data && event.data.type === 'BTL_EXTENSION_START_LETTERS_SYNC') {
+      console.log('[CONTENT.JS] ✓ Received BTL_EXTENSION_START_LETTERS_SYNC from frontend');
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        try {
+          chrome.runtime.sendMessage({ action: 'START_LETTERS_SYNC' }, (response) => {
+            window.postMessage({
+              type: 'BTL_EXTENSION_START_LETTERS_SYNC_RESULT',
+              success: response?.success || false,
+              message: response?.error || response?.message || ''
+            }, '*');
+          });
+        } catch (err) {
+          console.error('[CONTENT.JS] Error in START_LETTERS_SYNC:', err);
+          window.postMessage({
+            type: 'BTL_EXTENSION_START_LETTERS_SYNC_RESULT',
+            success: false,
+            message: 'Extension not available'
+          }, '*');
+        }
+      } else {
+        console.warn('[CONTENT.JS] Chrome runtime not available for START_LETTERS_SYNC');
+      }
+    }
+
+    if (event.data && event.data.type === 'BTL_EXTENSION_RUN_CHECK_STATUS') {
+      console.log('[CONTENT.JS] ✓ Received BTL_EXTENSION_RUN_CHECK_STATUS from frontend');
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        try {
+          chrome.runtime.sendMessage({ action: 'RUN_CHECK_STATUS' }, (response) => {
+            window.postMessage({
+              type: 'BTL_EXTENSION_RUN_CHECK_STATUS_RESULT',
+              success: response?.success || false,
+              message: response?.error || response?.message || ''
+            }, '*');
+          });
+        } catch (err) {
+          console.error('[CONTENT.JS] Error in RUN_CHECK_STATUS:', err);
+          window.postMessage({
+            type: 'BTL_EXTENSION_RUN_CHECK_STATUS_RESULT',
+            success: false,
+            message: 'Extension not available'
+          }, '*');
+        }
+      } else {
+        console.warn('[CONTENT.JS] Chrome runtime not available for RUN_CHECK_STATUS');
+      }
+    }
+
+    if (event.data && event.data.type === 'BTL_EXTENSION_GET_SYNC_STATUS') {
+      console.log('[CONTENT.JS] ✓ Received BTL_EXTENSION_GET_SYNC_STATUS from frontend');
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        try {
+          chrome.runtime.sendMessage({ action: 'GET_SYNC_STATUS' }, (response) => {
+            window.postMessage({
+              type: 'BTL_EXTENSION_SYNC_STATUS',
+              success: true,
+              lastSync: response?.lastSync || null
+            }, '*');
+          });
+        } catch (err) {
+          console.error('[CONTENT.JS] Error in GET_SYNC_STATUS:', err);
+          window.postMessage({ type: 'BTL_EXTENSION_SYNC_STATUS', success: false, lastSync: null }, '*');
+        }
+      } else {
+        console.warn('[CONTENT.JS] Extension not available for GET_SYNC_STATUS');
+        window.postMessage({ type: 'BTL_EXTENSION_SYNC_STATUS', success: false, lastSync: null }, '*');
+      }
+    }
+
+    // Get BTL credentials stored by the extension
+    if (event.data && event.data.type === 'BTL_EXTENSION_GET_CREDENTIALS') {
+      console.log('[CONTENT.JS] ✓ Received BTL_EXTENSION_GET_CREDENTIALS from frontend');
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        try {
+          chrome.runtime.sendMessage({ action: 'GET_CREDENTIALS' }, (response) => {
+            window.postMessage({
+              type: 'BTL_EXTENSION_CREDENTIALS',
+              success: true,
+              credentials: response?.credentials || null
+            }, '*');
+          });
+        } catch (err) {
+          console.error('[CONTENT.JS] Error in GET_CREDENTIALS:', err);
+          window.postMessage({ type: 'BTL_EXTENSION_CREDENTIALS', success: false, credentials: null }, '*');
+        }
+      } else {
+        window.postMessage({ type: 'BTL_EXTENSION_CREDENTIALS', success: false, credentials: null }, '*');
+      }
+    }
+
+    // Save BTL credentials entered by the user in the frontend modal
+    if (event.data && event.data.type === 'BTL_EXTENSION_SAVE_CREDENTIALS') {
+      console.log('[CONTENT.JS] ✓ Received BTL_EXTENSION_SAVE_CREDENTIALS from frontend');
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        try {
+          chrome.runtime.sendMessage({ action: 'SAVE_CREDENTIALS', credentials: event.data.credentials }, (response) => {
+            window.postMessage({
+              type: 'BTL_EXTENSION_CREDENTIALS_SAVED',
+              success: response?.success || false
+            }, '*');
+          });
+        } catch (err) {
+          console.error('[CONTENT.JS] Error in SAVE_CREDENTIALS:', err);
+          window.postMessage({ type: 'BTL_EXTENSION_CREDENTIALS_SAVED', success: false }, '*');
+        }
+      } else {
+        window.postMessage({ type: 'BTL_EXTENSION_CREDENTIALS_SAVED', success: false }, '*');
       }
     }
   });
   
-  console.log('[CONTENT.JS] ✓ postMessage relay ready on localhost');
-  console.log('[CONTENT.JS] Stopping here - localhost mode, only relay active');
+  console.log('[CONTENT.JS] ✓ postMessage relay ready on frontend');
+  console.log('[CONTENT.JS] Stopping here - frontend relay mode, only relay active');
   
-  // Exit by throwing to stop further execution (only on localhost)
-  throw new Error('Localhost relay mode - stopping execution');
+  // Exit by throwing to stop further execution (only on frontend domains)
+  throw new Error('Frontend relay mode - stopping execution');
 }
 
 // Only run form filling on govforms.gov.il
@@ -3697,21 +3854,42 @@ async function invokeFlow(flowConfig) {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
 
       const clickHuman = (el) => {
+        try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
         el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }));
         el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
         el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
         el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       };
 
+      async function setCheckbox(selector, labelSelector, timeout = 10000) {
+        const input = await waitForSelector(selector, timeout);
+        const label = labelSelector ? document.querySelector(labelSelector) : null;
+        if (input.checked) return;
+        clickHuman(input);
+        if (!input.checked && label) {
+          clickHuman(label);
+        }
+        if (!input.checked) {
+          input.checked = true;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        await sleep(150);
+      }
+
+      const shouldCheckFinal = payload.finalDeclaration !== false; // default on
+      const shouldCheckRefuseEmployer = payload.refuseEmployerContact !== false; // default on
+      const shouldCheckVideo = !!payload.videoMedicalCommittee;
+
       /* ===========================
          1. Final Declaration (REQUIRED)
       =========================== */
 
-      if (payload.finalDeclaration) {
-        const finalDecl = document.querySelector('[data-testid="Decheck"]');
-        if (finalDecl && !finalDecl.checked) {
-          clickHuman(finalDecl);
-          await sleep(200);
+      if (shouldCheckFinal) {
+        try {
+          await setCheckbox('[data-testid="Decheck"]', 'label[for="id-36-0-mobxReactForm"]');
+        } catch (err) {
+          console.warn('[FINAL-DECL] Could not set final declaration checkbox:', err);
         }
       }
 
@@ -3719,11 +3897,11 @@ async function invokeFlow(flowConfig) {
          2. Video Medical Committee (OPTIONAL)
       =========================== */
 
-      if (payload.videoMedicalCommittee) {
-        const videoCommittee = document.querySelector('[data-testid="SubmitionVideoChat"]');
-        if (videoCommittee && !videoCommittee.checked) {
-          clickHuman(videoCommittee);
-          await sleep(200);
+      if (shouldCheckVideo) {
+        try {
+          await setCheckbox('[data-testid="SubmitionVideoChat"]');
+        } catch (err) {
+          console.warn('[FINAL-DECL] Could not set video committee checkbox:', err);
         }
       }
 
@@ -3731,11 +3909,11 @@ async function invokeFlow(flowConfig) {
          3. Refuse Employer Contact (OPTIONAL)
       =========================== */
 
-      if (payload.refuseEmployerContact) {
-        const refuseEmployer = document.querySelector('[data-testid="Tofes100Disclaimer"]');
-        if (refuseEmployer && !refuseEmployer.checked) {
-          clickHuman(refuseEmployer);
-          await sleep(200);
+      if (shouldCheckRefuseEmployer) {
+        try {
+          await setCheckbox('[data-testid="Tofes100Disclaimer"]', 'label[for="id-37-0-mobxReactForm"]');
+        } catch (err) {
+          console.warn('[FINAL-DECL] Could not set employer contact refusal checkbox:', err);
         }
       }
 
@@ -4228,7 +4406,12 @@ if (typeof chrome !== "undefined" && chrome.runtime) {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('[CONTENT.JS] ===== MESSAGE RECEIVED =====', request);
-  
+
+  // Ignore extension-only automation actions; phase2.js handles them.
+  if (request.action === 'RUN_PHASE2_AUTOMATION' || request.action === 'RUN_PHASE2_STEP2') {
+    return; // do not send a response, let other content scripts handle it
+  }
+
   if (request.action === 'START_FLOW_WITH_PAYLOAD') {
     console.log('[CONTENT.JS] ✓ START_FLOW_WITH_PAYLOAD action detected');
     // Determine payload source and styling

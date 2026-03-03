@@ -16,15 +16,37 @@ export default function ExtensionSyncWidget() {
   const dir = language === "he" ? "rtl" : "ltr"
 
   useEffect(() => {
-    const statuses: SyncStatus[] = ["not_installed", "fresh"]
-    let index = 0
-    const interval = setInterval(() => {
-      index = (index + 1) % statuses.length
-      setSyncStatus(statuses[index])
-    }, 10000)
+    let timeout: ReturnType<typeof setTimeout>
 
-    return () => clearInterval(interval)
-  }, [])
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type !== 'BTL_EXTENSION_SYNC_STATUS') return
+      clearTimeout(timeout)
+      const lastSync: string | null = event.data.lastSync
+      if (!lastSync) {
+        setSyncStatus('stale')
+        return
+      }
+      const d = new Date(lastSync)
+      const now = new Date()
+      const isToday =
+        d.getFullYear() === now.getFullYear() &&
+        d.getMonth() === now.getMonth() &&
+        d.getDate() === now.getDate()
+      setSyncStatus(isToday ? 'fresh' : 'stale')
+      setLastSyncTime(d.toLocaleString(language === 'he' ? 'he-IL' : 'en-US'))
+    }
+
+    window.addEventListener('message', handleMessage)
+    window.postMessage({ type: 'BTL_EXTENSION_GET_SYNC_STATUS' }, '*')
+
+    // No response within 2s → extension not installed
+    timeout = setTimeout(() => setSyncStatus('not_installed'), 2000)
+
+    return () => {
+      window.removeEventListener('message', handleMessage)
+      clearTimeout(timeout)
+    }
+  }, [language])
 
   const handleSync = () => {
     setSyncStatus("syncing")
