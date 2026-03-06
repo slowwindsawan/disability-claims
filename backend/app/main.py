@@ -374,14 +374,20 @@ Classification rules (highest priority first when multiple apply):
 2. claim_rejected    — only if explicitly REJECTED / DENIED; a percentage below threshold counts as rejection
 3. appointment_scheduled — summons to medical committee with date+time+place (e.g. "ועדות רפואיות" invitation)
 4. rehab_approved    — vocational rehabilitation explicitly approved
-5. rehab_payment_update — contains payment amounts or breakdowns for rehab benefits (tuition, travel, equipment)
+5. rehab_payment_update — contains payment amounts or breakdowns for rehab benefits (tuition, travel, equipment).
+   This includes ANY of the following letter types (classify ALL of them as rehab_payment_update):
+   - "פרוט תשלומי השיקום" — Rehabilitation payment detail/breakdown letter (most common: lists rows of סוג תשלום / תקופה / סכום)
+   - "הסכום עבור נסיעות" — Travel expense reimbursement (one or more rows with period + ILS amount)
+   - Any letter from category "שיקום" that contains a monetary table or states an amount paid/reimbursed
+   IMPORTANT: Classify this even if the overall disability pension was previously rejected — rehabilitation payments are a SEPARATE track.
 6. claim_submitted   — first acknowledgement that claim was filed; mentions 3 processing stages
 7. waiting_for_docs  — requests documents; or lists required documents
 8. form_pending      — requests a specific named form (e.g. form 7810)
 9. informational     — everything else, including medical committee reports (diagnoses + percentages without a pension decision)
 
 Important field rules:
-- rehab_payment_update with travel/equipment/one-time amounts: populate reimbursement_amount + payment_breakdown; set monthly_amount to null
+- rehab_payment_update with travel/equipment/one-time amounts: populate reimbursement_amount (= SUM of all rows) + payment_breakdown (one object per row); set monthly_amount to null.
+  For "פרוט תשלומי השיקום" / "הסכום עבור נסיעות" letters: each table row becomes one payment_breakdown entry {"period": "<MM/YYYY>", "amount": <number>}; reimbursement_amount is the grand total (סה"כ / סכום כולל). Also set reimbursement_period to the range covered, e.g. "10/2025–12/2025".
 - rehab_payment_update with recurring monthly stipend: populate monthly_amount; set reimbursement_amount to null
 - claim_rejected: always extract disability_percentages_by_period if present; always extract appeal_form_type and appeal_deadline_days
 - appointment_scheduled: always extract appointment_time and appointment_specialty if present

@@ -933,7 +933,7 @@ export default function Home() {
               <p className="text-xl md:text-2xl text-slate-600 mb-8" style={{ direction: isRTL ? "rtl" : "ltr" }}>
                 {t("hero.subtitle")}
               </p>
-              <Button onClick={handleStartQuiz} size="lg" className="text-lg px-8 py-6 bg-blue-600 hover:bg-blue-700">
+              <Button onClick={() => isLoggedIn ? router.push('/dashboard') : setShowLoginModal(true)} size="lg" className="text-lg px-8 py-6 bg-blue-600 hover:bg-blue-700">
                 {t("hero.cta")}
               </Button>
 
@@ -1153,7 +1153,7 @@ export default function Home() {
                   {t("cta.subtitle")}
                 </p>
                 <Button
-                  onClick={handleStartQuiz}
+                  onClick={() => isLoggedIn ? router.push('/dashboard') : setShowLoginModal(true)}
                   size="lg"
                   className="text-lg px-8 py-6 bg-white text-blue-600 hover:bg-slate-100"
                 >

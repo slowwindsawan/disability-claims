@@ -26,6 +26,9 @@ import {
   RefreshCw,
   Calendar,
   ClipboardList,
+  ChevronDown,
+  ChevronUp,
+  Banknote,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -98,6 +101,7 @@ export default function DashboardPage() {
   const [idCardLoading, setIdCardLoading] = useState(false);
   const [extensionInstalled, setExtensionInstalled] = useState(false);
   const [hasCompletedPayment, setHasCompletedPayment] = useState(true); // Check if user completed payment/checkout
+  const [showPaymentHistory, setShowPaymentHistory] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [hasAskedExtension, setHasAskedExtension] = useState(false);
   const [showExtensionConsentModal, setShowExtensionConsentModal] = useState(false);
@@ -2694,6 +2698,110 @@ export default function DashboardPage() {
 
           {/* Sidebar */}
           <div className="space-y-6">
+
+            {/* Payment History Card — shown whenever rehab payment data exists */}
+            {(() => {
+              const rehabMeta = currentCase?.case?.metadata?.rehab || {}
+              const paymentHistoryRaw: Array<{type: string; amount: number; period?: string; breakdown?: Array<{period: string; amount: number}>; letter_date?: string}> = rehabMeta.payment_history || []
+              const btlTimeline: Array<{action_type: string; letter_date?: string; key_data?: any}> = currentCase?.case?.metadata?.btl_timeline || []
+              const timelineDerived = btlTimeline
+                .filter((e) => e.action_type === 'rehab_payment_update' && e.key_data?.reimbursement_amount)
+                .map((e) => ({
+                  type: 'reimbursement' as const,
+                  amount: Number(e.key_data.reimbursement_amount),
+                  period: e.key_data.reimbursement_period || undefined,
+                  breakdown: (e.key_data.payment_breakdown as Array<{period: string; amount: number}>) || undefined,
+                  letter_date: e.letter_date || undefined,
+                }))
+              const btlAct = currentCase?.case?.metadata?.btl_action || {}
+              const actIsPayment = btlAct.action_type === 'rehab_payment_update' || btlAct.action_type === 'rehab_approved'
+              const allPayments = paymentHistoryRaw.length > 0
+                ? paymentHistoryRaw
+                : timelineDerived.length > 0
+                ? timelineDerived
+                : actIsPayment && (btlAct.reimbursement_amount || btlAct.monthly_amount)
+                ? [{ type: (btlAct.reimbursement_amount ? 'reimbursement' : 'monthly') as 'reimbursement' | 'monthly', amount: Number(btlAct.reimbursement_amount || btlAct.monthly_amount), period: btlAct.reimbursement_period || undefined, breakdown: (btlAct.payment_breakdown as Array<{period: string; amount: number}>) || undefined, letter_date: btlAct.letter_date || undefined }]
+                : []
+              const latestMonthly = rehabMeta.monthly_amount || (actIsPayment ? btlAct.monthly_amount : null)
+              const totalReimb = allPayments.filter((p) => p.type === 'reimbursement').reduce((s, p) => s + Number(p.amount), 0)
+              if (allPayments.length === 0 && !latestMonthly) return null
+              return (
+                <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.2 }}>
+                  <Card className="bg-white shadow-md overflow-hidden">
+                    <button
+                      onClick={() => setShowPaymentHistory((v) => !v)}
+                      className="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-right"
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+                          <Banknote className="w-4 h-4 text-blue-600" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-slate-900">היסטוריית תשלומי שיקום</p>
+                          <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                            {totalReimb > 0 && <span className="text-xs text-blue-700 font-semibold">₪{totalReimb.toLocaleString()} החזרים</span>}
+                            {latestMonthly > 0 && <span className="text-xs text-teal-700 font-semibold">₪{Number(latestMonthly).toLocaleString()}/חודש</span>}
+                            <span className="text-xs text-slate-400">{allPayments.length} עדכונים</span>
+                          </div>
+                        </div>
+                      </div>
+                      {showPaymentHistory ? <ChevronUp className="w-4 h-4 text-slate-400 flex-shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-400 flex-shrink-0" />}
+                    </button>
+                    <AnimatePresence initial={false}>
+                      {showPaymentHistory && (
+                        <motion.div
+                          key="payment-history-sidebar"
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.22, ease: 'easeInOut' }}
+                          className="overflow-hidden"
+                        >
+                          <div className="px-4 pb-4 pt-3 space-y-2 border-t border-slate-100">
+                            {latestMonthly > 0 && (
+                              <div className="flex items-center justify-between p-2.5 bg-teal-50 border border-teal-200 rounded-lg">
+                                <span className="text-xs font-bold text-teal-700">קצבה חודשית</span>
+                                <span className="text-sm font-bold text-teal-800">₪{Number(latestMonthly).toLocaleString()}</span>
+                              </div>
+                            )}
+                            {allPayments.map((p, i) => (
+                              <div key={i} className="border border-slate-200 rounded-lg overflow-hidden">
+                                <div className="flex items-center justify-between px-3 py-2 bg-slate-50">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-xs bg-blue-100 text-blue-700 font-semibold px-1.5 py-0.5 rounded">
+                                      {p.type === 'reimbursement' ? 'החזר' : 'קצבה'}
+                                    </span>
+                                    {p.period && <span className="text-xs text-slate-500">{p.period}</span>}
+                                    {p.letter_date && <span className="text-xs text-slate-400">({p.letter_date})</span>}
+                                  </div>
+                                  <span className="text-xs font-bold text-slate-900">₪{Number(p.amount).toLocaleString()}</span>
+                                </div>
+                                {p.breakdown && p.breakdown.length > 0 && (
+                                  <div className="divide-y divide-slate-100">
+                                    {p.breakdown.map((row, j) => (
+                                      <div key={j} className="flex items-center justify-between px-3 py-1">
+                                        <span className="text-xs text-slate-500">{row.period}</span>
+                                        <span className="text-xs font-semibold text-slate-700">₪{Number(row.amount).toLocaleString()}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                            <a href="/rehab-claims" className="block pt-1">
+                              <button className="w-full text-xs border border-slate-200 rounded-md py-1.5 text-slate-600 hover:bg-slate-50 transition-colors">
+                                מקסם תשלומים →
+                              </button>
+                            </a>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </Card>
+                </motion.div>
+              )
+            })()}
+
             {/* WhatsApp Support Card */}
             <motion.div
               initial={{ y: 20, opacity: 0 }}
